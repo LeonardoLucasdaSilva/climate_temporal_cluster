@@ -332,8 +332,8 @@ def main():
     # Configuration
     state = "RS"
     station_id = "A801"
-    window_size = 20
-    n_clusters = 10
+    window_size = 16
+    n_clusters = 7
     sigma = 1
     precipitation_threshold = 30.0  # Fixed threshold: 30mm for HIGH precipitation
 
@@ -360,6 +360,7 @@ def main():
         df,
         window_size=window_size,
         normalize=True,
+        variance_threshold=0.9,
     )
     print(f"    ✓ Created {len(windows)} windows")
 
