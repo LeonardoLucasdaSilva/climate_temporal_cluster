@@ -21,10 +21,12 @@ from sklearn.cluster import KMeans
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from climate_cluster.config import DATA_ROOT, OUTPUTS_DIR
 from climate_cluster.config_data import load_single_station
 from climate_cluster.features.window_features import create_windows
+from utils import d_euclidiana, take_sigma
 
 
 def find_window_ending_before_date(df, target_date, window_size):
@@ -83,6 +85,13 @@ def analyze_parameter_combination(df, windows, labels, window_size, n_clusters, 
         most_common_count = max(cluster_counts.values()) if cluster_counts else 0
         cluster_2_percentage = (most_common_count / len(valid_results) * 100) if len(valid_results) > 0 else 0
 
+    # Calculate cluster sizes as percentages of total windows
+    cluster_sizes = {}
+    unique_labels, counts = np.unique(labels, return_counts=True)
+    total_windows = len(labels)
+    for label, count in zip(unique_labels, counts):
+        cluster_sizes[int(label)] = (count / total_windows) * 100
+
     return {
         'window_size': window_size,
         'n_clusters': n_clusters,
@@ -92,6 +101,7 @@ def analyze_parameter_combination(df, windows, labels, window_size, n_clusters, 
         'total_events_analyzed': len(results),
         'cluster_distribution': cluster_distribution,
         'max_cluster_percentage': cluster_2_percentage,
+        'cluster_sizes': cluster_sizes,
     }
 
 
@@ -103,25 +113,38 @@ def main():
 
     window_sizes = list(range(5, 31))  # 5 to 30
     n_clusters_range = list(range(5, 16))  # 5 to 15
-    sigmas = [0.1, 0.5, 1.0, 2.0, 5.0]  # Common values from literature
 
     print("=" * 100)
     print("RS A801 PARAMETER SWEEP EXPERIMENT")
     print("=" * 100)
-    print(f"\nConfiguration:")
-    print(f"  Station: {state}/{station_id}")
-    print(f"  Window sizes: {window_sizes[0]} to {window_sizes[-1]}")
-    print(f"  Number of clusters: {n_clusters_range[0]} to {n_clusters_range[-1]}")
-    print(f"  Sigma values: {sigmas}")
-    print(f"  Total combinations: {len(window_sizes) * len(n_clusters_range) * len(sigmas)}")
 
     # Load data once
     print(f"\n[1] Loading {state}/{station_id} station data...")
     df = load_single_station(state=state, station_id=station_id, data_root=DATA_ROOT)
     print(f"    ✓ Loaded {len(df)} days of data")
 
+    # Calculate sigma values based on data distribution
+    print(f"\n[2] Calculating optimal sigma values...")
+    windows_for_sigma, _ = create_windows(df, window_size=5, normalize=True)
+    windows_flat_for_sigma = windows_for_sigma.reshape(windows_for_sigma.shape[0], -1)
+
+    print(f"    Creating distance matrix...")
+    D = d_euclidiana(windows_flat_for_sigma)
+
+    print(f"    Extracting sigma values from distance distribution...")
+    sigmas = take_sigma(D)
+    print(f"    ✓ Generated {len(sigmas)} sigma values")
+    print(f"    σ range: [{sigmas.min():.6f}, {sigmas.max():.6f}]")
+
+    print(f"\nConfiguration:")
+    print(f"  Station: {state}/{station_id}")
+    print(f"  Window sizes: {window_sizes[0]} to {window_sizes[-1]}")
+    print(f"  Number of clusters: {n_clusters_range[0]} to {n_clusters_range[-1]}")
+    print(f"  Sigma values: {len(sigmas)} values from distance-based distribution")
+    print(f"  Total combinations: {len(window_sizes) * len(n_clusters_range) * len(sigmas)}")
+
     # Get top 10 precipitation days (constant across all combinations)
-    print(f"\n[2] Finding 10 days with highest precipitation...")
+    print(f"\n[3] Finding 10 days with highest precipitation...")
     top_precip_days = df.nlargest(10, "PRECIPITACAO_TOTAL")
     print(f"    ✓ Found 10 events")
 
@@ -129,7 +152,7 @@ def main():
     all_results = []
 
     # Parameter sweep
-    print(f"\n[3] Running parameter sweep ({len(window_sizes) * len(n_clusters_range) * len(sigmas)} combinations)...")
+    print(f"\n[4] Running parameter sweep ({len(window_sizes) * len(n_clusters_range) * len(sigmas)} combinations)...")
 
     total_combinations = len(window_sizes) * len(n_clusters_range) * len(sigmas)
     current = 0
@@ -140,7 +163,7 @@ def main():
             print(f"    ⚠️  Window size {window_size} > dataset size, skipping")
             continue
 
-        windows, scaler = create_windows(df, window_size=window_size, normalize=True)
+        windows, scaler = create_windows(df, window_size=window_size, normalize=True, variance_threshold=0.90)
 
         windows_flat = windows.reshape(windows.shape[0], -1)
 
@@ -166,7 +189,7 @@ def main():
                 print(" ✓")
 
     # Create results dataframe
-    print(f"\n[4] Processing results...")
+    print(f"\n[5] Processing results...")
     results_df = pd.DataFrame(all_results)
 
     # Expand cluster distribution to separate columns
@@ -175,8 +198,14 @@ def main():
             lambda x: x.get(cluster_id, 0) if isinstance(x, dict) else 0
         )
 
-    # Drop the dict column
-    results_df = results_df.drop('cluster_distribution', axis=1)
+    # Expand cluster sizes (percentages) to separate columns
+    for cluster_id in range(max(n_clusters_range)):
+        results_df[f'cluster_{cluster_id}_size_pct'] = results_df['cluster_sizes'].apply(
+            lambda x: x.get(cluster_id, 0.0) if isinstance(x, dict) else 0.0
+        )
+
+    # Drop the dict columns
+    results_df = results_df.drop(['cluster_distribution', 'cluster_sizes'], axis=1)
 
     # Rename for clarity
     results_df = results_df.rename(columns={
@@ -199,7 +228,7 @@ def main():
 
     # Create a summary report
     summary_path = output_dir / "parameter_sweep_summary.txt"
-    with open(summary_path, "w") as f:
+    with open(summary_path, "w", encoding="utf-8") as f:
         f.write("=" * 100 + "\n")
         f.write("RS A801 PARAMETER SWEEP EXPERIMENT - SUMMARY\n")
         f.write("=" * 100 + "\n\n")
@@ -219,15 +248,33 @@ def main():
         f.write(f"  Total events analyzed per combination: 10 (top precipitation days)\n")
         f.write(f"  Valid results per combination: {results_df['Valid_Events'].describe().to_string()}\n\n")
 
-        f.write("TOP 5 PARAMETER COMBINATIONS BY MAX CLUSTER PERCENTAGE:\n")
+        f.write("TOP 25 PARAMETER COMBINATIONS BY MAX CLUSTER PERCENTAGE:\n")
         f.write("(This indicates how well parameters capture patterns before high precipitation)\n\n")
+        top_25 = results_df.nlargest(25, 'Max_Cluster_Percentage')
+        for idx, (_, row) in enumerate(top_25.iterrows(), 1):
+            # Find which cluster has the maximum event count (dominant cluster for precipitation)
+            max_cluster_id = None
+            max_event_count = 0
+            max_cluster_pct = 0
+            for cluster_id in range(int(row['N_Clusters'])):
+                count_col = f'cluster_{cluster_id}_count'
+                if count_col in row.index and row[count_col] > max_event_count:
+                    max_event_count = row[count_col]
+                    max_cluster_id = cluster_id
+                    size_col = f'cluster_{cluster_id}_size_pct'
+                    max_cluster_pct = row[size_col] if size_col in row.index else 0
 
-        top_5 = results_df.nlargest(5, 'Max_Cluster_Percentage')
-        for idx, (_, row) in enumerate(top_5.iterrows(), 1):
+            # Get count of events in the dominant cluster
+            count_col = f'cluster_{max_cluster_id}_count'
+            event_count = row[count_col] if count_col in row.index else 0
+
             f.write(f"{idx}. Window={int(row['Window_Size']):2d}, "
                    f"Clusters={int(row['N_Clusters']):2d}, "
                    f"Sigma={row['Sigma']:4.1f}, "
                    f"Max Cluster %={row['Max_Cluster_Percentage']:6.2f}%\n")
+            f.write(f"    └─ Cluster {max_cluster_id}: {event_count}/{int(row['Valid_Events'])} events "
+                   f"({event_count/row['Valid_Events']*100:.1f}% of valid events)\n")
+            f.write(f"    └─ Overall cluster size: {max_cluster_pct:.1f}% of all windows\n\n")
 
         f.write("\n" + "=" * 100 + "\n")
         f.write("DETAILED RESULTS BY WINDOW SIZE:\n")
@@ -237,13 +284,31 @@ def main():
             ws_results = results_df[results_df['Window_Size'] == ws]
             f.write(f"\nWindow Size: {int(ws)} days ({len(ws_results)} combinations)\n")
             f.write("-" * 100 + "\n")
-            f.write(f"{'K':<3} {'Sigma':<8} {'Windows':<10} {'Valid':<8} {'Max%':<8}\n")
+
+            # Get max n_clusters for this window size to know how many cluster columns to show
+            max_k = int(ws_results['N_Clusters'].max())
+
+            # Header
+            header = f"{'K':<3} {'Sigma':<8} {'Windows':<10} {'Valid':<8} {'Max%':<8}"
+            for cluster_id in range(max_k):
+                header += f" C{cluster_id}(%)"
+            f.write(header + "\n")
             f.write("-" * 100 + "\n")
 
             for _, row in ws_results.iterrows():
-                f.write(f"{int(row['N_Clusters']):<3} {row['Sigma']:<8.1f} "
-                       f"{int(row['Total_Windows']):<10} {int(row['Valid_Events']):<8} "
-                       f"{row['Max_Cluster_Percentage']:>7.2f}%\n")
+                line = f"{int(row['N_Clusters']):<3} {row['Sigma']:<8.1f} " \
+                       f"{int(row['Total_Windows']):<10} {int(row['Valid_Events']):<8} " \
+                       f"{row['Max_Cluster_Percentage']:>7.2f}%"
+
+                # Add cluster size percentages
+                for cluster_id in range(max_k):
+                    cluster_size_col = f'cluster_{cluster_id}_size_pct'
+                    if cluster_size_col in row.index:
+                        line += f" {row[cluster_size_col]:>6.1f}%"
+                    else:
+                        line += f" {'0.0':>6}%"
+
+                f.write(line + "\n")
 
     print(f"    ✓ Summary saved to: {summary_path}")
 
@@ -262,12 +327,33 @@ def main():
 
     # Show top combinations
     print("\nTOP 5 BEST PARAMETER COMBINATIONS:")
-    top_5 = results_df.nlargest(5, 'Max_Cluster_Percentage')
-    for idx, (_, row) in enumerate(top_5.iterrows(), 1):
+    top_25 = results_df.nlargest(25, 'Max_Cluster_Percentage')
+    for idx, (_, row) in enumerate(top_25.iterrows(), 1):
+        if idx > 25:
+            break
+
+        # Find which cluster has the maximum event count (dominant cluster for precipitation)
+        max_cluster_id = None
+        max_event_count = 0
+        max_cluster_pct = 0
+        for cluster_id in range(int(row['N_Clusters'])):
+            count_col = f'cluster_{cluster_id}_count'
+            if count_col in row.index and row[count_col] > max_event_count:
+                max_event_count = row[count_col]
+                max_cluster_id = cluster_id
+                size_col = f'cluster_{cluster_id}_size_pct'
+                max_cluster_pct = row[size_col] if size_col in row.index else 0
+
+        # Get count of events in the dominant cluster
+        count_col = f'cluster_{max_cluster_id}_count'
+        event_count = row[count_col] if count_col in row.index else 0
+
         print(f"  {idx}. Window={int(row['Window_Size']):2d}, "
               f"Clusters={int(row['N_Clusters']):2d}, "
               f"σ={row['Sigma']:4.1f} "
               f"→ Max Cluster Percentage: {row['Max_Cluster_Percentage']:.2f}%")
+        print(f"      ├─ Cluster {max_cluster_id}: {event_count}/{int(row['Valid_Events'])} precipitation events")
+        print(f"      └─ Cluster size: {max_cluster_pct:.1f}% of all windows\n")
 
 
 if __name__ == "__main__":

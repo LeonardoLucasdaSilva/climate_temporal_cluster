@@ -7,6 +7,71 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+
+
+def determine_n_components(
+    df: pd.DataFrame,
+    window_size: int = 4,
+    columns: List[str] | None = None,
+    normalize: bool = True,
+    variance_threshold: float = 0.90,
+) -> int:
+    """Determine optimal number of PCA components based on variance threshold.
+
+    Args:
+        df: DataFrame with daily climate data
+        window_size: Number of consecutive days per sample
+        columns: Columns to include. If None, uses all numeric columns except 'Data'
+        normalize: If True, normalize data before PCA
+        variance_threshold: Fraction of variance to retain (e.g., 0.90 for 90%). Must be between 0 and 1.
+
+    Returns:
+        Optimal number of components needed to retain the specified variance threshold
+
+    Example:
+        >>> df = load_single_station(state='SP', station_id='A701', data_root=DATA_ROOT)
+        >>> n_comp = determine_n_components(df, window_size=4, variance_threshold=0.90)
+        >>> windows, (scaler, pca) = create_windows(df, window_size=4, n_components=n_comp)
+    """
+    if not 0 < variance_threshold < 1:
+        raise ValueError(f"variance_threshold must be between 0 and 1, got {variance_threshold}")
+
+    # Select numeric columns if not specified
+    if columns is None:
+        columns = [col for col in df.columns if col != "Data" and pd.api.types.is_numeric_dtype(df[col])]
+
+    if not columns:
+        raise ValueError("No numeric columns found in dataframe")
+
+    # Extract the data
+    data = df[columns].values
+
+    if len(data) < window_size:
+        raise ValueError(f"DataFrame has {len(data)} rows but window_size is {window_size}")
+
+    # Normalize if requested
+    if normalize:
+        scaler = StandardScaler()
+        data = scaler.fit_transform(data)
+
+    # Create sliding windows and flatten
+    n_windows = len(data) - window_size + 1
+    windows_flat = np.zeros((n_windows, window_size * len(columns)))
+
+    for i in range(n_windows):
+        windows_flat[i] = data[i : i + window_size].flatten()
+
+    # Fit PCA with all components to get variance ratios
+    max_components = min(windows_flat.shape)
+    pca_full = PCA(n_components=max_components)
+    pca_full.fit(windows_flat)
+
+    # Find minimum components to reach threshold
+    cumsum_var = np.cumsum(pca_full.explained_variance_ratio_)
+    n_components = int(np.argmax(cumsum_var >= variance_threshold) + 1)
+
+    return n_components
 
 
 def create_windows(
@@ -14,7 +79,9 @@ def create_windows(
     window_size: int = 4,
     columns: List[str] | None = None,
     normalize: bool = True,
-) -> Tuple[np.ndarray, np.ndarray | None]:
+    n_components: int | None = None,
+    variance_threshold: float | None = None,
+) -> Tuple[np.ndarray, Tuple[StandardScaler | None, PCA | None]]:
     """Create sliding windows of consecutive days.
 
     Args:
@@ -23,21 +90,38 @@ def create_windows(
         columns: Columns to include in windows. If None, uses all except 'Data'.
                  Numeric columns are automatically selected.
         normalize: If True, normalize each window by column statistics.
+        n_components: Number of PCA components for dimensionality reduction. If None, no PCA is applied.
+                      Must be less than or equal to (window_size * n_features).
+                      If both n_components and variance_threshold are None, no PCA is applied.
+        variance_threshold: If specified (e.g., 0.90 for 90%), automatically determines n_components
+                           to retain this fraction of variance. Overrides n_components if both are specified.
+                           Must be between 0 and 1.
 
     Returns:
-        Tuple of (windows, scaler):
-        - windows: numpy array of shape (n_windows, window_size, n_features)
+        Tuple of (windows, (scaler, pca)):
+        - windows: numpy array of shape (n_windows, n_components) if PCA is applied,
+                   or (n_windows, window_size, n_features) if PCA is not applied
         - scaler: StandardScaler object (for inverse transform), or None if normalize=False
+        - pca: PCA object (for inverse transform), or None if n_components=None
 
     Example:
         >>> df = load_single_station(state='SP', station_id='A701', data_root=DATA_ROOT)
-        >>> windows, scaler = create_windows(
+        >>> # Method 1: Specify exact number of components
+        >>> windows, (scaler, pca) = create_windows(
         ...     df,
         ...     window_size=4,
         ...     columns=['TEMPERATURA_MAXIMA', 'TEMPERATURA_MIN', 'PRECIPITACAO_TOTAL'],
-        ...     normalize=True
+        ...     normalize=True,
+        ...     n_components=5
         ... )
-        >>> print(windows.shape)  # (n_windows, 4, 3)
+        >>> # Method 2: Specify variance threshold (automatically determines n_components)
+        >>> windows, (scaler, pca) = create_windows(
+        ...     df,
+        ...     window_size=4,
+        ...     columns=['TEMPERATURA_MAXIMA', 'TEMPERATURA_MIN', 'PRECIPITACAO_TOTAL'],
+        ...     normalize=True,
+        ...     variance_threshold=0.90
+        ... )
     """
     # Select numeric columns if not specified
     if columns is None:
@@ -67,7 +151,41 @@ def create_windows(
     for i in range(n_windows):
         windows[i] = data_normalized[i : i + window_size]
 
-    return windows, scaler
+    # Apply PCA if n_components or variance_threshold is specified
+    pca = None
+    if variance_threshold is not None or n_components is not None:
+        # Flatten windows for PCA
+        windows_flat = windows.reshape(n_windows, window_size * len(columns))
+        original_dim = windows_flat.shape[1]
+
+        # If variance_threshold is specified, determine n_components
+        if variance_threshold is not None:
+            if not 0 < variance_threshold < 1:
+                raise ValueError(f"variance_threshold must be between 0 and 1, got {variance_threshold}")
+
+            # Fit PCA with all components to get variance ratios
+            max_components = min(windows_flat.shape)
+            pca_full = PCA(n_components=max_components)
+            pca_full.fit(windows_flat)
+
+            # Find minimum components to reach threshold
+            cumsum_var = np.cumsum(pca_full.explained_variance_ratio_)
+            n_components = np.argmax(cumsum_var >= variance_threshold) + 1
+
+        # Fit and apply PCA with determined n_components
+        pca = PCA(n_components=n_components)
+        windows = pca.fit_transform(windows_flat)
+
+        # Print dimensionality reduction information
+        print(f"PCA Dimensionality Reduction:")
+        print(f"  Original dimensions: {original_dim}")
+        print(f"  New dimensions: {n_components}")
+        print(f"  Reduction: {original_dim} → {n_components} ({100 * (1 - n_components / original_dim):.1f}% reduction)")
+        if variance_threshold is not None:
+            explained_var = pca.explained_variance_ratio_.sum()
+            print(f"  Explained variance: {explained_var * 100:.2f}% (threshold: {variance_threshold * 100:.1f}%)")
+
+    return windows, (scaler, pca)
 
 
 def windows_to_dataframe(
@@ -123,7 +241,7 @@ def create_normalized_windows(
     Returns:
         Tuple of (windows, scaler)
     """
-    windows, scaler = create_windows(df, window_size, columns, normalize=True)
+    windows, (scaler, _) = create_windows(df, window_size, columns, normalize=True)
     if scaler is None:
         raise RuntimeError("Scaler should not be None when normalize=True")
     return windows, scaler
