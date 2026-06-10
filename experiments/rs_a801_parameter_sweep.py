@@ -17,16 +17,63 @@ from datetime import datetime
 
 import pandas as pd
 import numpy as np
-from sklearn.cluster import KMeans
 
 # Add src to path
+sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from climate_cluster.config import DATA_ROOT, OUTPUTS_DIR
 from climate_cluster.config_data import load_single_station
 from climate_cluster.features.window_features import create_windows
+from clustering_protocol import (
+    PCA_VARIANCE_THRESHOLD,
+    cluster_feature_matrix,
+    create_cluster_feature_matrix,
+)
 from utils import d_euclidiana, take_sigma
+
+
+CLUSTERING_ALGORITHM = "spectral"  # Options: "kmeans", "spectral"
+
+# Raw data subset. Use None to analyze the full station history.
+# Examples:
+#   MAX_RAW_DAYS = 2000, RAW_DATA_SELECTION = "recent"
+#   RAW_DATA_START = "2018-01-01", RAW_DATA_END = "2022-12-31"
+MAX_RAW_DAYS = 1000
+RAW_DATA_SELECTION = "recent"  # Options: "recent", "earliest"
+RAW_DATA_START = None  # Optional YYYY-MM-DD string
+RAW_DATA_END = None  # Optional YYYY-MM-DD string
+
+
+def select_raw_data(
+    df,
+    max_days=None,
+    selection="recent",
+    start_date=None,
+    end_date=None,
+):
+    """Select the raw daily period used for sigma, windows, and event analysis."""
+    selected = df.sort_values("Data").reset_index(drop=True).copy()
+
+    if start_date is not None:
+        selected = selected[selected["Data"] >= pd.Timestamp(start_date)]
+    if end_date is not None:
+        selected = selected[selected["Data"] <= pd.Timestamp(end_date)]
+
+    if max_days is not None:
+        if max_days <= 0:
+            raise ValueError(f"MAX_RAW_DAYS must be positive or None, got {max_days}")
+        if selection == "recent":
+            selected = selected.tail(max_days)
+        elif selection == "earliest":
+            selected = selected.head(max_days)
+        else:
+            raise ValueError(
+                f"RAW_DATA_SELECTION must be 'recent' or 'earliest', got {selection!r}"
+            )
+
+    return selected.reset_index(drop=True)
 
 
 def find_window_ending_before_date(df, target_date, window_size):
@@ -105,6 +152,11 @@ def analyze_parameter_combination(df, windows, labels, window_size, n_clusters, 
     }
 
 
+def format_sigma(sigma):
+    """Format sigma values for logs and reports."""
+    return "N/A" if sigma is None or pd.isna(sigma) else f"{float(sigma):.4g}"
+
+
 def main():
     """Run parameter sweep experiment."""
     # Configuration for sweep
@@ -120,27 +172,65 @@ def main():
 
     # Load data once
     print(f"\n[1] Loading {state}/{station_id} station data...")
-    df = load_single_station(state=state, station_id=station_id, data_root=DATA_ROOT)
-    print(f"    ✓ Loaded {len(df)} days of data")
+    df_full = load_single_station(state=state, station_id=station_id, data_root=DATA_ROOT)
+    df = select_raw_data(
+        df_full,
+        max_days=MAX_RAW_DAYS,
+        selection=RAW_DATA_SELECTION,
+        start_date=RAW_DATA_START,
+        end_date=RAW_DATA_END,
+    )
+    print(f"    ✓ Loaded {len(df_full)} days of data")
+    if len(df) != len(df_full):
+        print(
+            f"    ✓ Analyzing {len(df)} selected days "
+            f"({df['Data'].min().date()} to {df['Data'].max().date()})"
+        )
+    else:
+        print(f"    ✓ Analyzing full period ({df['Data'].min().date()} to {df['Data'].max().date()})")
+
+    max_window_size = max(window_sizes)
+    max_windows = max(0, len(df) - max_window_size + 1)
+    if max_windows == 0:
+        raise ValueError(
+            f"Selected raw data has {len(df)} days, but the largest window size is "
+            f"{max_window_size}. Increase MAX_RAW_DAYS or lower window_sizes."
+        )
+    print(
+        f"    Largest clustering matrix estimate: {max_windows:,} x {max_windows:,} "
+        f"for window_size={max_window_size}"
+    )
 
     # Calculate sigma values based on data distribution
-    print(f"\n[2] Calculating optimal sigma values...")
-    windows_for_sigma, _ = create_windows(df, window_size=5, normalize=True)
-    windows_flat_for_sigma = windows_for_sigma.reshape(windows_for_sigma.shape[0], -1)
+    if CLUSTERING_ALGORITHM.lower() == "spectral":
+        print(f"\n[2] Calculating optimal sigma values...")
+        windows_for_sigma, _ = create_windows(df, window_size=5, normalize=True)
+        windows_flat_for_sigma = windows_for_sigma.reshape(windows_for_sigma.shape[0], -1)
 
-    print(f"    Creating distance matrix...")
-    D = d_euclidiana(windows_flat_for_sigma)
+        print(f"    Creating distance matrix...")
+        D = d_euclidiana(windows_flat_for_sigma)
 
-    print(f"    Extracting sigma values from distance distribution...")
-    sigmas = take_sigma(D)
-    print(f"    ✓ Generated {len(sigmas)} sigma values")
-    print(f"    σ range: [{sigmas.min():.6f}, {sigmas.max():.6f}]")
+        print(f"    Extracting sigma values from distance distribution...")
+        sigmas = take_sigma(D)
+        print(f"    ✓ Generated {len(sigmas)} sigma values")
+        print(f"    σ range: [{sigmas.min():.6f}, {sigmas.max():.6f}]")
+    else:
+        print(f"\n[2] Skipping sigma calculation ({CLUSTERING_ALGORITHM.upper()} does not use sigma)...")
+        sigmas = [None]
 
     print(f"\nConfiguration:")
     print(f"  Station: {state}/{station_id}")
+    print(f"  Raw days analyzed: {len(df)} of {len(df_full)}")
+    print(f"  Raw data selection: {RAW_DATA_SELECTION}")
+    print(f"  Date filter: {RAW_DATA_START or 'start'} to {RAW_DATA_END or 'end'}")
     print(f"  Window sizes: {window_sizes[0]} to {window_sizes[-1]}")
     print(f"  Number of clusters: {n_clusters_range[0]} to {n_clusters_range[-1]}")
-    print(f"  Sigma values: {len(sigmas)} values from distance-based distribution")
+    print(f"  Clustering method: {CLUSTERING_ALGORITHM.upper()}")
+    print(f"  PCA variance threshold: {PCA_VARIANCE_THRESHOLD:.2f}")
+    if CLUSTERING_ALGORITHM.lower() == "spectral":
+        print(f"  Sigma values: {len(sigmas)} values from distance-based distribution")
+    else:
+        print(f"  Sigma values: not used")
     print(f"  Total combinations: {len(window_sizes) * len(n_clusters_range) * len(sigmas)}")
 
     # Get top 10 precipitation days (constant across all combinations)
@@ -163,9 +253,12 @@ def main():
             print(f"    ⚠️  Window size {window_size} > dataset size, skipping")
             continue
 
-        windows, scaler = create_windows(df, window_size=window_size, normalize=True, variance_threshold=0.90)
-
-        windows_flat = windows.reshape(windows.shape[0], -1)
+        windows, windows_flat, scaler, pca, feature_columns = create_cluster_feature_matrix(
+            df,
+            window_size=window_size,
+            normalize=True,
+            variance_threshold=PCA_VARIANCE_THRESHOLD,
+        )
 
         for n_clusters in n_clusters_range:
             for sigma in sigmas:
@@ -174,11 +267,15 @@ def main():
                 # Progress indicator
                 pct = 100.0 * current / total_combinations
                 print(f"    [{current:3d}/{total_combinations}] {pct:5.1f}% - "
-                      f"window={window_size}, k={n_clusters}, σ={sigma}...", end='')
+                      f"window={window_size}, k={n_clusters}, σ={format_sigma(sigma)}...", end='')
 
-                # Cluster
-                kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-                labels = kmeans.fit_predict(windows_flat)
+                labels = cluster_feature_matrix(
+                    windows_flat,
+                    n_clusters=n_clusters,
+                    algorithm=CLUSTERING_ALGORITHM,
+                    sigma=sigma,
+                    random_state=42,
+                )
 
                 # Analyze
                 result = analyze_parameter_combination(
@@ -235,13 +332,24 @@ def main():
 
         f.write(f"Experiment Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"Station: {state}/{station_id}\n")
+        f.write(f"Full Data Period: {df_full['Data'].min().date()} to {df_full['Data'].max().date()}\n")
+        f.write(f"Full Data Days: {len(df_full)}\n")
         f.write(f"Data Period: {df['Data'].min().date()} to {df['Data'].max().date()}\n")
-        f.write(f"Total Days: {len(df)}\n\n")
+        f.write(f"Analyzed Days: {len(df)}\n")
+        f.write(f"MAX_RAW_DAYS: {MAX_RAW_DAYS}\n")
+        f.write(f"RAW_DATA_SELECTION: {RAW_DATA_SELECTION}\n")
+        f.write(f"RAW_DATA_START: {RAW_DATA_START}\n")
+        f.write(f"RAW_DATA_END: {RAW_DATA_END}\n\n")
 
         f.write("PARAMETER RANGES:\n")
         f.write(f"  Window Sizes: {min(window_sizes)} to {max(window_sizes)} days\n")
         f.write(f"  Number of Clusters: {min(n_clusters_range)} to {max(n_clusters_range)}\n")
-        f.write(f"  Sigma Values: {sigmas}\n")
+        f.write(f"  Clustering Method: {CLUSTERING_ALGORITHM.upper()}\n")
+        f.write(f"  PCA Variance Threshold: {PCA_VARIANCE_THRESHOLD:.2f}\n")
+        if CLUSTERING_ALGORITHM.lower() == "spectral":
+            f.write(f"  Sigma Values: {sigmas}\n")
+        else:
+            f.write("  Sigma Values: not used\n")
         f.write(f"  Total Combinations: {len(results_df)}\n\n")
 
         f.write("RESULTS SUMMARY:\n")
@@ -270,7 +378,7 @@ def main():
 
             f.write(f"{idx}. Window={int(row['Window_Size']):2d}, "
                    f"Clusters={int(row['N_Clusters']):2d}, "
-                   f"Sigma={row['Sigma']:4.1f}, "
+                   f"Sigma={format_sigma(row['Sigma'])}, "
                    f"Max Cluster %={row['Max_Cluster_Percentage']:6.2f}%\n")
             f.write(f"    └─ Cluster {max_cluster_id}: {event_count}/{int(row['Valid_Events'])} events "
                    f"({event_count/row['Valid_Events']*100:.1f}% of valid events)\n")
@@ -296,7 +404,7 @@ def main():
             f.write("-" * 100 + "\n")
 
             for _, row in ws_results.iterrows():
-                line = f"{int(row['N_Clusters']):<3} {row['Sigma']:<8.1f} " \
+                line = f"{int(row['N_Clusters']):<3} {format_sigma(row['Sigma']):<8} " \
                        f"{int(row['Total_Windows']):<10} {int(row['Valid_Events']):<8} " \
                        f"{row['Max_Cluster_Percentage']:>7.2f}%"
 
@@ -350,7 +458,7 @@ def main():
 
         print(f"  {idx}. Window={int(row['Window_Size']):2d}, "
               f"Clusters={int(row['N_Clusters']):2d}, "
-              f"σ={row['Sigma']:4.1f} "
+              f"σ={format_sigma(row['Sigma'])} "
               f"→ Max Cluster Percentage: {row['Max_Cluster_Percentage']:.2f}%")
         print(f"      ├─ Cluster {max_cluster_id}: {event_count}/{int(row['Valid_Events'])} precipitation events")
         print(f"      └─ Cluster size: {max_cluster_pct:.1f}% of all windows\n")
