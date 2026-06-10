@@ -2,9 +2,16 @@
 
 ## Overview
 
-This document describes a comprehensive machine learning pipeline for precipitation prediction using LSTM (Long Short-Term Memory) networks combined with spectral clustering. The experiment clusters weather patterns from the RS A801 station using all available climate features, then trains an LSTM model to predict next-day precipitation based on these cluster-specific patterns.
+This document details a complete pipeline to predict next-day precipitation for station RS A801 using LSTM models guided by prior clustering of temporal patterns. We first apply PCA to windowed features built from all available numeric variables, then perform spectral clustering in the reduced space. With clusters defined, we train a separate LSTM model per cluster to better specialize on distinct weather regimes. The final evaluation aggregates cluster-wise predictions into overall metrics.
 
-**Main Goal**: Leverage temporal weather patterns (via clustering) to improve precipitation forecasting accuracy using deep learning.
+Key changes and clarifications implemented:
+- PCA is applied before clustering (variance_threshold=0.95), making dimensionality reduction explicit and configurable.
+- All numeric features are used by default, but the code allows easy replacement with a subset.
+- Train/Validation/Test final proportions are 70% / 10% / 30% with stratification by cluster.
+- One LSTM model is trained per cluster; predictions are aggregated across clusters for global metrics and plots.
+- Comprehensive evaluation includes regression metrics and per-cluster performance with dedicated plots and reports.
+
+**Main Goal**: Leverage temporal weather patterns (via PCA + clustering) and cluster-specific LSTM models to improve precipitation forecasting accuracy.
 
 ---
 
