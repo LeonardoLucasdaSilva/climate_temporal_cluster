@@ -36,6 +36,45 @@ from utils import d_euclidiana, take_sigma
 
 CLUSTERING_ALGORITHM = "spectral"  # Options: "kmeans", "spectral"
 
+# Raw data subset. Use None to analyze the full station history.
+# Examples:
+#   MAX_RAW_DAYS = 2000, RAW_DATA_SELECTION = "recent"
+#   RAW_DATA_START = "2018-01-01", RAW_DATA_END = "2022-12-31"
+MAX_RAW_DAYS = 1000
+RAW_DATA_SELECTION = "recent"  # Options: "recent", "earliest"
+RAW_DATA_START = None  # Optional YYYY-MM-DD string
+RAW_DATA_END = None  # Optional YYYY-MM-DD string
+
+
+def select_raw_data(
+    df,
+    max_days=None,
+    selection="recent",
+    start_date=None,
+    end_date=None,
+):
+    """Select the raw daily period used for sigma, windows, and event analysis."""
+    selected = df.sort_values("Data").reset_index(drop=True).copy()
+
+    if start_date is not None:
+        selected = selected[selected["Data"] >= pd.Timestamp(start_date)]
+    if end_date is not None:
+        selected = selected[selected["Data"] <= pd.Timestamp(end_date)]
+
+    if max_days is not None:
+        if max_days <= 0:
+            raise ValueError(f"MAX_RAW_DAYS must be positive or None, got {max_days}")
+        if selection == "recent":
+            selected = selected.tail(max_days)
+        elif selection == "earliest":
+            selected = selected.head(max_days)
+        else:
+            raise ValueError(
+                f"RAW_DATA_SELECTION must be 'recent' or 'earliest', got {selection!r}"
+            )
+
+    return selected.reset_index(drop=True)
+
 
 def find_window_ending_before_date(df, target_date, window_size):
     """Find the window index that ends on the day before target_date."""
@@ -133,8 +172,34 @@ def main():
 
     # Load data once
     print(f"\n[1] Loading {state}/{station_id} station data...")
-    df = load_single_station(state=state, station_id=station_id, data_root=DATA_ROOT)
-    print(f"    ✓ Loaded {len(df)} days of data")
+    df_full = load_single_station(state=state, station_id=station_id, data_root=DATA_ROOT)
+    df = select_raw_data(
+        df_full,
+        max_days=MAX_RAW_DAYS,
+        selection=RAW_DATA_SELECTION,
+        start_date=RAW_DATA_START,
+        end_date=RAW_DATA_END,
+    )
+    print(f"    ✓ Loaded {len(df_full)} days of data")
+    if len(df) != len(df_full):
+        print(
+            f"    ✓ Analyzing {len(df)} selected days "
+            f"({df['Data'].min().date()} to {df['Data'].max().date()})"
+        )
+    else:
+        print(f"    ✓ Analyzing full period ({df['Data'].min().date()} to {df['Data'].max().date()})")
+
+    max_window_size = max(window_sizes)
+    max_windows = max(0, len(df) - max_window_size + 1)
+    if max_windows == 0:
+        raise ValueError(
+            f"Selected raw data has {len(df)} days, but the largest window size is "
+            f"{max_window_size}. Increase MAX_RAW_DAYS or lower window_sizes."
+        )
+    print(
+        f"    Largest clustering matrix estimate: {max_windows:,} x {max_windows:,} "
+        f"for window_size={max_window_size}"
+    )
 
     # Calculate sigma values based on data distribution
     if CLUSTERING_ALGORITHM.lower() == "spectral":
@@ -155,6 +220,9 @@ def main():
 
     print(f"\nConfiguration:")
     print(f"  Station: {state}/{station_id}")
+    print(f"  Raw days analyzed: {len(df)} of {len(df_full)}")
+    print(f"  Raw data selection: {RAW_DATA_SELECTION}")
+    print(f"  Date filter: {RAW_DATA_START or 'start'} to {RAW_DATA_END or 'end'}")
     print(f"  Window sizes: {window_sizes[0]} to {window_sizes[-1]}")
     print(f"  Number of clusters: {n_clusters_range[0]} to {n_clusters_range[-1]}")
     print(f"  Clustering method: {CLUSTERING_ALGORITHM.upper()}")
@@ -264,8 +332,14 @@ def main():
 
         f.write(f"Experiment Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"Station: {state}/{station_id}\n")
+        f.write(f"Full Data Period: {df_full['Data'].min().date()} to {df_full['Data'].max().date()}\n")
+        f.write(f"Full Data Days: {len(df_full)}\n")
         f.write(f"Data Period: {df['Data'].min().date()} to {df['Data'].max().date()}\n")
-        f.write(f"Total Days: {len(df)}\n\n")
+        f.write(f"Analyzed Days: {len(df)}\n")
+        f.write(f"MAX_RAW_DAYS: {MAX_RAW_DAYS}\n")
+        f.write(f"RAW_DATA_SELECTION: {RAW_DATA_SELECTION}\n")
+        f.write(f"RAW_DATA_START: {RAW_DATA_START}\n")
+        f.write(f"RAW_DATA_END: {RAW_DATA_END}\n\n")
 
         f.write("PARAMETER RANGES:\n")
         f.write(f"  Window Sizes: {min(window_sizes)} to {max(window_sizes)} days\n")
