@@ -25,13 +25,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from climate_cluster.config import DATA_ROOT, OUTPUTS_DIR
 from climate_cluster.config_data import load_single_station
-from climate_cluster.features.window_features import create_windows
 from clustering_protocol import (
     PCA_VARIANCE_THRESHOLD,
+    calculate_sigma_values,
     cluster_feature_matrix,
     create_cluster_feature_matrix,
 )
-from utils import d_euclidiana, take_sigma
 
 
 CLUSTERING_ALGORITHM = "spectral"  # Options: "kmeans", "spectral"
@@ -204,14 +203,8 @@ def main():
     # Calculate sigma values based on data distribution
     if CLUSTERING_ALGORITHM.lower() == "spectral":
         print(f"\n[2] Calculating optimal sigma values...")
-        windows_for_sigma, _ = create_windows(df, window_size=5, normalize=True)
-        windows_flat_for_sigma = windows_for_sigma.reshape(windows_for_sigma.shape[0], -1)
-
-        print(f"    Creating distance matrix...")
-        D = d_euclidiana(windows_flat_for_sigma)
-
-        print(f"    Extracting sigma values from distance distribution...")
-        sigmas = take_sigma(D)
+        print(f"    Creating distance matrix and extracting sigma values...")
+        sigmas = calculate_sigma_values(df, n_values=20)
         print(f"    ✓ Generated {len(sigmas)} sigma values")
         print(f"    σ range: [{sigmas.min():.6f}, {sigmas.max():.6f}]")
     else:
