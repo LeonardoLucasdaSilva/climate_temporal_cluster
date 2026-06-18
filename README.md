@@ -6,7 +6,7 @@ clustering workflow and cluster-specific LSTM precipitation models.
 The main experiment is the LSTM+Cluster pipeline in
 `experiments/lstm_cluster.py`. It builds sliding windows from daily station
 data, clusters those windows with K-means or spectral clustering, trains one
-LSTM model per cluster, and writes metrics, predictions, plots, notebooks, and
+LSTM model per cluster, and writes metrics, predictions, plots, and
 LaTeX-ready summary tables.
 
 ## Quick Start
@@ -59,10 +59,9 @@ climate_temporal_cluster/
 |   |       `-- dimensionality_reduction_tools.py
 |   |-- models/
 |   |   `-- lstm.py                # LSTM model implementation
-|   |-- plots/
-|   |   `-- evaluation_plot_tools.py
 |   `-- evaluation/
-|       `-- metrics.py             # Regression metrics and reports
+|       |-- metrics.py             # Regression metrics and reports
+|       `-- evaluation_plot_tools.py
 |-- tests/
 |-- requirements.txt
 |-- pyproject.toml
@@ -94,7 +93,7 @@ For each configuration, the experiment runs these stages:
    information when possible.
 8. Train one LSTM model per training cluster.
 9. Predict train, validation, and test precipitation.
-10. Save metrics, reports, predictions, plots, notebooks, and LaTeX tables.
+10. Save metrics, reports, predictions, plots, and LaTeX tables.
 
 ## Data Loading
 
@@ -276,7 +275,6 @@ Each configuration folder contains:
 - `test_predictions.csv`
 - `evaluation_report.txt`
 - `summary.txt`
-- one Jupyter notebook with tables and plots
 - prediction, residual, error, cluster-performance, and histogram plots
 
 Metrics include:
@@ -293,7 +291,7 @@ Metrics include:
 Plot helpers live in:
 
 ```text
-src/climate_cluster/plots/evaluation_plot_tools.py
+src/climate_cluster/evaluation/evaluation_plot_tools.py
 ```
 
 ## Running a Smaller Experiment
@@ -361,5 +359,5 @@ results = run_clustering_pipeline(
 | Spectral clustering | `climate_cluster.methods.cluster.ng` |
 | LSTM model | `climate_cluster.models.lstm` |
 | Metrics and reports | `climate_cluster.evaluation.metrics` |
-| Diagnostic plots | `climate_cluster.plots.evaluation_plot_tools` |
+| Diagnostic plots | `climate_cluster.evaluation.evaluation_plot_tools` |
 | Main experiment | `experiments/lstm_cluster.py` |
