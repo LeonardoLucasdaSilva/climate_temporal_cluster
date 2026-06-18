@@ -7,8 +7,8 @@ examples: `create_windows(...) -> (windows, scaler)`.
 
 from __future__ import annotations
 
-from climate_cluster.methods.tools import sliding_window_tools as _sliding_windows
-from climate_cluster.methods.tools.sliding_window_tools import (  # noqa: F401
+from climate_cluster.methods.tools import sliding_windows as _sliding_windows
+from climate_cluster.methods.tools.sliding_windows import (  # noqa: F401
     create_normalized_windows,
     determine_n_components,
 )
