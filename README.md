@@ -1,350 +1,365 @@
-# Climate_cluster
+# Climate Temporal Cluster
 
-Project for clustering INMET climate stations in Brazil.
-This project aims to provide a time clustering approach to detect extreme weather events.
+This project studies Brazilian INMET daily climate data with a temporal
+clustering workflow and cluster-specific LSTM precipitation models.
 
-## Configuration
+The main experiment is the LSTM+Cluster pipeline in
+`experiments/lstm_cluster.py`. It builds sliding windows from daily station
+data, clusters those windows with K-means or spectral clustering, trains one
+LSTM model per cluster, and writes metrics, predictions, plots, notebooks, and
+LaTeX-ready summary tables.
 
-### Quick Start (After Cloning from GitHub)
+## Quick Start
 
-1. **Clone the repository:**
-   ```powershell
-   git clone <your-repository-url>
-   cd climate_cluster
-   ```
+Use Python 3.12. TensorFlow is installed in the project `.venv`, and the VS Code
+settings point the play button at that environment.
 
-2. **Create and activate virtual environment:**
-   ```powershell
-   # Windows (PowerShell)
-   python -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-   
-   # macOS/Linux
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
-
-3. **Install dependencies:**
-   ```powershell
-   pip install -r requirements.txt
-   ```
-
-4. **Configure Python Interpreter in Your IDE:**
-
-   **PyCharm:**
-   - File → Settings → Project → Python Interpreter
-   - Click ⚙️ → Add → Existing Environment
-   - Navigate to `.venv/Scripts/python.exe` (Windows) or `.venv/bin/python` (macOS/Linux)
-   - Click OK
-
-   **VS Code:**
-   - Open Command Palette (Ctrl+Shift+P / Cmd+Shift+P)
-   - Search "Python: Select Interpreter"
-   - Choose `.venv` from the list
-   - If not listed, select "Enter interpreter path" and navigate to `.venv/Scripts/python.exe`
-
-   **Jupyter Notebook / JupyterLab:**
-   - Activate the environment, then install:
-     ```powershell
-     pip install ipykernel
-     python -m ipykernel install --user --name climate_cluster --display-name "Climate Cluster"
-     ```
-   - In notebook, select Kernel → Change kernel → Climate Cluster
-
-   **PyDev (Eclipse):**
-   - Window → Preferences → PyDev → Interpreters → Python Interpreters
-   - Click "New"
-   - Set Interpreter Name: `climate_cluster`
-   - Set Executable: `.venv/Scripts/python.exe`
-
-5. **Verify installation:**
-   ```powershell
-   python examples/example_load_station.py
-   ```
-   If you see output without import errors, you're ready to go.
-
-### Project Structure
-```
-climate_cluster/
-├── src/                    # Main module source code
-│   └── climate_cluster/
-│       ├── config.py       # Configuration
-│       ├── config_data.py  # Data loading
-│       ├── clustering/     # Clustering algorithms
-│       ├── features/       # Feature engineering
-│       ├── data/           # Data utilities
-│       └── pipeline/       # End-to-end pipeline
-├── data/                   # INMET station data (by state)
-├── examples/               # Example scripts
-├── tests/                  # Unit tests
-├── .venv/                  # Virtual environment (auto-created)
-├── requirements.txt        # Python dependencies
-└── README.md
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
 
----
+Run the main experiment from the project root:
 
-##  Key Functions
+```powershell
+.\.venv\Scripts\python.exe experiments\lstm_cluster.py
+```
 
-| Function | Purpose | File |
-|----------|---------|------|
-| `load_single_station()` | Load INMET data | config_data.py |
-| `create_normalized_windows()` | Create windowed samples | features/window_features.py |
-| `create_windows()` | Low-level window creation | features/window_features.py |
-| `windows_to_dataframe()` | Denormalize windows | features/window_features.py |
-| `fit_predict()` | Spectral clustering | clustering/custom_algorithm.py |
-| `spectral_clustering()` | Full algorithm | clustering/custom_algorithm.py |
-| `run_clustering_pipeline()` | End-to-end pipeline | pipeline/run.py |
+Run tests:
 
-## Loading single-station data
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+```
 
-The project loads a single INMET station's data from a local file and groups by **days**.
+## Project Layout
 
-### Basic usage
+```text
+climate_temporal_cluster/
+|-- data/                         # Raw INMET data files
+|-- experiments/
+|   |-- lstm_cluster.py            # Main LSTM+Cluster experiment
+|   |-- temporary_experiments/     # Older scripts kept for review
+|   `-- experiments.md
+|-- outputs/                       # Generated experiment outputs
+|-- src/climate_cluster/
+|   |-- config.py                  # Project paths
+|   |-- config_data.py             # Single-station loading wrapper
+|   |-- data/
+|   |   |-- load_data.py           # INMET CSV loading
+|   |   |-- clean_data.py          # Data cleaning helpers
+|   |   `-- visualize_data.py      # Starter visualization module
+|   |-- methods/
+|   |   |-- cluster/
+|   |   |   |-- ng.py              # Spectral clustering implementation
+|   |   |   `-- cluster_pipeline.py
+|   |   `-- tools/
+|   |       |-- sliding_windows.py
+|   |       |-- sigma_choosing.py
+|   |       `-- dimensionality_reduction_tools.py
+|   |-- models/
+|   |   `-- lstm.py                # LSTM model implementation
+|   |-- plots/
+|   |   `-- evaluation_plot_tools.py
+|   `-- evaluation/
+|       `-- metrics.py             # Regression metrics and reports
+|-- tests/
+|-- requirements.txt
+|-- pyproject.toml
+`-- README.md
+```
+
+## LSTM+Cluster Pipeline
+
+The pipeline is configured at the top of `experiments/lstm_cluster.py`.
 
 ```python
-from pathlib import Path
+STATE = "RS"
+STATION_ID = "A801"
+WINDOW_SIZES = [8, 12, 16, 20, 24, 28]
+N_CLUSTERS_LIST = [3, 4, 5]
+CLUSTERING_ALGORITHM = "spectral"  # or "kmeans"
+N_SIGMA_VALUES = 5
+```
+
+For each configuration, the experiment runs these stages:
+
+1. Load daily station data.
+2. Select numeric climate features.
+3. Build sliding windows.
+4. Apply PCA dimensionality reduction using a variance threshold.
+5. Cluster windows with K-means or spectral clustering.
+6. Create next-day precipitation targets.
+7. Split samples into train, validation, and test sets while preserving cluster
+   information when possible.
+8. Train one LSTM model per training cluster.
+9. Predict train, validation, and test precipitation.
+10. Save metrics, reports, predictions, plots, notebooks, and LaTeX tables.
+
+## Data Loading
+
+The project loads one INMET station at a time from `data/inmet`.
+
+```python
 from climate_cluster.config import DATA_ROOT
 from climate_cluster.config_data import load_single_station
 
-# Load station SP/A701 with default columns
 df = load_single_station(
-    state="SP",
-    station_id="A701",
+    state="RS",
+    station_id="A801",
     data_root=DATA_ROOT,
 )
-
-print(df.head())
 ```
 
-### Custom columns
+The loader returns a daily dataframe with `Data` plus numeric weather columns
+such as temperature, humidity, pressure, wind, radiation, and
+`PRECIPITACAO_TOTAL`.
+
+Implementation:
+
+- `src/climate_cluster/data/load_data.py`
+- `src/climate_cluster/data/clean_data.py`
+- `src/climate_cluster/config_data.py`
+
+## Sliding Windows
+
+Sliding windows convert daily rows into temporal samples. Each sample contains
+`window_size` consecutive days and all selected feature columns.
 
 ```python
-cols = [
-    "DATA",
-    "TEMPERATURA_MAXIMA",
-    "TEMPERATURA_MIN",
-    "PRECIPITACAO_TOTAL",
-]
+from climate_cluster.methods.tools.sliding_windows import create_windows
 
-df = load_single_station(
-    state="SP",
-    station_id="A701",
-    data_root=DATA_ROOT,
-    cols=cols,
-)
-```
-
-### Available columns
-
-All INMET columns in your data:
-- `TEMPERATURA`, `TEMPERATURA_MAXIMA`, `TEMPERATURA_MIN`
-- `UMIDADE_MAX`, `UMIDADE_MIN`, `UMIDADE`
-- `PRESSAO`, `PRESSAO_MAX`, `PRESSAO_MIN`
-- `VELOCIDADE_VENTO`, `DIRECAO_VENTO`, `RAJADA_VENTO`
-- `PRECIPITACAO_TOTAL`
-- `RADIACAO`
-
-### Run the example
-
-```powershell
-python examples/example_load_station.py
-```
-
-## Creating Window Features (Sliding Windows)
-
-Convert daily data into sliding windows of consecutive days, normalized by column:
-
-```python
-from climate_cluster.features.window_features import create_normalized_windows
-
-# Create windows of 4 consecutive days
-windows, scaler = create_normalized_windows(
+windows, (scaler, pca) = create_windows(
     df,
-    window_size=4,
-    columns=['TEMPERATURA_MAXIMA', 'TEMPERATURA_MIN', 'PRECIPITACAO_TOTAL']
+    window_size=20,
+    columns=["PRECIPITACAO_TOTAL", "TEMPERATURA_MAXIMA"],
+    normalize=True,
+    variance_threshold=0.90,
 )
-
-print(windows.shape)
-# Output: (n_samples, 4, 3)
-# - n_samples: number of 4-day windows
-# - 4: days per window
-# - 3: selected columns
-
-# Flatten for clustering algorithms
-windows_flat = windows.reshape(windows.shape[0], -1)
-# Shape: (n_samples, 12)  → 4 days × 3 features
 ```
 
-**Features:**
-- ✓ Create windows of any size (3, 4, 5, 7... days)
-- ✓ All columns included in each window
-- ✓ Automatic normalization (zero mean, unit variance per column)
-- ✓ Denormalization support for interpretation
+Without PCA, `windows` has shape:
 
-### Run the windowing example
-
-```powershell
-python examples/example_window_features.py
+```text
+(n_windows, window_size, n_features)
 ```
 
-See [WINDOW_FEATURES.md](WINDOW_FEATURES.md) for detailed documentation.
+With PCA, `windows` becomes a 2D matrix:
 
-## Spectral Clustering
+```text
+(n_windows, n_components)
+```
 
-This project implements the NG, Jordan-Weiss spectral clustering algorithm.
+The LSTM+Cluster experiment uses
+`create_cluster_feature_matrix` to produce both the original window output and a
+2D `windows_flat` matrix for clustering and model input.
 
 ```python
-from climate_cluster.clustering.ng import fit_predict
+from climate_cluster.methods.cluster.cluster_pipeline import create_cluster_feature_matrix
 
-# Cluster the windowed data
-labels = fit_predict(
-    windows_flat,  # (n_samples, n_features)
-    sigma=1.0,  # Affinity bandwidth
-    k=3,  # Number of clusters
-    random_state=42  # Reproducibility
+windows, windows_flat, scaler, pca, feature_columns = create_cluster_feature_matrix(
+    df,
+    window_size=20,
+    normalize=True,
+    variance_threshold=0.90,
 )
-
-print(f"Cluster assignments: {len(labels)}")
 ```
 
-**Algorithm:**
-- Gaussian affinity matrix with bandwidth σ
-- Normalized Laplacian eigenvector method
-- K-means clustering on eigenvectors
+## Sigma Selection
 
-**Parameters:**
-- `sigma`: Controls neighborhood size (0.5-5.0 typical)
-- `k`: Number of clusters to find
-- `random_state`: Random seed for reproducibility
-
-### Complete Pipeline Example
+Spectral clustering uses a Gaussian affinity matrix and needs a bandwidth
+parameter called `sigma`. The experiment can generate candidate sigma values
+from pairwise window distances:
 
 ```python
-from climate_cluster.config import DATA_ROOT
-from climate_cluster.config_data import load_single_station
-from climate_cluster.features.window_features import create_normalized_windows
-from climate_cluster.clustering.ng import fit_predict
+from climate_cluster.methods.tools.sigma_choosing import calculate_sigma_values
 
-# 1. Load data
-df = load_single_station(state='SP', station_id='A701', data_root=DATA_ROOT)
-
-# 2. Create windows
-windows, scaler = create_normalized_windows(df, window_size=4)
-
-# 3. Cluster
-windows_flat = windows.reshape(windows.shape[0], -1)
-labels = fit_predict(windows_flat, sigma=1.0, k=3)
-
-# 4. Analyze
-for i in range(3):
-    print(f"Cluster {i}: {sum(l == i for l in labels)} samples")
+sigmas = calculate_sigma_values(df, n_values=5)
 ```
 
-Or in a simple one-liner:
+The sigma logic lives in `src/climate_cluster/methods/tools/sigma_choosing.py`.
+It contains:
+
+- `euclidian_distances`
+- `take_sigma`
+- `sigma_values_from_distance_distribution`
+- `calculate_sigma_values`
+
+## Clustering
+
+Cluster dispatch lives in
+`src/climate_cluster/methods/cluster/cluster_pipeline.py`.
 
 ```python
-from climate_cluster.pipeline.run import run_clustering_pipeline
+from climate_cluster.methods.cluster.cluster_pipeline import cluster_feature_matrix
 
-# One-liner for the entire pipeline
-results = run_clustering_pipeline(
-    state='SP',
-    station_id='A701',
-    window_size=4,
-    n_clusters=3,
-    sigma=1.0
-)
-
-labels = results['labels']
-windows = results['windows']
-scaler = results['scaler']
-```
-
-### Run via CLI
-
-```powershell
-
-# Default (SP/A701, 3 clusters, sigma=1.0, window=4)
-python -m climate_cluster.pipeline.run
-
-# Custom parameters
-python -m climate_cluster.pipeline.run \
-    --state BA \
-    --station-id A401 \
-    --clusters 5 \
-    --sigma 2.0 \
-    --window-size 7
-
-# Specific columns
-python -m climate_cluster.pipeline.run \
-    --columns TEMPERATURA_MAXIMA PRECIPITACAO_TOTAL UMIDADE_MAX
-```
-
-### To Run Tests
-1. Command: `python -m unittest discover -s tests -p "test_*.py"`
-2. Or: `python verify_pipeline.py`
-3. Or: `python verify_spectral.py`
-
-## Useful snippets
-
-### Parameter sweep
-```python
-results = {}
-for sigma in [0.5, 1.0, 2.0, 3.0]:
-    for k in [2, 3, 4, 5]:
-        labels = fit_predict(windows_flat, sigma=sigma, k=k)
-        counts = [sum(l == i for l in labels) for i in range(k)]
-        results[(sigma, k)] = counts
-        print(f"σ={sigma}, k={k}: {counts}")
-```
-
-### Denormalization (Back to Original Scale)
-```python
-from climate_cluster.features.window_features import windows_to_dataframe
-
-df_original = windows_to_dataframe(
-    windows=windows,
-    columns=['TEMPERATURA_MAXIMA', 'TEMPERATURA_MIN', 'PRECIPITACAO_TOTAL'],
-    scaler=scaler
-)
-
-print(df_original.head())
-# Columns: TEMPERATURA_MAXIMA_day0, TEMPERATURA_MAXIMA_day1, ...
-```
-
-### Processing Multiple Stations
-```python
-stations = [('SP', 'A701'), ('BA', 'A401'), ('TO', 'A055')]
-
-for state, station_id in stations:
-    print(f"\n{'='*60}\nProcessing {state}/{station_id}\n{'='*60}")
-    results = run_clustering_pipeline(
-        state=state,
-        station_id=station_id,
-        window_size=4,
-        n_clusters=3,
-        sigma=1.0
-    )
-    print(f"Labels shape: {len(results['labels'])}")
-```
-
-### Reproducibility
-```python
-# Always set random_state for reproducible results
-labels = fit_predict(
+labels = cluster_feature_matrix(
     windows_flat,
+    n_clusters=3,
+    algorithm="spectral",
     sigma=1.0,
-    k=3,
-    random_state=42  # ← Important!
+    random_state=42,
 )
 ```
 
-### Memory Optimization
-```python
-# For large datasets, process chunks
-chunk_size = 2000
-for i in range(0, len(windows_flat), chunk_size):
-    chunk = windows_flat[i:i+chunk_size]
-    labels_chunk = fit_predict(chunk, sigma=1.0, k=3)
-    # Process chunk...
+Supported algorithms:
+
+- `kmeans`: uses `sklearn.cluster.KMeans`
+- `spectral`: uses the local implementation in
+  `src/climate_cluster/methods/cluster/ng.py`
+
+The spectral implementation follows the Ng, Jordan, and Weiss style workflow:
+
+1. Build a Gaussian affinity matrix.
+2. Compute the normalized graph matrix.
+3. Extract the top eigenvector embedding.
+4. Row-normalize the embedding.
+5. Run K-means on the embedding.
+
+## Next-Day Target
+
+For each window, the target is the precipitation on the next day after the
+window ends:
+
+```text
+window: days t ... t + window_size - 1
+target: day t + window_size PRECIPITACAO_TOTAL
 ```
+
+This turns temporal windows into supervised samples for precipitation
+prediction.
+
+## Cluster-Specific LSTM Models
+
+After clustering, the experiment trains one LSTM model per cluster.
+
+Implementation:
+
+- `src/climate_cluster/models/lstm.py`
+- class: `LSTMPrecipitationPredictor`
+
+The experiment reshapes each flattened window into one LSTM timestep:
+
+```python
+X_lstm = X.reshape(X.shape[0], 1, X.shape[1])
+```
+
+For each cluster, the training loop:
+
+1. Selects train/validation/test samples assigned to that cluster.
+2. Builds an LSTM model with two LSTM layers, dropout, and dense layers.
+3. Trains with optional early stopping.
+4. Writes predictions back into aggregate train/validation/test arrays.
+5. Calculates cluster-level test metrics.
+
+The model predicts one value: next-day precipitation in millimeters.
+
+## Evaluation Outputs
+
+Each run writes into a timestamped folder under `outputs/`, for example:
+
+```text
+outputs/lstm_cluster_sweep_RS_A801_YYYYMMDD_HHMMSS/
+```
+
+Sweep-level files:
+
+- `sweep_results.csv`
+- `sweep_summary.txt`
+- `overleaf_table.txt`
+- `overleaf_cluster_metric_tables.txt`
+
+Each configuration folder contains:
+
+- `metrics_summary.csv`
+- `cluster_model_metrics.csv`
+- `test_predictions.csv`
+- `evaluation_report.txt`
+- `summary.txt`
+- one Jupyter notebook with tables and plots
+- prediction, residual, error, cluster-performance, and histogram plots
+
+Metrics include:
+
+- MSE
+- RMSE
+- MAE
+- RMSLE
+- R2
+- MAPE
+- zero-day and rainy-day metrics
+- per-cluster metrics
+
+Plot helpers live in:
+
+```text
+src/climate_cluster/plots/evaluation_plot_tools.py
+```
+
+## Running a Smaller Experiment
+
+The default sweep can be expensive. To test quickly, edit
+`experiments/lstm_cluster.py`:
+
+```python
+WINDOW_SIZES = [8]
+N_CLUSTERS_LIST = [3]
+N_SIGMA_VALUES = 1
+EPOCHS = 2
+VERBOSE_TRAINING = 1
+```
+
+Then run:
+
+```powershell
+.\.venv\Scripts\python.exe experiments\lstm_cluster.py
+```
+
+## CLI Clustering Pipeline
+
+For a simpler clustering-only workflow, use the console command configured in
+`pyproject.toml`:
+
+```powershell
+climate-cluster --state RS --station-id A801 --window-size 20 --clusters 3 --sigma 1.0
+```
+
+Or call the function directly:
+
+```python
+from climate_cluster.methods.cluster.cluster_pipeline import run_clustering_pipeline
+
+results = run_clustering_pipeline(
+    state="RS",
+    station_id="A801",
+    window_size=20,
+    n_clusters=3,
+    sigma=1.0,
+)
+```
+
+## Development Notes
+
+- Keep `.venv/`, `.matplotlib_cache/`, generated reports, and outputs out of
+  git.
+- Commit source files, docs, tests, `requirements.txt`, and `pyproject.toml`.
+- Run tests before committing:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+```
+
+## Main Modules
+
+| Purpose | Module |
+| --- | --- |
+| Load station data | `climate_cluster.config_data` |
+| Clean/load data internals | `climate_cluster.data` |
+| Sliding windows | `climate_cluster.methods.tools.sliding_windows` |
+| Sigma selection | `climate_cluster.methods.tools.sigma_choosing` |
+| Cluster feature matrix and dispatch | `climate_cluster.methods.cluster.cluster_pipeline` |
+| Spectral clustering | `climate_cluster.methods.cluster.ng` |
+| LSTM model | `climate_cluster.models.lstm` |
+| Metrics and reports | `climate_cluster.evaluation.metrics` |
+| Diagnostic plots | `climate_cluster.plots.evaluation_plot_tools` |
+| Main experiment | `experiments/lstm_cluster.py` |
