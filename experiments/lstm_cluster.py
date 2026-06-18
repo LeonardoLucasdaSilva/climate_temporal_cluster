@@ -40,7 +40,7 @@ from climate_cluster.plots import (
     plot_predictions_vs_actual,
     plot_residuals,
 )
-from climate_cluster.models.lstm_model import LSTMPrecipitationPredictor
+from climate_cluster.models.lstm import LSTMPrecipitationPredictor
 from climate_cluster.methods.cluster.cluster_pipeline import (
     PCA_VARIANCE_THRESHOLD,
     cluster_feature_matrix,
