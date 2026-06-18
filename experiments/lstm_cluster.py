@@ -33,19 +33,21 @@ from climate_cluster.evaluation.metrics import (
     calculate_regression_metrics,
     calculate_zero_precipitation_metrics,
     create_evaluation_report,
+)
+from climate_cluster.plots import (
     plot_cluster_performance,
     plot_error_by_magnitude,
     plot_predictions_vs_actual,
     plot_residuals,
 )
-from climate_cluster.pipeline.lstm import LSTMPrecipitationPredictor
-from clustering_protocol import (
+from climate_cluster.models.lstm_model import LSTMPrecipitationPredictor
+from climate_cluster.methods.cluster.cluster_pipeline import (
     PCA_VARIANCE_THRESHOLD,
-    calculate_sigma_values,
     cluster_feature_matrix,
     create_cluster_feature_matrix,
     numeric_feature_columns,
 )
+from climate_cluster.methods.tools.sigma_choosing import calculate_sigma_values
 
 
 # ==================== CONFIGURATION ====================
