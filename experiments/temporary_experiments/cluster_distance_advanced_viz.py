@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from climate_cluster.config import DATA_ROOT, OUTPUTS_DIR
 from climate_cluster.config_data import load_single_station
-from climate_cluster.features.window_features import create_windows
+from climate_cluster.methods.tools.sliding_windows import create_windows
 
 
 def create_feature_distribution_plots(windows, labels, df, window_size, high_precip_mask,
@@ -215,7 +215,7 @@ def main():
 
     # Create windows
     print(f"[2] Creating windows...")
-    windows, scaler = create_windows(df, window_size=window_size, normalize=True)
+    windows, (scaler, _pca) = create_windows(df, window_size=window_size, normalize=True)
     windows_flat = windows.reshape(windows.shape[0], -1)
 
     # Get feature names
