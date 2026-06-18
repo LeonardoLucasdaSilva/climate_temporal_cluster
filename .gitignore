@@ -136,6 +136,9 @@ dmypy.json
 *.sublime-workspace
 
 # Project-specific
+.matplotlib_cache/
+fontlist*.json
+
 # Data files - keep structure but ignore large CSV files
 data/inmet/**/*.csv
 data/inmet/**/*.CSV
