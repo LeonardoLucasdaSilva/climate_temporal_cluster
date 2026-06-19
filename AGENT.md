@@ -9,11 +9,12 @@ and cluster-specific LSTM precipitation models.
   - `config.py`: project paths such as `DATA_ROOT` and `OUTPUTS_DIR`.
   - `data/`: data loading, cleaning, and experiment output writers.
   - `methods/`: clustering pipelines, spectral clustering, sliding windows,
-    sigma selection, and dimensionality reduction helpers.
+    sigma selection, dimensionality reduction helpers, and the LSTM-cluster
+    pipeline.
   - `models/`: LSTM model code.
   - `evaluation/`: regression metrics, reports, and diagnostic plotting helpers.
-- `experiments/`: runnable experiment scripts and experiment notes.
-  - `lstm_cluster.py`: main LSTM-by-cluster sweep.
+- `experiments/`: experiment notes and older runnable scripts.
+  - Active LSTM-by-cluster sweep: `src/methods/lstm_cluster/pipeline.py`.
   - `temporary_experiments/`: older analysis scripts kept for review.
 - `tests/`: unit tests for loaders and window feature creation.
 - `data/`: local INMET data tree. Treat data files as local-only inputs.

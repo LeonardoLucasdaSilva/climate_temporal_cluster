@@ -4,7 +4,7 @@ This project studies Brazilian INMET daily climate data with a temporal
 clustering workflow and cluster-specific LSTM precipitation models.
 
 The main experiment is the LSTM+Cluster pipeline in
-`experiments/lstm_cluster.py`. It builds sliding windows from daily station
+`methods.lstm_cluster.pipeline`. It builds sliding windows from daily station
 data, clusters those windows with K-means or spectral clustering, trains one
 LSTM model per cluster, and writes metrics, predictions, plots, and
 LaTeX-ready summary tables.
@@ -18,12 +18,13 @@ settings point the play button at that environment.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+pip install -e .
 ```
 
 Run the main experiment from the project root:
 
 ```powershell
-.\.venv\Scripts\python.exe experiments\lstm_cluster.py
+lstm-cluster
 ```
 
 Run tests:
@@ -38,7 +39,6 @@ Run tests:
 climate_temporal_cluster/
 |-- data/                         # Raw INMET data files
 |-- experiments/
-|   |-- lstm_cluster.py            # Main LSTM+Cluster experiment
 |   |-- temporary_experiments/     # Older scripts kept for review
 |   `-- experiments.md
 |-- outputs/                       # Generated experiment outputs
@@ -52,6 +52,8 @@ climate_temporal_cluster/
 |   |   |-- cluster/
 |   |   |   |-- ng.py              # Spectral clustering implementation
 |   |   |   `-- cluster_pipeline.py
+|   |   |-- lstm_cluster/
+|   |   |   `-- pipeline.py        # Main LSTM+Cluster experiment
 |   |   `-- tools/
 |   |       |-- sliding_windows.py
 |   |       |-- sigma_choosing.py
@@ -69,7 +71,7 @@ climate_temporal_cluster/
 
 ## LSTM+Cluster Pipeline
 
-The pipeline is configured at the top of `experiments/lstm_cluster.py`.
+The pipeline is configured at the top of `src/methods/lstm_cluster/pipeline.py`.
 
 ```python
 STATE = "RS"
@@ -296,7 +298,7 @@ src/evaluation/evaluation_plot_tools.py
 ## Running a Smaller Experiment
 
 The default sweep can be expensive. To test quickly, edit
-`experiments/lstm_cluster.py`:
+`src/methods/lstm_cluster/pipeline.py`:
 
 ```python
 WINDOW_SIZES = [8]
@@ -309,7 +311,7 @@ VERBOSE_TRAINING = 1
 Then run:
 
 ```powershell
-.\.venv\Scripts\python.exe experiments\lstm_cluster.py
+lstm-cluster
 ```
 
 ## CLI Clustering Pipeline
@@ -359,4 +361,4 @@ results = run_clustering_pipeline(
 | LSTM model | `models.lstm` |
 | Metrics and reports | `evaluation.metrics` |
 | Diagnostic plots | `evaluation.evaluation_plot_tools` |
-| Main experiment | `experiments/lstm_cluster.py` |
+| Main experiment | `methods.lstm_cluster.pipeline` |
