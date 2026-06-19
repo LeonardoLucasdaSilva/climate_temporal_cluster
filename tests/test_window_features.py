@@ -35,10 +35,10 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test basic window creation."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.features.window_features")
+        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
         create_windows = window_features.create_windows
 
-        windows, scaler = create_windows(
+        windows, (scaler, _pca) = create_windows(
             self.df,
             window_size=4,
             columns=["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN"],
@@ -57,10 +57,10 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test normalized window creation."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.features.window_features")
+        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
         create_windows = window_features.create_windows
 
-        windows, scaler = create_windows(
+        windows, (scaler, _pca) = create_windows(
             self.df,
             window_size=4,
             columns=["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN"],
@@ -78,10 +78,10 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test with automatic column selection."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.features.window_features")
+        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
         create_windows = window_features.create_windows
 
-        windows, scaler = create_windows(
+        windows, (scaler, _pca) = create_windows(
             self.df,
             window_size=3,
             columns=None,  # Auto-select numeric columns
@@ -97,12 +97,12 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test converting windows to dataframe."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.features.window_features")
+        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
         create_windows = window_features.create_windows
         windows_to_dataframe = window_features.windows_to_dataframe
 
         cols = ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN"]
-        windows, scaler = create_windows(
+        windows, (scaler, _pca) = create_windows(
             self.df,
             window_size=4,
             columns=cols,
@@ -132,11 +132,11 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test different window sizes."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.features.window_features")
+        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
         create_windows = window_features.create_windows
 
         for ws in [2, 3, 5, 7]:
-            windows, _ = create_windows(
+            windows, (_scaler, _pca) = create_windows(
                 self.df,
                 window_size=ws,
                 columns=["TEMPERATURA_MAXIMA"],
@@ -149,7 +149,7 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test error when window size > data size."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.features.window_features")
+        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
         create_windows = window_features.create_windows
 
         with self.assertRaises(ValueError):
@@ -164,10 +164,10 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test flattening windows for ML algorithms."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.features.window_features")
+        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
         create_windows = window_features.create_windows
 
-        windows, _ = create_windows(
+        windows, (_scaler, _pca) = create_windows(
             self.df,
             window_size=4,
             columns=["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],

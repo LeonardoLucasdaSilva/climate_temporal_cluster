@@ -5,6 +5,8 @@ from typing import Dict, List
 
 import pandas as pd
 
+from climate_cluster.data.clean_data import normalize_decimal_columns
+
 DAILY_FILE_SUFFIX = "_daily.csv"
 
 
@@ -77,9 +79,6 @@ def load_station_daily_data(
     # Read CSV with semicolon delimiter
     df = pd.read_csv(file_path, delimiter=";", usecols=cols, na_values=[""])
 
-    # Fill NaN with 0
-    df = df.fillna(0)
-
     # Convert date column to datetime
     df["DATA"] = pd.to_datetime(df["DATA"], format="%Y-%m-%d", errors="coerce")
 
@@ -87,9 +86,8 @@ def load_station_daily_data(
     df = df.dropna(subset=["DATA"])
 
     # Convert string columns to numeric (handle commas as decimal separators)
-    numeric_cols = df.columns.difference(["DATA"])
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", "."), errors="coerce")
+    df = normalize_decimal_columns(df, exclude=("DATA",))
+    df = df.fillna(0)
 
     # Set date as index for daily grouping
     df.set_index("DATA", inplace=True)

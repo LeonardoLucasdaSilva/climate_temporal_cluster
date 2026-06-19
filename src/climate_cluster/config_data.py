@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from climate_cluster.data.load_inmet import load_station_daily_data
+from climate_cluster.data.load_data import load_station_daily_data
 
 
 def load_single_station(

@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from climate_cluster.config import DATA_ROOT, OUTPUTS_DIR
 from climate_cluster.config_data import load_single_station
-from climate_cluster.features.window_features import create_windows
+from climate_cluster.methods.tools.sliding_windows import create_windows
 from climate_cluster.clustering.ng import fit_predict
 
 
@@ -264,7 +264,7 @@ def main():
 
     # Step 3: Create windows and cluster
     print(f"\n[3] Creating windows (size={window_size}) and clustering...")
-    windows, scaler = create_windows(
+    windows, (scaler, _pca) = create_windows(
         df,
         window_size=window_size,
         normalize=True,

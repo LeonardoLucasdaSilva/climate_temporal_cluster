@@ -6,8 +6,14 @@ from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
+from climate_cluster.methods.tools.dimensionality_reduction_tools import (
+    determine_pca_components,
+    flatten_windows,
+    select_numeric_columns,
+)
 
 
 def determine_n_components(
@@ -37,9 +43,8 @@ def determine_n_components(
     if not 0 < variance_threshold < 1:
         raise ValueError(f"variance_threshold must be between 0 and 1, got {variance_threshold}")
 
-    # Select numeric columns if not specified
     if columns is None:
-        columns = [col for col in df.columns if col != "Data" and pd.api.types.is_numeric_dtype(df[col])]
+        columns = select_numeric_columns(df)
 
     if not columns:
         raise ValueError("No numeric columns found in dataframe")
@@ -62,16 +67,7 @@ def determine_n_components(
     for i in range(n_windows):
         windows_flat[i] = data[i : i + window_size].flatten()
 
-    # Fit PCA with all components to get variance ratios
-    max_components = min(windows_flat.shape)
-    pca_full = PCA(n_components=max_components)
-    pca_full.fit(windows_flat)
-
-    # Find minimum components to reach threshold
-    cumsum_var = np.cumsum(pca_full.explained_variance_ratio_)
-    n_components = int(np.argmax(cumsum_var >= variance_threshold) + 1)
-
-    return n_components
+    return determine_pca_components(windows_flat, variance_threshold)
 
 
 def create_windows(
@@ -123,9 +119,8 @@ def create_windows(
         ...     variance_threshold=0.90
         ... )
     """
-    # Select numeric columns if not specified
     if columns is None:
-        columns = [col for col in df.columns if col != "Data" and pd.api.types.is_numeric_dtype(df[col])]
+        columns = select_numeric_columns(df)
 
     if not columns:
         raise ValueError("No numeric columns found in dataframe")
@@ -154,23 +149,12 @@ def create_windows(
     # Apply PCA if n_components or variance_threshold is specified
     pca = None
     if variance_threshold is not None or n_components is not None:
-        # Flatten windows for PCA
-        windows_flat = windows.reshape(n_windows, window_size * len(columns))
+        windows_flat = flatten_windows(windows)
         original_dim = windows_flat.shape[1]
 
         # If variance_threshold is specified, determine n_components
         if variance_threshold is not None:
-            if not 0 < variance_threshold < 1:
-                raise ValueError(f"variance_threshold must be between 0 and 1, got {variance_threshold}")
-
-            # Fit PCA with all components to get variance ratios
-            max_components = min(windows_flat.shape)
-            pca_full = PCA(n_components=max_components)
-            pca_full.fit(windows_flat)
-
-            # Find minimum components to reach threshold
-            cumsum_var = np.cumsum(pca_full.explained_variance_ratio_)
-            n_components = np.argmax(cumsum_var >= variance_threshold) + 1
+            n_components = determine_pca_components(windows_flat, variance_threshold)
 
         # Fit and apply PCA with determined n_components
         pca = PCA(n_components=n_components)
