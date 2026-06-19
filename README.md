@@ -42,9 +42,8 @@ climate_temporal_cluster/
 |   |-- temporary_experiments/     # Older scripts kept for review
 |   `-- experiments.md
 |-- outputs/                       # Generated experiment outputs
-|-- src/climate_cluster/
+|-- src/
 |   |-- config.py                  # Project paths
-|   |-- config_data.py             # Single-station loading wrapper
 |   |-- data/
 |   |   |-- load_data.py           # INMET CSV loading
 |   |   |-- clean_data.py          # Data cleaning helpers
@@ -100,10 +99,10 @@ For each configuration, the experiment runs these stages:
 The project loads one INMET station at a time from `data/inmet`.
 
 ```python
-from climate_cluster.config import DATA_ROOT
-from climate_cluster.config_data import load_single_station
+from config import DATA_ROOT
+from data.load_data import load_station_daily_data
 
-df = load_single_station(
+df = load_station_daily_data(
     state="RS",
     station_id="A801",
     data_root=DATA_ROOT,
@@ -116,9 +115,9 @@ such as temperature, humidity, pressure, wind, radiation, and
 
 Implementation:
 
-- `src/climate_cluster/data/load_data.py`
-- `src/climate_cluster/data/clean_data.py`
-- `src/climate_cluster/config_data.py`
+- `src/data/load_data.py`
+- `src/data/clean_data.py`
+- `src/data/load_data.py`
 
 ## Sliding Windows
 
@@ -126,7 +125,7 @@ Sliding windows convert daily rows into temporal samples. Each sample contains
 `window_size` consecutive days and all selected feature columns.
 
 ```python
-from climate_cluster.methods.tools.sliding_windows import create_windows
+from methods.tools.sliding_windows import create_windows
 
 windows, (scaler, pca) = create_windows(
     df,
@@ -154,7 +153,7 @@ The LSTM+Cluster experiment uses
 2D `windows_flat` matrix for clustering and model input.
 
 ```python
-from climate_cluster.methods.cluster.cluster_pipeline import create_cluster_feature_matrix
+from methods.cluster.cluster_pipeline import create_cluster_feature_matrix
 
 windows, windows_flat, scaler, pca, feature_columns = create_cluster_feature_matrix(
     df,
@@ -171,12 +170,12 @@ parameter called `sigma`. The experiment can generate candidate sigma values
 from pairwise window distances:
 
 ```python
-from climate_cluster.methods.tools.sigma_choosing import calculate_sigma_values
+from methods.tools.sigma_choosing import calculate_sigma_values
 
 sigmas = calculate_sigma_values(df, n_values=5)
 ```
 
-The sigma logic lives in `src/climate_cluster/methods/tools/sigma_choosing.py`.
+The sigma logic lives in `src/methods/tools/sigma_choosing.py`.
 It contains:
 
 - `euclidian_distances`
@@ -187,10 +186,10 @@ It contains:
 ## Clustering
 
 Cluster dispatch lives in
-`src/climate_cluster/methods/cluster/cluster_pipeline.py`.
+`src/methods/cluster/cluster_pipeline.py`.
 
 ```python
-from climate_cluster.methods.cluster.cluster_pipeline import cluster_feature_matrix
+from methods.cluster.cluster_pipeline import cluster_feature_matrix
 
 labels = cluster_feature_matrix(
     windows_flat,
@@ -205,7 +204,7 @@ Supported algorithms:
 
 - `kmeans`: uses `sklearn.cluster.KMeans`
 - `spectral`: uses the local implementation in
-  `src/climate_cluster/methods/cluster/ng.py`
+  `src/methods/cluster/ng.py`
 
 The spectral implementation follows the Ng, Jordan, and Weiss style workflow:
 
@@ -234,7 +233,7 @@ After clustering, the experiment trains one LSTM model per cluster.
 
 Implementation:
 
-- `src/climate_cluster/models/lstm.py`
+- `src/models/lstm.py`
 - class: `LSTMPrecipitationPredictor`
 
 The experiment reshapes each flattened window into one LSTM timestep:
@@ -291,7 +290,7 @@ Metrics include:
 Plot helpers live in:
 
 ```text
-src/climate_cluster/evaluation/evaluation_plot_tools.py
+src/evaluation/evaluation_plot_tools.py
 ```
 
 ## Running a Smaller Experiment
@@ -325,7 +324,7 @@ climate-cluster --state RS --station-id A801 --window-size 20 --clusters 3 --sig
 Or call the function directly:
 
 ```python
-from climate_cluster.methods.cluster.cluster_pipeline import run_clustering_pipeline
+from methods.cluster.cluster_pipeline import run_clustering_pipeline
 
 results = run_clustering_pipeline(
     state="RS",
@@ -351,13 +350,13 @@ results = run_clustering_pipeline(
 
 | Purpose | Module |
 | --- | --- |
-| Load station data | `climate_cluster.config_data` |
-| Clean/load data internals | `climate_cluster.data` |
-| Sliding windows | `climate_cluster.methods.tools.sliding_windows` |
-| Sigma selection | `climate_cluster.methods.tools.sigma_choosing` |
-| Cluster feature matrix and dispatch | `climate_cluster.methods.cluster.cluster_pipeline` |
-| Spectral clustering | `climate_cluster.methods.cluster.ng` |
-| LSTM model | `climate_cluster.models.lstm` |
-| Metrics and reports | `climate_cluster.evaluation.metrics` |
-| Diagnostic plots | `climate_cluster.evaluation.evaluation_plot_tools` |
+| Load station data | `data.load_data` |
+| Clean/load data internals | `data` |
+| Sliding windows | `methods.tools.sliding_windows` |
+| Sigma selection | `methods.tools.sigma_choosing` |
+| Cluster feature matrix and dispatch | `methods.cluster.cluster_pipeline` |
+| Spectral clustering | `methods.cluster.ng` |
+| LSTM model | `models.lstm` |
+| Metrics and reports | `evaluation.metrics` |
+| Diagnostic plots | `evaluation.evaluation_plot_tools` |
 | Main experiment | `experiments/lstm_cluster.py` |
