@@ -8,8 +8,8 @@ import pandas as pd
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from climate_cluster.config import DATA_ROOT
-from climate_cluster.config_data import load_single_station
+from config import DATA_ROOT
+from data.load_data import load_station_daily_data
 
 
 def get_highest_precipitation_days(
@@ -31,7 +31,7 @@ def get_highest_precipitation_days(
         Includes all columns from the station data.
     """
     # Load the station data
-    df = load_single_station(
+    df = load_station_daily_data(
         state=state,
         station_id=station_id,
         data_root=data_root,

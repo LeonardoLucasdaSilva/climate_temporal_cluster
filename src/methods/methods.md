@@ -11,6 +11,6 @@ single experiment.
 Use these modules from experiments or pipelines, for example:
 
 ```python
-from climate_cluster.methods.cluster.ng import spectral_clustering
-from climate_cluster.methods.tools.sliding_windows import create_windows
+from methods.cluster.ng import spectral_clustering
+from methods.tools.sliding_windows import create_windows
 ```

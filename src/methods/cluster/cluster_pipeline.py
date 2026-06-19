@@ -9,10 +9,10 @@ import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
 
-from climate_cluster.config import DATA_ROOT
-from climate_cluster.config_data import load_single_station
-from climate_cluster.methods.cluster.ng import spectral_clustering
-from climate_cluster.methods.tools.sliding_windows import create_windows
+from config import DATA_ROOT
+from data.load_data import load_station_daily_data
+from methods.cluster.ng import spectral_clustering
+from methods.tools.sliding_windows import create_windows
 
 
 SUPPORTED_CLUSTERING_ALGORITHMS = ("kmeans", "spectral")
@@ -152,7 +152,7 @@ def run_clustering_pipeline(
         cluster labels.
     """
     print(f"Loading {state}/{station_id}...")
-    df = load_single_station(state=state, station_id=station_id, data_root=data_root)
+    df = load_station_daily_data(state=state, station_id=station_id, data_root=data_root)
     print(f"  Loaded {len(df)} days")
 
     print(f"Creating windows (size={window_size})...")

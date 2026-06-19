@@ -5,7 +5,7 @@ from typing import Dict, List
 
 import pandas as pd
 
-from climate_cluster.data.clean_data import normalize_decimal_columns
+from data.clean_data import normalize_decimal_columns
 
 DAILY_FILE_SUFFIX = "_daily.csv"
 

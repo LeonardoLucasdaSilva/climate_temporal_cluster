@@ -35,7 +35,7 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test basic window creation."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
+        window_features = importlib.import_module("methods.tools.sliding_windows")
         create_windows = window_features.create_windows
 
         windows, (scaler, _pca) = create_windows(
@@ -57,7 +57,7 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test normalized window creation."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
+        window_features = importlib.import_module("methods.tools.sliding_windows")
         create_windows = window_features.create_windows
 
         windows, (scaler, _pca) = create_windows(
@@ -78,7 +78,7 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test with automatic column selection."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
+        window_features = importlib.import_module("methods.tools.sliding_windows")
         create_windows = window_features.create_windows
 
         windows, (scaler, _pca) = create_windows(
@@ -97,7 +97,7 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test converting windows to dataframe."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
+        window_features = importlib.import_module("methods.tools.sliding_windows")
         create_windows = window_features.create_windows
         windows_to_dataframe = window_features.windows_to_dataframe
 
@@ -132,7 +132,7 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test different window sizes."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
+        window_features = importlib.import_module("methods.tools.sliding_windows")
         create_windows = window_features.create_windows
 
         for ws in [2, 3, 5, 7]:
@@ -149,7 +149,7 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test error when window size > data size."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
+        window_features = importlib.import_module("methods.tools.sliding_windows")
         create_windows = window_features.create_windows
 
         with self.assertRaises(ValueError):
@@ -164,7 +164,7 @@ class WindowFeaturesTest(unittest.TestCase):
         """Test flattening windows for ML algorithms."""
         import importlib
 
-        window_features = importlib.import_module("climate_cluster.methods.tools.sliding_windows")
+        window_features = importlib.import_module("methods.tools.sliding_windows")
         create_windows = window_features.create_windows
 
         windows, (_scaler, _pca) = create_windows(

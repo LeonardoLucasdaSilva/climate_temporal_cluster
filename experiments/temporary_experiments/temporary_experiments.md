@@ -1,8 +1,12 @@
 # Temporary Experiments
 
-This folder temporarily holds older experiment scripts that are not part of the
-main active workflow.
+The older experiment scripts were moved into `temporary_experiments/` so the
+root `experiments/` folder stays focused on the active `lstm_cluster.py`
+workflow.
 
-The files are preserved here so they can be reviewed and saved later without
-mixing them with the active `lstm_cluster.py` experiment.
+Review these scripts later and either:
+
+- keep useful analysis code by moving reusable functions into `src`;
+- convert one-off analyses into documented experiment scripts;
+- delete scripts that are no longer needed.
 

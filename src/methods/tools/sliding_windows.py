@@ -9,7 +9,7 @@ import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-from climate_cluster.methods.tools.dimensionality_reduction_tools import (
+from methods.tools.dimensionality_reduction_tools import (
     determine_pca_components,
     flatten_windows,
     select_numeric_columns,
@@ -36,7 +36,7 @@ def determine_n_components(
         Optimal number of components needed to retain the specified variance threshold
 
     Example:
-        >>> df = load_single_station(state='SP', station_id='A701', data_root=DATA_ROOT)
+        >>> df = load_station_daily_data(state='SP', station_id='A701', data_root=DATA_ROOT)
         >>> n_comp = determine_n_components(df, window_size=4, variance_threshold=0.90)
         >>> windows, (scaler, pca) = create_windows(df, window_size=4, n_components=n_comp)
     """
@@ -101,7 +101,7 @@ def create_windows(
         - pca: PCA object (for inverse transform), or None if n_components=None
 
     Example:
-        >>> df = load_single_station(state='SP', station_id='A701', data_root=DATA_ROOT)
+        >>> df = load_station_daily_data(state='SP', station_id='A701', data_root=DATA_ROOT)
         >>> # Method 1: Specify exact number of components
         >>> windows, (scaler, pca) = create_windows(
         ...     df,

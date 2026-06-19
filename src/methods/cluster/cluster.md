@@ -23,7 +23,7 @@ inside the last step of the spectral clustering implementation.
 Typical usage:
 
 ```python
-from climate_cluster.methods.cluster.cluster_pipeline import (
+from methods.cluster.cluster_pipeline import (
     cluster_feature_matrix,
     create_cluster_feature_matrix,
     numeric_feature_columns,

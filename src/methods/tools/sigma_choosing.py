@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from climate_cluster.methods.tools.sliding_windows import create_windows
+from methods.tools.sliding_windows import create_windows
 
 
 SIGMA_WINDOW_SIZE = 5

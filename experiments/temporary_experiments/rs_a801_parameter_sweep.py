@@ -23,14 +23,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from climate_cluster.config import DATA_ROOT, OUTPUTS_DIR
-from climate_cluster.config_data import load_single_station
-from climate_cluster.methods.cluster.cluster_pipeline import (
+from config import DATA_ROOT, OUTPUTS_DIR
+from data.load_data import load_station_daily_data
+from methods.cluster.cluster_pipeline import (
     PCA_VARIANCE_THRESHOLD,
     cluster_feature_matrix,
     create_cluster_feature_matrix,
 )
-from climate_cluster.methods.tools.sigma_choosing import calculate_sigma_values
+from methods.tools.sigma_choosing import calculate_sigma_values
 
 
 CLUSTERING_ALGORITHM = "spectral"  # Options: "kmeans", "spectral"
@@ -171,7 +171,7 @@ def main():
 
     # Load data once
     print(f"\n[1] Loading {state}/{station_id} station data...")
-    df_full = load_single_station(state=state, station_id=station_id, data_root=DATA_ROOT)
+    df_full = load_station_daily_data(state=state, station_id=station_id, data_root=DATA_ROOT)
     df = select_raw_data(
         df_full,
         max_days=MAX_RAW_DAYS,

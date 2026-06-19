@@ -19,10 +19,10 @@ import seaborn as sns
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from climate_cluster.config import DATA_ROOT, OUTPUTS_DIR
-from climate_cluster.config_data import load_single_station
-from climate_cluster.methods.tools.sliding_windows import create_windows
-from climate_cluster.clustering.ng import fit_predict
+from config import DATA_ROOT, OUTPUTS_DIR
+from data.load_data import load_station_daily_data
+from methods.tools.sliding_windows import create_windows
+from methods.cluster.ng import fit_predict
 
 
 def create_cluster_precipitation_graphs(df, windows, labels, n_clusters, output_dir):
@@ -251,7 +251,7 @@ def main():
 
     # Step 1: Load the station data
     print(f"\n[1] Loading {state}/{station_id} station data...")
-    df = load_single_station(state=state, station_id=station_id, data_root=DATA_ROOT)
+    df = load_station_daily_data(state=state, station_id=station_id, data_root=DATA_ROOT)
     print(f"    ✓ Loaded {len(df)} days of data")
     print(f"    Date range: {df['Data'].min()} to {df['Data'].max()}")
 

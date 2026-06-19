@@ -20,7 +20,7 @@ Key changes and clarifications implemented:
 The complete pipeline consists of 10 sequential steps:
 
 ### Step 1: Data Loading & Preparation
-- **File**: `climate_cluster/config_data.py`
+- **File**: `src/data/load_data.py`
 - **Input**: RS A801 station daily data from INMET
 - **Output**: DataFrame with all available climate features
 - **Key Statistics**:
@@ -29,7 +29,7 @@ The complete pipeline consists of 10 sequential steps:
   - Data quality: Cleaned daily aggregated data
 
 ### Step 2: Feature Extraction via Sliding Windows
-- **File**: `climate_cluster/features/window_features.py`
+- **File**: `src/methods/tools/sliding_windows.py`
 - **Method**: Create sliding windows of consecutive days
 - **Parameters**:
   - Window size: 15 days (configurable)
@@ -38,7 +38,7 @@ The complete pipeline consists of 10 sequential steps:
 - **Purpose**: Capture temporal dynamics of climate variables
 
 ### Step 3: Spectral Clustering
-- **File**: `climate_cluster/clustering/ng.py`
+- **File**: `src/methods/cluster/ng.py`
 - **Algorithm**: Normalized spectral clustering using Gaussian kernel
 - **Parameters**:
   - Number of clusters: 5 (configurable)
@@ -71,7 +71,7 @@ The complete pipeline consists of 10 sequential steps:
   2. Split validation set (10/90) from training+validation, keeping clusters balanced
 
 ### Step 6: LSTM Model Architecture
-- **File**: `climate_cluster/pipeline/lstm.py`
+- **File**: `src/models/lstm.py`
 - **Class**: `LSTMPrecipitationPredictor`
 - **Architecture**:
 
@@ -351,11 +351,11 @@ python lstm_cluster.py
 
 ### Core Modules Created/Used
 
-#### `src/climate_cluster/pipeline/lstm.py` (NEW)
+#### `src/pipeline/lstm.py` (NEW)
 - `LSTMPrecipitationPredictor`: Complete LSTM wrapper
 - `prepare_sequences()`: Data reshaping utility
 
-#### `src/climate_cluster/evaluation/metrics.py` (NEW)
+#### `src/evaluation/metrics.py` (NEW)
 - `calculate_regression_metrics()`: Standard metrics
 - `calculate_zero_precipitation_metrics()`: Specialized for dry days
 - `plot_predictions_vs_actual()`: Visualization
@@ -370,10 +370,10 @@ python lstm_cluster.py
 - `setup_styling()`: Visualization setup
 
 #### Existing Modules (Reused)
-- `climate_cluster.config`: Paths and configuration
-- `climate_cluster.config_data`: Station data loading
-- `climate_cluster.features.window_features`: Window creation
-- `climate_cluster.clustering.ng`: Spectral clustering
+- `config`: Paths and configuration
+- `data.load_data`: Station data loading
+- `methods.tools.sliding_windows`: Window creation
+- `methods.cluster.ng`: Spectral clustering
 
 ---
 
@@ -441,10 +441,10 @@ python lstm_cluster.py
 
 For questions about this experiment, refer to:
 - Main code: `experiments/lstm_cluster.py`
-- LSTM implementation: `src/climate_cluster/pipeline/lstm.py`
-- Evaluation functions: `src/climate_cluster/evaluation/metrics.py`
-- Clustering: `src/climate_cluster/clustering/ng.py`
-- Features: `src/climate_cluster/features/window_features.py`
+- LSTM implementation: `src/pipeline/lstm.py`
+- Evaluation functions: `src/evaluation/metrics.py`
+- Clustering: `src/clustering/ng.py`
+- Features: `src/methods/tools/sliding_windows.py`
 
 ---
 
