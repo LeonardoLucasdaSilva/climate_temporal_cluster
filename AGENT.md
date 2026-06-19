@@ -6,15 +6,16 @@ This project studies Brazilian INMET daily climate data with temporal clustering
 and cluster-specific LSTM precipitation models.
 
 - `src/`: importable project code.
-  - `config.py`: project paths such as `DATA_ROOT` and `OUTPUTS_DIR`.
+  - `config.py`: project paths and lightweight output-config loading helpers.
   - `data/`: data loading, cleaning, and experiment output writers.
   - `methods/`: clustering pipelines, spectral clustering, sliding windows,
     sigma selection, dimensionality reduction helpers, and the LSTM-cluster
-    pipeline.
+    runner/pipeline.
   - `models/`: LSTM model code.
   - `evaluation/`: regression metrics, reports, and diagnostic plotting helpers.
 - `experiments/`: experiment notes and older runnable scripts.
-  - Active LSTM-by-cluster sweep: `src/methods/lstm_cluster/pipeline.py`.
+  - Active LSTM-by-cluster sweep runner:
+    `src/methods/lstm_cluster/run_experiment.py`.
   - `temporary_experiments/`: older analysis scripts kept for review.
 - `tests/`: unit tests for loaders and window feature creation.
 - `data/`: local INMET data tree. Treat data files as local-only inputs.
@@ -25,6 +26,17 @@ and cluster-specific LSTM precipitation models.
 
 ## Coding Conventions
 
+- At the start of each new prompt, check whether `AGENT.md` and `README.md`
+  need updates for the requested change. If they do, update them in the same
+  task.
+- Each folder should have at most one documentation markdown file, named after
+  the folder itself, such as `data.md` in `data/` or `lstm_cluster.md` in
+  `lstm_cluster/`. When a task touches a folder, check that folder's markdown
+  file and update it if the change affects the documented structure or behavior.
+- For each code-change request, sweep the affected area for duplicated
+  functions. If duplicates exist, keep the implementation in the most suitable
+  module. If duplicates are in the same file, keep the function with the
+  clearest and most accurate name.
 - Prefer small, focused modules under `src/`; keep experiment scripts compact.
 - Keep file-writing/report-generation helpers in `src/data/`, not embedded in
   experiment scripts.
