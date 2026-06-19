@@ -2,30 +2,33 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from config import DATA_ROOT, load_output_config, output_root_from_config
 from methods.lstm_cluster.pipeline import run_experiment
 
 
-# Experiment variables
+# Station and data
 STATE = "RS"
 STATION_ID = "A801"
 
+# Clustering sweep
 WINDOW_SIZES = [8]
 N_CLUSTERS_LIST = [3]
 CLUSTERING_ALGORITHM = "spectral"
 N_SIGMA_VALUES = 5
 USE_ALL_FEATURES = True
 
+# Metrics exported to compact comparison tables
 QUANTITATIVE_METRICS = ["MSE"]
 
+# Model hyperparameters
 LSTM_UNITS = 64
 LSTM_UNITS_2 = 32
 DROPOUT_RATE = 0.2
 LEARNING_RATE = 0.001
 
+# Training settings
 EPOCHS = 50
 BATCH_SIZE = 32
 EARLY_STOPPING = True
@@ -33,10 +36,12 @@ PATIENCE = 10
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True
 
+# Train/validation/test split
 TRAIN_RATIO = 0.6
 VAL_RATIO = 0.1
 RANDOM_STATE = 42
 
+# Output settings
 OUTPUT_CONFIG = Path(__file__).with_name("config_output.yaml")
 
 
