@@ -17,8 +17,8 @@ and experiments.
 Typical usage:
 
 ```python
-from climate_cluster.methods.tools.sliding_windows import create_windows, windows_to_dataframe
-from climate_cluster.methods.tools.sigma_choosing import (
+from methods.tools.sliding_windows import create_windows, windows_to_dataframe
+from methods.tools.sigma_choosing import (
     calculate_sigma_values,
     euclidian_distances,
     take_sigma,

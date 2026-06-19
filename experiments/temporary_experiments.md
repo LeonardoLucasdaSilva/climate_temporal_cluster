@@ -6,7 +6,7 @@ workflow.
 
 Review these scripts later and either:
 
-- keep useful analysis code by moving reusable functions into `src/climate_cluster`;
+- keep useful analysis code by moving reusable functions into `src`;
 - convert one-off analyses into documented experiment scripts;
 - delete scripts that are no longer needed.
 

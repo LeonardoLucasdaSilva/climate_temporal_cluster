@@ -11,7 +11,7 @@ It is separate from the root `data/` directory, which stores raw INMET files.
 Typical usage:
 
 ```python
-from climate_cluster.data.load_data import load_station_daily_data
+from data.load_data import load_station_daily_data
 
 df = load_station_daily_data("RS", "A801", data_root)
 ```

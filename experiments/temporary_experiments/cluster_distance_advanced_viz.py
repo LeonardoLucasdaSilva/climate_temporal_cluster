@@ -16,9 +16,9 @@ import seaborn as sns
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from climate_cluster.config import DATA_ROOT, OUTPUTS_DIR
-from climate_cluster.config_data import load_single_station
-from climate_cluster.methods.tools.sliding_windows import create_windows
+from config import DATA_ROOT, OUTPUTS_DIR
+from data.load_data import load_station_daily_data
+from methods.tools.sliding_windows import create_windows
 
 
 def create_feature_distribution_plots(windows, labels, df, window_size, high_precip_mask,
@@ -207,7 +207,7 @@ def main():
 
     # Load data
     print(f"\n[1] Loading data...")
-    df = load_single_station(state=state, station_id=station_id, data_root=DATA_ROOT)
+    df = load_station_daily_data(state=state, station_id=station_id, data_root=DATA_ROOT)
 
     # Determine threshold
     nonzero_precip = df[df['PRECIPITACAO_TOTAL'] > 0]['PRECIPITACAO_TOTAL']

@@ -14,9 +14,9 @@ print("=" * 80)
 
 try:
     print("\n[1/5] Testing imports...")
-    from climate_cluster.config import DATA_ROOT
-    from climate_cluster.config_data import load_single_station
-    from climate_cluster.features.window_features import (
+    from config import DATA_ROOT
+    from data.load_data import load_station_daily_data
+    from methods.tools.sliding_windows import (
         create_normalized_windows,
         create_windows,
         windows_to_dataframe,
@@ -28,7 +28,7 @@ try:
     print(f"✓ Exists: {DATA_ROOT.exists()}")
 
     print("\n[3/5] Loading sample station...")
-    df = load_single_station(state="SP", station_id="A701", data_root=DATA_ROOT)
+    df = load_station_daily_data(state="SP", station_id="A701", data_root=DATA_ROOT)
     print(f"✓ Loaded {len(df)} days")
     print(f"✓ Columns: {list(df.columns)[:5]}...")
 
@@ -57,7 +57,7 @@ try:
     print("""
 Your pipeline is ready to use:
 
-1. Load data:  load_single_station(state, station_id, data_root)
+1. Load data:  load_station_daily_data(state, station_id, data_root)
 2. Windows:    create_normalized_windows(df, window_size, columns)
 3. Flatten:    windows.reshape(windows.shape[0], -1)
 4. Cluster:    your_algorithm(windows_flat)

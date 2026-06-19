@@ -19,8 +19,8 @@ class SingleStationLoadTest(unittest.TestCase):
         """Test loading a single station with daily data."""
         import importlib
 
-        config_data = importlib.import_module("climate_cluster.config_data")
-        load_single_station = config_data.load_single_station
+        load_data = importlib.import_module("data.load_data")
+        load_station_daily_data = load_data.load_station_daily_data
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -82,7 +82,7 @@ class SingleStationLoadTest(unittest.TestCase):
                 )
 
             # Load the station
-            df = load_single_station(
+            df = load_station_daily_data(
                 state="TO",
                 station_id="A999",
                 data_root=data_root,
@@ -100,8 +100,8 @@ class SingleStationLoadTest(unittest.TestCase):
         """Test loading with custom columns."""
         import importlib
 
-        config_data = importlib.import_module("climate_cluster.config_data")
-        load_single_station = config_data.load_single_station
+        load_data = importlib.import_module("data.load_data")
+        load_station_daily_data = load_data.load_station_daily_data
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -122,7 +122,7 @@ class SingleStationLoadTest(unittest.TestCase):
                 )
                 writer.writerow(["2025-02-01", "30", "5.5", "0.8"])
 
-            df = load_single_station(
+            df = load_station_daily_data(
                 state="SP",
                 station_id="A001",
                 data_root=data_root,
