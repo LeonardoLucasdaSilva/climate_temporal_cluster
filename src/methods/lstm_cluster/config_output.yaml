@@ -1,0 +1,9 @@
+# Output settings for run_experiment.py.
+
+# Relative paths are resolved from the project root.
+output_root: outputs
+
+# Leave empty to create a timestamped sweep folder.
+sweep_name:
+sweep_name_prefix: lstm_cluster_sweep
+timestamp_format: "%Y%m%d_%H%M%S"
