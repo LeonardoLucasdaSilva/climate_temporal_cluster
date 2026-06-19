@@ -55,6 +55,7 @@ climate_temporal_cluster/
 |   |   |   |-- run_experiment.py  # Main LSTM+Cluster runner
 |   |   |   |-- config_output.yaml # Output settings
 |   |   |   |-- console.py         # Console output helpers
+|   |   |   |-- lstm_cluster.md    # Folder documentation
 |   |   |   `-- pipeline.py        # Pipeline functions
 |   |   `-- tools/
 |   |       |-- sliding_windows.py
