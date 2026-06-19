@@ -43,6 +43,7 @@ def create_cluster_feature_matrix(
     columns: list[str] | None = None,
     normalize: bool = True,
     variance_threshold: float | None = PCA_VARIANCE_THRESHOLD,
+    verbose: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, object, object, list[str]]:
     """Create window features in the format expected by clustering algorithms.
 
@@ -54,6 +55,7 @@ def create_cluster_feature_matrix(
         normalize: Whether to standardize feature columns before windowing.
         variance_threshold: PCA explained-variance threshold passed to
             `create_windows`.
+        verbose: Whether to print dimensionality reduction details.
 
     Returns:
         Tuple containing:
@@ -70,6 +72,7 @@ def create_cluster_feature_matrix(
         columns=feature_columns,
         normalize=normalize,
         variance_threshold=variance_threshold,
+        verbose=verbose,
     )
 
     if windows.ndim == 3:

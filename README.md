@@ -3,11 +3,10 @@
 This project studies Brazilian INMET daily climate data with a temporal
 clustering workflow and cluster-specific LSTM precipitation models.
 
-The main experiment is the LSTM+Cluster pipeline in
-`experiments/lstm_cluster.py`. It builds sliding windows from daily station
-data, clusters those windows with K-means or spectral clustering, trains one
-LSTM model per cluster, and writes metrics, predictions, plots, and
-LaTeX-ready summary tables.
+The main experiment is configured in `methods.lstm_cluster.run_experiment` and
+executed by `methods.lstm_cluster.pipeline`. It builds sliding windows from
+daily station data, clusters those windows, trains one LSTM model per cluster,
+and writes metrics, predictions, plots, and LaTeX-ready summary tables.
 
 ## Quick Start
 
@@ -18,12 +17,13 @@ settings point the play button at that environment.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+pip install -e .
 ```
 
 Run the main experiment from the project root:
 
 ```powershell
-.\.venv\Scripts\python.exe experiments\lstm_cluster.py
+lstm-cluster
 ```
 
 Run tests:
@@ -38,12 +38,11 @@ Run tests:
 climate_temporal_cluster/
 |-- data/                         # Raw INMET data files
 |-- experiments/
-|   |-- lstm_cluster.py            # Main LSTM+Cluster experiment
 |   |-- temporary_experiments/     # Older scripts kept for review
 |   `-- experiments.md
 |-- outputs/                       # Generated experiment outputs
 |-- src/
-|   |-- config.py                  # Project paths
+|   |-- config.py                  # Project paths and output config helpers
 |   |-- data/
 |   |   |-- load_data.py           # INMET CSV loading
 |   |   |-- clean_data.py          # Data cleaning helpers
@@ -52,6 +51,12 @@ climate_temporal_cluster/
 |   |   |-- cluster/
 |   |   |   |-- ng.py              # Spectral clustering implementation
 |   |   |   `-- cluster_pipeline.py
+|   |   |-- lstm_cluster/
+|   |   |   |-- run_experiment.py  # Main LSTM+Cluster runner
+|   |   |   |-- config_output.yaml # Output settings
+|   |   |   |-- console.py         # Console output helpers
+|   |   |   |-- lstm_cluster.md    # Folder documentation
+|   |   |   `-- pipeline.py        # Pipeline functions
 |   |   `-- tools/
 |   |       |-- sliding_windows.py
 |   |       |-- sigma_choosing.py
@@ -69,7 +74,8 @@ climate_temporal_cluster/
 
 ## LSTM+Cluster Pipeline
 
-The pipeline is configured at the top of `experiments/lstm_cluster.py`.
+The experiment is configured at the top of
+`src/methods/lstm_cluster/run_experiment.py`.
 
 ```python
 STATE = "RS"
@@ -78,6 +84,7 @@ WINDOW_SIZES = [8, 12, 16, 20, 24, 28]
 N_CLUSTERS_LIST = [3, 4, 5]
 CLUSTERING_ALGORITHM = "spectral"  # or "kmeans"
 N_SIGMA_VALUES = 5
+SHOW_CONSOLE_INFO = True
 ```
 
 For each configuration, the experiment runs these stages:
@@ -117,7 +124,7 @@ Implementation:
 
 - `src/data/load_data.py`
 - `src/data/clean_data.py`
-- `src/data/load_data.py`
+- `src/config.py`
 
 ## Sliding Windows
 
@@ -296,7 +303,7 @@ src/evaluation/evaluation_plot_tools.py
 ## Running a Smaller Experiment
 
 The default sweep can be expensive. To test quickly, edit
-`experiments/lstm_cluster.py`:
+`src/methods/lstm_cluster/run_experiment.py`:
 
 ```python
 WINDOW_SIZES = [8]
@@ -304,12 +311,18 @@ N_CLUSTERS_LIST = [3]
 N_SIGMA_VALUES = 1
 EPOCHS = 2
 VERBOSE_TRAINING = 1
+SHOW_CONSOLE_INFO = True
 ```
+
+To silence pipeline progress messages and model-training output, set
+`SHOW_CONSOLE_INFO = False` in `run_experiment.py`. If using the root launcher,
+the same behavior can be controlled by `SHOW_CONSOLE_INFO` in
+`run_experiments.py`.
 
 Then run:
 
 ```powershell
-.\.venv\Scripts\python.exe experiments\lstm_cluster.py
+lstm-cluster
 ```
 
 ## CLI Clustering Pipeline
@@ -359,4 +372,5 @@ results = run_clustering_pipeline(
 | LSTM model | `models.lstm` |
 | Metrics and reports | `evaluation.metrics` |
 | Diagnostic plots | `evaluation.evaluation_plot_tools` |
-| Main experiment | `experiments/lstm_cluster.py` |
+| Main experiment runner | `methods.lstm_cluster.run_experiment` |
+| Main experiment pipeline | `methods.lstm_cluster.pipeline` |

@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 climate-cluster = "methods.cluster.cluster_pipeline:main"
+lstm-cluster = "methods.lstm_cluster.run_experiment:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -23,4 +24,7 @@ py-modules = ["config"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"methods.lstm_cluster" = ["*.yaml", "*.md"]
 
