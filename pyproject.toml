@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 climate-cluster = "methods.cluster.cluster_pipeline:main"
+lstm-cluster = "methods.lstm_cluster.pipeline:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

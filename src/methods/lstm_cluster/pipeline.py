@@ -11,7 +11,6 @@ copied directly into Overleaf.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,10 +20,6 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from sklearn.model_selection import train_test_split
-
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import DATA_ROOT, OUTPUTS_DIR
 from data.load_data import load_station_daily_data

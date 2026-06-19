@@ -223,7 +223,7 @@ windows.shape = (n_windows, window_size, n_features)
 
 ## Configuration Parameters
 
-### Easily Configurable in `lstm_cluster.py`
+### Easily Configurable in `src/methods/lstm_cluster/pipeline.py`
 
 ```python
 # Station
@@ -293,8 +293,7 @@ outputs/lstm_cluster_RS_A801_w15_k5/
 
 ### Execute the Experiment
 ```bash
-cd experiments
-python lstm_cluster.py
+lstm-cluster
 ```
 
 ### Expected Runtime
@@ -351,7 +350,7 @@ python lstm_cluster.py
 
 ### Core Modules Created/Used
 
-#### `src/pipeline/lstm.py` (NEW)
+#### `src/models/lstm.py`
 - `LSTMPrecipitationPredictor`: Complete LSTM wrapper
 - `prepare_sequences()`: Data reshaping utility
 
@@ -364,7 +363,7 @@ python lstm_cluster.py
 - `plot_cluster_performance()`: Per-cluster metrics
 - `create_evaluation_report()`: Text report generation
 
-#### `experiments/lstm_cluster.py` (MAIN SCRIPT)
+#### `src/methods/lstm_cluster/pipeline.py`
 - `main()`: Orchestrates entire pipeline
 - `split_by_cluster()`: Stratified data splitting
 - `setup_styling()`: Visualization setup
@@ -440,10 +439,10 @@ python lstm_cluster.py
 ## Contact & Support
 
 For questions about this experiment, refer to:
-- Main code: `experiments/lstm_cluster.py`
-- LSTM implementation: `src/pipeline/lstm.py`
+- Main code: `src/methods/lstm_cluster/pipeline.py`
+- LSTM implementation: `src/models/lstm.py`
 - Evaluation functions: `src/evaluation/metrics.py`
-- Clustering: `src/clustering/ng.py`
+- Clustering: `src/methods/cluster/ng.py`
 - Features: `src/methods/tools/sliding_windows.py`
 
 ---
