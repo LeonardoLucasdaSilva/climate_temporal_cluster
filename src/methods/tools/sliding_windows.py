@@ -16,60 +16,6 @@ from methods.tools.dimensionality_reduction_tools import (
 )
 
 
-def determine_n_components(
-    df: pd.DataFrame,
-    window_size: int = 4,
-    columns: List[str] | None = None,
-    normalize: bool = True,
-    variance_threshold: float = 0.90,
-) -> int:
-    """Determine optimal number of PCA components based on variance threshold.
-
-    Args:
-        df: DataFrame with daily climate data
-        window_size: Number of consecutive days per sample
-        columns: Columns to include. If None, uses all numeric columns except 'Data'
-        normalize: If True, normalize data before PCA
-        variance_threshold: Fraction of variance to retain (e.g., 0.90 for 90%). Must be between 0 and 1.
-
-    Returns:
-        Optimal number of components needed to retain the specified variance threshold
-
-    Example:
-        >>> df = load_station_daily_data(state='SP', station_id='A701', data_root=DATA_ROOT)
-        >>> n_comp = determine_n_components(df, window_size=4, variance_threshold=0.90)
-        >>> windows, (scaler, pca) = create_windows(df, window_size=4, n_components=n_comp)
-    """
-    if not 0 < variance_threshold < 1:
-        raise ValueError(f"variance_threshold must be between 0 and 1, got {variance_threshold}")
-
-    if columns is None:
-        columns = select_numeric_columns(df)
-
-    if not columns:
-        raise ValueError("No numeric columns found in dataframe")
-
-    # Extract the data
-    data = df[columns].values
-
-    if len(data) < window_size:
-        raise ValueError(f"DataFrame has {len(data)} rows but window_size is {window_size}")
-
-    # Normalize if requested
-    if normalize:
-        scaler = StandardScaler()
-        data = scaler.fit_transform(data)
-
-    # Create sliding windows and flatten
-    n_windows = len(data) - window_size + 1
-    windows_flat = np.zeros((n_windows, window_size * len(columns)))
-
-    for i in range(n_windows):
-        windows_flat[i] = data[i : i + window_size].flatten()
-
-    return determine_pca_components(windows_flat, variance_threshold)
-
-
 def create_windows(
     df: pd.DataFrame,
     window_size: int = 4,

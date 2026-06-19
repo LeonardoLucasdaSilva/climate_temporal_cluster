@@ -1,6 +1,7 @@
 """Reusable preprocessing tools."""
 
 from methods.tools.dimensionality_reduction_tools import (
+    determine_n_components,
     fit_pca_by_variance,
     flatten_windows,
     select_numeric_columns,
@@ -16,6 +17,7 @@ from methods.tools.sigma_choosing import (
 __all__ = [
     "create_windows",
     "calculate_sigma_values",
+    "determine_n_components",
     "euclidian_distances",
     "fit_pca_by_variance",
     "flatten_windows",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 
 
 def select_numeric_columns(
@@ -43,6 +44,38 @@ def determine_pca_components(
     pca_full.fit(features)
     cumulative_variance = np.cumsum(pca_full.explained_variance_ratio_)
     return int(np.argmax(cumulative_variance >= variance_threshold) + 1)
+
+
+def determine_n_components(
+    df: pd.DataFrame,
+    window_size: int = 4,
+    columns: list[str] | None = None,
+    normalize: bool = True,
+    variance_threshold: float = 0.90,
+) -> int:
+    """Determine the PCA component count for flattened sliding windows."""
+    if columns is None:
+        columns = select_numeric_columns(df)
+
+    if not columns:
+        raise ValueError("No numeric columns found in dataframe")
+
+    data = df[columns].values
+
+    if len(data) < window_size:
+        raise ValueError(f"DataFrame has {len(data)} rows but window_size is {window_size}")
+
+    if normalize:
+        scaler = StandardScaler()
+        data = scaler.fit_transform(data)
+
+    n_windows = len(data) - window_size + 1
+    windows_flat = np.zeros((n_windows, window_size * len(columns)))
+
+    for i in range(n_windows):
+        windows_flat[i] = data[i : i + window_size].flatten()
+
+    return determine_pca_components(windows_flat, variance_threshold)
 
 
 def fit_pca_by_variance(
