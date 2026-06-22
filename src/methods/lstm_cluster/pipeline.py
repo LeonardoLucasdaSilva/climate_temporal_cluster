@@ -24,6 +24,7 @@ from methods.cluster.cluster_pipeline import (
     numeric_feature_columns,
 )
 from methods.lstm_cluster.console import print_info, print_section
+from methods.lstm_cluster.report import generate_config_report
 from methods.tools.sigma_choosing import calculate_sigma_values
 
 
@@ -369,6 +370,10 @@ def run_configuration(
         station_id=config.station_id,
         pca_variance_threshold=PCA_VARIANCE_THRESHOLD,
     )
+    tex_path, pdf_path = generate_config_report(output_dir, config)
+    print_info(f"  Report: {tex_path.name}", show_console_info)
+    if pdf_path is not None:
+        print_info(f"  Report PDF: {pdf_path.name}", show_console_info)
     print_info(
         f"  Test metrics: RMSE={result['test_rmse']:.4f}, "
         f"MAE={result['test_mae']:.4f}, R2={result['test_r2']:.4f}",
