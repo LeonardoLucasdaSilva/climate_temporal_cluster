@@ -190,7 +190,7 @@ def metrics_table(csv_path: Path) -> str:
     if not csv_path.exists():
         return ""
     df = pd.read_csv(csv_path)
-    wanted = [column for column in ("split", "MSE", "RMSE", "MAE", "R2") if column in df.columns]
+    wanted = [column for column in ("Split", "MSE", "RMSE", "MAE", "R2") if column in df.columns]
     return dataframe_table(df[wanted], "General Metrics") if wanted else ""
 
 
@@ -199,7 +199,7 @@ def cluster_metrics_table(csv_path: Path) -> str:
     if not csv_path.exists():
         return ""
     df = pd.read_csv(csv_path)
-    wanted = [column for column in ("cluster", "MSE", "RMSE", "MAE", "R2") if column in df.columns]
+    wanted = [column for column in ("Cluster", "MSE", "RMSE", "MAE", "R2") if column in df.columns]
     return dataframe_table(df[wanted], "Cluster Metrics") if wanted else ""
 
 
