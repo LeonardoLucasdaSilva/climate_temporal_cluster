@@ -7,9 +7,10 @@ This document details a complete pipeline to predict next-day precipitation for 
 Key changes and clarifications implemented:
 - PCA is applied before clustering (variance_threshold=0.95), making dimensionality reduction explicit and configurable.
 - All numeric features are used by default, but the code allows easy replacement with a subset.
-- Train/Validation/Test final proportions are 70% / 10% / 30% with stratification by cluster.
+- Train/Validation/Test final proportions are 60% / 10% / 30% with stratification by cluster.
 - One LSTM model is trained per cluster; predictions are aggregated across clusters for global metrics and plots.
-- Comprehensive evaluation includes regression metrics and per-cluster performance with dedicated plots and reports.
+- Comprehensive evaluation includes regression metrics, per-cluster performance,
+  input precipitation distribution plots, and per-configuration LaTeX reports.
 
 **Main Goal**: Leverage temporal weather patterns (via PCA + clustering) and cluster-specific LSTM models to improve precipitation forecasting accuracy.
 
@@ -63,12 +64,12 @@ The complete pipeline consists of 10 sequential steps:
 ### Step 5: Data Stratification & Splitting
 - **Strategy**: Stratified random split maintaining cluster distribution
 - **Ratios**:
-  - Training: 70% (train_ratio × (1 - val_ratio))
-  - Validation: 10% (remaining 20% split)
-  - Test: 20%
+  - Training: 60%
+  - Validation: 10%
+  - Test: 30%
 - **Implementation**: Two-stage stratified split
-  1. Split test set (20%) from full data, keeping clusters balanced
-  2. Split validation set (10/90) from training+validation, keeping clusters balanced
+  1. Split test set from full data, keeping clusters balanced when possible
+  2. Split validation set from training+validation, keeping clusters balanced when possible
 
 ### Step 6: LSTM Model Architecture
 - **File**: `src/models/lstm.py`
@@ -117,21 +118,29 @@ Dense(1, activation='linear')  ← Precipitation prediction
 - **Evaluation Metrics** (see next section)
 
 ### Step 9: Comprehensive Visualization
-- **6 Key Plots** generated and saved:
+- **Diagnostic plots** generated and saved:
   1. Training history (loss and MAE curves)
   2. Predictions vs actual values (time series + scatter)
   3. Residual analysis (temporal + distribution)
   4. Error by precipitation magnitude (10 bins)
   5. Performance metrics by cluster (MAE, RMSE)
   6. Cluster distribution in test set
+  7. Test precipitation distribution by cluster
+  8. Input-window next-day precipitation distribution by cluster
+  9. Per-cluster actual, predicted, and residual histograms
 
 ### Step 10: Results & Reporting
 - **Output Files**:
   - `evaluation_report.txt`: Detailed quantitative analysis
-  - `metrics.csv`: Train/Val/Test metrics table
+  - `metrics_summary.csv`: Train/Val/Test metrics table
+  - `cluster_model_metrics.csv`: Per-cluster test metrics
   - `test_predictions.csv`: Predictions with residuals and cluster assignments
-  - `experiment_config.txt`: Full experiment configuration
-  - 6 PNG plots with high resolution (300 dpi)
+  - `input_next_day_precipitation_by_cluster.csv`: Next-day precipitation target
+    assigned to every clustered input window
+  - `summary.txt`: Full experiment configuration and compact metrics
+  - `experiment_report.tex`: LaTeX report for the configuration
+  - `experiment_report.pdf`: PDF report when a local LaTeX compiler is available
+  - PNG plots with resolution controlled by `config_output.yaml`
 
 ---
 
@@ -223,7 +232,7 @@ windows.shape = (n_windows, window_size, n_features)
 
 ## Configuration Parameters
 
-### Easily Configurable in `src/methods/lstm_cluster/pipeline.py`
+### Easily Configurable in `src/methods/lstm_cluster/run_experiment.py`
 
 ```python
 # Station
@@ -249,10 +258,13 @@ EARLY_STOPPING = True     # Stop if no improvement
 PATIENCE = 10             # Epochs to wait
 
 # Split
-TRAIN_RATIO = 0.7
+TRAIN_RATIO = 0.6
 VAL_RATIO = 0.1
-TEST_RATIO = 0.2
+# Test ratio is computed as 1 - TRAIN_RATIO - VAL_RATIO
 ```
+
+Output folder naming and shared plotting defaults are configured in
+`src/methods/lstm_cluster/config_output.yaml`.
 
 ### Customization Ideas
 1. **Change clustering approach**: Modify `spectral_clustering()` call
@@ -266,17 +278,32 @@ TEST_RATIO = 0.2
 ## Output Directory Structure
 
 ```
-outputs/lstm_cluster_RS_A801_w15_k5/
-├── 01_training_history.png           # Loss and MAE curves
-├── 02_predictions_vs_actual.png      # Time series + scatter plot
-├── 03_residuals_analysis.png         # Residual temporal + histogram
-├── 04_error_by_magnitude.png         # MAE/RMSE by precip bin
-├── 05_cluster_performance.png        # Per-cluster metrics
-├── 06_cluster_distribution.png       # Test set cluster counts
-├── evaluation_report.txt             # Comprehensive text report
-├── metrics.csv                       # Train/Val/Test metrics table
-├── test_predictions.csv              # Predictions with residuals
-└── experiment_config.txt             # Full configuration used
+outputs/lstm_cluster_sweep_RS_A801_<timestamp>/
+|-- sweep_results.csv
+|-- sweep_summary.txt
+|-- overleaf_table.txt
+|-- overleaf_cluster_metric_tables.txt
+`-- RS_A801_w08_k03_spectral_sigma_0p01/
+    |-- 01_training_history_cluster_<cluster>.png
+    |-- 02_predictions_vs_actual.png
+    |-- 02_predictions_timeseries_split_<n>_of_04.png
+    |-- 03_residuals_analysis.png
+    |-- 04_error_by_magnitude.png
+    |-- 05_cluster_performance.png
+    |-- 06_cluster_distribution.png
+    |-- 07_precipitation_distribution_by_cluster.png
+    |-- 08_input_precipitation_distribution_by_cluster.png
+    |-- cluster_precipitation_histograms/
+    |-- cluster_prediction_histograms/
+    |-- input_precipitation_distribution_by_cluster/
+    |-- evaluation_report.txt
+    |-- experiment_report.tex
+    |-- experiment_report.pdf
+    |-- input_next_day_precipitation_by_cluster.csv
+    |-- metrics_summary.csv
+    |-- cluster_model_metrics.csv
+    |-- summary.txt
+    `-- test_predictions.csv
 ```
 
 ---
@@ -302,7 +329,8 @@ lstm-cluster
 
 ### Output
 - Console output with step-by-step progress
-- All results saved to `outputs/lstm_cluster_RS_A801_w{WINDOW_SIZE}_k{N_CLUSTERS}/`
+- All results saved to a timestamped sweep folder under `outputs/`, with one
+  configuration subfolder per window, cluster count, algorithm, and sigma.
 
 ---
 
@@ -364,9 +392,14 @@ lstm-cluster
 - `create_evaluation_report()`: Text report generation
 
 #### `src/methods/lstm_cluster/pipeline.py`
-- `main()`: Orchestrates entire pipeline
+- `run_experiment()`: Orchestrates the configured sweep
+- `run_configuration()`: Runs one window/cluster/sigma configuration
 - `split_by_cluster()`: Stratified data splitting
 - `setup_styling()`: Visualization setup
+
+#### `src/methods/lstm_cluster/report.py`
+- `generate_config_report()`: Writes `experiment_report.tex` and optionally
+  compiles `experiment_report.pdf`
 
 #### Existing Modules (Reused)
 - `config`: Paths and configuration
@@ -442,6 +475,7 @@ For questions about this experiment, refer to:
 - Main code: `src/methods/lstm_cluster/pipeline.py`
 - LSTM implementation: `src/models/lstm.py`
 - Evaluation functions: `src/evaluation/metrics.py`
+- Report generation: `src/methods/lstm_cluster/report.py`
 - Clustering: `src/methods/cluster/ng.py`
 - Features: `src/methods/tools/sliding_windows.py`
 
