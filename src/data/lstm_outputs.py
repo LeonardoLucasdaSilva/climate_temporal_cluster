@@ -255,6 +255,44 @@ def save_cluster_distribution_plot(c_test: np.ndarray, output_dir: Path) -> None
     plt.close(fig)
 
 
+def save_prediction_timeseries_splits(
+    y_test: np.ndarray,
+    y_pred_test: np.ndarray,
+    output_dir: Path,
+    n_splits: int = 4,
+) -> None:
+    """Save the prediction time series in readable sequential splits."""
+    indices = np.arange(len(y_test))
+    for split_index, split_indices in enumerate(np.array_split(indices, n_splits), start=1):
+        if split_indices.size == 0:
+            continue
+
+        fig, ax = plt.subplots(figsize=(14, 5.6))
+        ax.plot(
+            split_indices,
+            y_test[split_indices],
+            label="Actual",
+            alpha=0.8,
+            linewidth=1.6,
+        )
+        ax.plot(
+            split_indices,
+            y_pred_test[split_indices],
+            label="Predicted",
+            alpha=0.8,
+            linewidth=1.6,
+        )
+        ax.set_title(f"Predictions vs Actual - Split {split_index} of {n_splits}")
+        ax.set_xlabel("Test Sample Index")
+        ax.set_ylabel("Precipitation (mm)")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(
+            output_dir / f"02_predictions_timeseries_split_{split_index:02d}_of_{n_splits:02d}.png"
+        )
+        plt.close(fig)
+
 def save_visualizations(
     y_test: np.ndarray,
     y_pred_test: np.ndarray,
@@ -274,6 +312,7 @@ def save_visualizations(
     )
     fig.savefig(output_dir / "02_predictions_vs_actual.png")
     plt.close(fig)
+    save_prediction_timeseries_splits(y_test, y_pred_test, output_dir)
 
     fig, _ = plot_residuals(y_test, y_pred_test, title="Test Set: Residual Analysis")
     fig.savefig(output_dir / "03_residuals_analysis.png")

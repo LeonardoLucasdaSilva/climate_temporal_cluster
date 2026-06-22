@@ -26,6 +26,12 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
         ),
     ),
     (
+        "Prediction Time Series Splits",
+        (
+            "02_predictions_timeseries_split_*_of_04.png",
+        ),
+    ),
+    (
         "Cluster Diagnostics",
         (
             "05_cluster_performance.png",
@@ -91,9 +97,9 @@ def render_report(
         r"\date{}",
         r"\maketitle",
         r"\vspace{-2em}",
-        r"\section*{Run}",
-        r"Compact visual summary of the configuration outputs.",
-        config_table(config),
+        r"\section*{Configuration}",
+        config_summary_list(config),
+        r"\section*{Metrics}",
         metrics_table(output_dir / "metrics_summary.csv"),
         cluster_metrics_table(output_dir / "cluster_model_metrics.csv"),
     ]
@@ -101,9 +107,14 @@ def render_report(
     for section_title, patterns in FIGURE_SECTIONS:
         figures = collect_figures(output_dir, patterns)
         if figures:
-            lines.append(rf"\section*{{{latex_escape(section_title)}}}")
-            for figure_path in figures:
-                lines.extend(figure_block(output_dir, figure_path))
+            if section_title == "Prediction Time Series Splits":
+                lines.append(r"\clearpage")
+                lines.append(rf"\section*{{{latex_escape(section_title)}}}")
+                lines.extend(timeseries_split_figure_blocks(output_dir, figures))
+            else:
+                lines.append(rf"\section*{{{latex_escape(section_title)}}}")
+                for figure_path in figures:
+                    lines.extend(figure_block(output_dir, figure_path))
 
     lines.extend([r"\end{document}", ""])
     return "\n".join(line for line in lines if line is not None)
@@ -113,9 +124,13 @@ def report_title(
     output_dir: Path,
     config: object | Mapping[str, object] | None = None,
 ) -> str:
-    """Return a short report title."""
+    """Return a generic report title."""
     config_map = config_mapping(config)
-    return str(config_map.get("name") or output_dir.name).replace("_", " ")
+    state = config_map.get("state")
+    station_id = config_map.get("station_id")
+    if state and station_id:
+        return f"LSTM+Cluster Experiment - {state} - {station_id}"
+    return f"LSTM+Cluster Experiment - {output_dir.name.replace('_', ' ')}"
 
 
 def config_mapping(config: object | Mapping[str, object] | None) -> dict[str, object]:
@@ -137,34 +152,35 @@ def config_mapping(config: object | Mapping[str, object] | None) -> dict[str, ob
     return values
 
 
-def config_table(config: object | Mapping[str, object] | None) -> str:
-    """Return a minimal configuration table."""
+def config_summary_list(config: object | Mapping[str, object] | None) -> str:
+    """Return a minimal configuration summary as bullets."""
     config_map = config_mapping(config)
-    keys = ("state", "station_id", "window_size", "n_clusters", "algorithm", "sigma")
+    labels = (
+        ("state", "State"),
+        ("station_id", "Station ID"),
+        ("window_size", "Window Size"),
+        ("n_clusters", "Number of Clusters"),
+        ("algorithm", "Algorithm"),
+        ("sigma", "Sigma"),
+    )
     rows = [
-        (key.replace("_", " ").title(), config_map.get(key))
-        for key in keys
+        (label, config_map.get(key))
+        for key, label in labels
         if key in config_map
     ]
     if not rows:
         return ""
 
-    body = "\n".join(
-        rf"{latex_escape(label)} & {latex_escape(format_value(value))} \\"
+    items = "\n".join(
+        rf"\item \textbf{{{latex_escape(label)}:}} {latex_escape(format_value(value))}"
         for label, value in rows
     )
     return "\n".join(
         [
-            r"\begin{table}[H]",
-            r"\centering",
-            r"\begin{tabular}{ll}",
-            r"\toprule",
-            r"Field & Value \\",
-            r"\midrule",
-            body,
-            r"\bottomrule",
-            r"\end{tabular}",
-            r"\end{table}",
+            r"\begin{itemize}",
+            r"\setlength\itemsep{0.1em}",
+            items,
+            r"\end{itemize}",
         ]
     )
 
@@ -175,7 +191,7 @@ def metrics_table(csv_path: Path) -> str:
         return ""
     df = pd.read_csv(csv_path)
     wanted = [column for column in ("split", "MSE", "RMSE", "MAE", "R2") if column in df.columns]
-    return dataframe_table(df[wanted], "Metrics") if wanted else ""
+    return dataframe_table(df[wanted], "General Metrics") if wanted else ""
 
 
 def cluster_metrics_table(csv_path: Path) -> str:
@@ -184,7 +200,7 @@ def cluster_metrics_table(csv_path: Path) -> str:
         return ""
     df = pd.read_csv(csv_path)
     wanted = [column for column in ("cluster", "MSE", "RMSE", "MAE", "R2") if column in df.columns]
-    return dataframe_table(df[wanted], "Test Metrics by Cluster") if wanted else ""
+    return dataframe_table(df[wanted], "Cluster Metrics") if wanted else ""
 
 
 def dataframe_table(df: pd.DataFrame, caption: str) -> str:
@@ -222,6 +238,25 @@ def collect_figures(output_dir: Path, patterns: Sequence[str]) -> list[Path]:
         figures.extend(sorted(output_dir.glob(pattern)))
     return [path for path in figures if path.is_file()]
 
+
+def timeseries_split_figure_blocks(output_dir: Path, figures: Sequence[Path]) -> list[str]:
+    """Return large time-series split figures, two per page."""
+    lines: list[str] = []
+    for index, figure_path in enumerate(figures, start=1):
+        relative_path = figure_path.relative_to(output_dir).as_posix()
+        caption = figure_path.stem.replace("_", " ").replace("-", " ").title()
+        lines.extend(
+            [
+                r"\begin{figure}[H]",
+                r"\centering",
+                rf"\includegraphics[width=0.98\textwidth,height=0.38\textheight,keepaspectratio]{{{relative_path}}}",
+                rf"\caption*{{{latex_escape(caption)}}}",
+                r"\end{figure}",
+            ]
+        )
+        if index % 2 == 0 and index < len(figures):
+            lines.append(r"\clearpage")
+    return lines
 
 def figure_block(output_dir: Path, figure_path: Path) -> list[str]:
     """Return a LaTeX figure block for one image."""
