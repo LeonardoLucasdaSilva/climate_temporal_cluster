@@ -74,6 +74,7 @@ def main() -> None:
         sweep_name=output_config.get("sweep_name") or None,
         sweep_name_prefix=str(output_config.get("sweep_name_prefix", "lstm_cluster_sweep")),
         timestamp_format=str(output_config.get("timestamp_format", "%Y%m%d_%H%M%S")),
+        plot_style=output_config.get("plot_style"),
         show_console_info=SHOW_CONSOLE_INFO,
     )
 

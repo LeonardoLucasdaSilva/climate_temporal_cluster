@@ -60,7 +60,7 @@ def save_training_history_plots(
         axes[1].legend()
 
         fig.tight_layout()
-        fig.savefig(output_dir / f"01_training_history_cluster_{cluster_id}.png", dpi=300)
+        fig.savefig(output_dir / f"01_training_history_cluster_{cluster_id}.png")
         plt.close(fig)
 
 
@@ -84,9 +84,109 @@ def save_cluster_precipitation_histograms(
         fig.tight_layout()
         fig.savefig(
             hist_dir / f"cluster_{int(cluster_id)}_precipitation_histogram.png",
-            dpi=300,
         )
         plt.close(fig)
+
+
+def precipitation_bin_edges(values: np.ndarray) -> np.ndarray:
+    """Return readable shared precipitation bins for cluster histograms."""
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return np.array([0.0, 1.0])
+
+    max_value = float(values.max())
+    if max_value <= 0:
+        return np.array([0.0, 1.0])
+
+    raw_edges = np.histogram_bin_edges(values, bins="fd")
+    n_bins = max(8, min(len(raw_edges) - 1, 35))
+    return np.linspace(0.0, max_value, n_bins + 1)
+
+
+def save_input_precipitation_assignments(
+    next_day_precipitation: np.ndarray,
+    cluster_labels: np.ndarray,
+    output_dir: Path,
+) -> None:
+    """Save the next-day precipitation target assigned to each input window."""
+    pd.DataFrame(
+        {
+            "input_index": np.arange(len(next_day_precipitation)),
+            "cluster": cluster_labels.astype(int),
+            "next_day_precipitation_mm": next_day_precipitation,
+        }
+    ).to_csv(output_dir / "input_next_day_precipitation_by_cluster.csv", index=False)
+
+
+def save_input_precipitation_distribution_by_cluster(
+    next_day_precipitation: np.ndarray,
+    cluster_labels: np.ndarray,
+    output_dir: Path,
+) -> None:
+    """Save horizontal histograms of next-day precipitation for each input cluster."""
+    hist_dir = output_dir / "input_precipitation_distribution_by_cluster"
+    hist_dir.mkdir(exist_ok=True)
+
+    bin_edges = precipitation_bin_edges(next_day_precipitation)
+    cluster_ids = sorted(np.unique(cluster_labels))
+    n_clusters = len(cluster_ids)
+    n_cols = min(3, n_clusters)
+    n_rows = int(np.ceil(n_clusters / n_cols))
+
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(5.2 * n_cols, 4.2 * n_rows),
+        sharey=True,
+        squeeze=False,
+    )
+
+    for ax in axes.ravel()[n_clusters:]:
+        ax.set_visible(False)
+
+    for ax, cluster_id in zip(axes.ravel(), cluster_ids):
+        mask = cluster_labels == cluster_id
+        values = next_day_precipitation[mask]
+        rainy_ratio = float(np.mean(values > 0)) if values.size else 0.0
+        ax.hist(
+            values,
+            bins=bin_edges,
+            orientation="horizontal",
+            color="#4C78A8",
+            edgecolor="white",
+            alpha=0.9,
+        )
+        ax.set_title(f"Cluster {int(cluster_id)} | n={values.size} | rainy={rainy_ratio:.1%}")
+        ax.set_xlabel("Samples")
+        ax.set_ylabel("Next-day precipitation (mm)")
+        ax.grid(True, alpha=0.25, axis="x")
+
+        cluster_fig, cluster_ax = plt.subplots(figsize=(8, 6))
+        cluster_ax.hist(
+            values,
+            bins=bin_edges,
+            orientation="horizontal",
+            color="#4C78A8",
+            edgecolor="white",
+            alpha=0.9,
+        )
+        cluster_ax.set_title(
+            f"Input Windows in Cluster {int(cluster_id)}: Next-day Precipitation"
+        )
+        cluster_ax.set_xlabel("Samples")
+        cluster_ax.set_ylabel("Next-day precipitation (mm)")
+        cluster_ax.grid(True, alpha=0.25, axis="x")
+        cluster_fig.tight_layout()
+        cluster_fig.savefig(
+            hist_dir / f"cluster_{int(cluster_id)}_input_precipitation_distribution.png"
+        )
+        plt.close(cluster_fig)
+
+    fig.suptitle("Input Window Next-day Precipitation Distribution by Cluster", y=1.0)
+    fig.tight_layout()
+    fig.savefig(output_dir / "08_input_precipitation_distribution_by_cluster.png")
+    plt.close(fig)
 
 
 def save_cluster_prediction_histograms(
@@ -120,7 +220,7 @@ def save_cluster_prediction_histograms(
         for ax in axes:
             ax.set_ylabel("Count")
         fig.tight_layout()
-        fig.savefig(hist_dir / f"cluster_{int(cluster_id)}_prediction_histograms.png", dpi=300)
+        fig.savefig(hist_dir / f"cluster_{int(cluster_id)}_prediction_histograms.png")
         plt.close(fig)
 
 
@@ -137,7 +237,7 @@ def save_precipitation_by_cluster_plot(
     ax.set_xlabel("Cluster")
     ax.set_ylabel("Next-day precipitation (mm)")
     fig.tight_layout()
-    fig.savefig(output_dir / "07_precipitation_distribution_by_cluster.png", dpi=300)
+    fig.savefig(output_dir / "07_precipitation_distribution_by_cluster.png")
     plt.close(fig)
 
 
@@ -151,7 +251,7 @@ def save_cluster_distribution_plot(c_test: np.ndarray, output_dir: Path) -> None
     ax.set_ylabel("Samples")
     ax.bar_label(bars)
     fig.tight_layout()
-    fig.savefig(output_dir / "06_cluster_distribution.png", dpi=300)
+    fig.savefig(output_dir / "06_cluster_distribution.png")
     plt.close(fig)
 
 
@@ -159,6 +259,8 @@ def save_visualizations(
     y_test: np.ndarray,
     y_pred_test: np.ndarray,
     c_test: np.ndarray,
+    next_day_precipitation: np.ndarray,
+    input_cluster_labels: np.ndarray,
     histories_by_cluster: dict[int, object],
     output_dir: Path,
 ) -> None:
@@ -170,11 +272,11 @@ def save_visualizations(
         y_pred_test,
         title="Test Set: Predictions vs Actual Precipitation",
     )
-    fig.savefig(output_dir / "02_predictions_vs_actual.png", dpi=300)
+    fig.savefig(output_dir / "02_predictions_vs_actual.png")
     plt.close(fig)
 
     fig, _ = plot_residuals(y_test, y_pred_test, title="Test Set: Residual Analysis")
-    fig.savefig(output_dir / "03_residuals_analysis.png", dpi=300)
+    fig.savefig(output_dir / "03_residuals_analysis.png")
     plt.close(fig)
 
     fig, _ = plot_error_by_magnitude(
@@ -183,7 +285,7 @@ def save_visualizations(
         n_bins=10,
         title="Test Set: Error by Precipitation Magnitude",
     )
-    fig.savefig(output_dir / "04_error_by_magnitude.png", dpi=300)
+    fig.savefig(output_dir / "04_error_by_magnitude.png")
     plt.close(fig)
 
     fig, _ = plot_cluster_performance(
@@ -192,12 +294,17 @@ def save_visualizations(
         y_pred_test,
         title="Test Set: LSTM Performance by Cluster",
     )
-    fig.savefig(output_dir / "05_cluster_performance.png", dpi=300)
+    fig.savefig(output_dir / "05_cluster_performance.png")
     plt.close(fig)
 
     save_cluster_distribution_plot(c_test, output_dir)
     save_precipitation_by_cluster_plot(y_test, c_test, output_dir)
     save_cluster_precipitation_histograms(y_test, c_test, output_dir)
+    save_input_precipitation_distribution_by_cluster(
+        next_day_precipitation,
+        input_cluster_labels,
+        output_dir,
+    )
     save_cluster_prediction_histograms(y_test, y_pred_test, c_test, output_dir)
 
 
@@ -289,6 +396,8 @@ def save_run_outputs(
     config: ExperimentConfigLike,
     output_dir: Path,
     feature_columns: list[str],
+    next_day_precipitation: np.ndarray,
+    input_cluster_labels: np.ndarray,
     y_train: np.ndarray,
     y_val: np.ndarray,
     y_test: np.ndarray,
@@ -320,6 +429,11 @@ def save_run_outputs(
     cluster_metrics_dataframe(metrics_by_cluster).to_csv(
         output_dir / "cluster_model_metrics.csv",
         index=False,
+    )
+    save_input_precipitation_assignments(
+        next_day_precipitation,
+        input_cluster_labels,
+        output_dir,
     )
     pd.DataFrame(
         {
@@ -361,6 +475,8 @@ def save_run_outputs(
         y_test,
         y_pred_test,
         c_test,
+        next_day_precipitation,
+        input_cluster_labels,
         histories_by_cluster,
         output_dir,
     )
