@@ -11,8 +11,9 @@ weather windows first, then training one LSTM model per cluster.
 - `pipeline.py`: library functions that load data, build windows, cluster,
   train models, and save one full sweep. It should not contain experiment
   constants or a script entry point.
-- `config_output.yaml`: output folder settings, including root path, optional
-  fixed sweep name, generated name prefix, and timestamp format.
+- `config_output.yaml`: output folder and plotting settings, including root
+  path, optional fixed sweep name, generated name prefix, timestamp format,
+  Seaborn theme defaults, and Matplotlib `rcParams`.
 - `console.py`: small helpers for optional progress output.
 - `__init__.py`: marks this folder as an importable package.
 
@@ -56,9 +57,13 @@ Change experiment variables in `run_experiment.py`:
 - training settings: `EPOCHS`, `BATCH_SIZE`, `EARLY_STOPPING`, `PATIENCE`,
   `VERBOSE_TRAINING`, `SHOW_CONSOLE_INFO`
 - data split: `TRAIN_RATIO`, `VAL_RATIO`, `RANDOM_STATE`
-- output settings: `OUTPUT_CONFIG`, with details in `config_output.yaml`
+- output and plot styling settings: `OUTPUT_CONFIG`, with details in
+  `config_output.yaml`
 
-Change output naming in `config_output.yaml`.
+Change output naming and generated figure styling in `config_output.yaml`.
+The `plot_style.seaborn` section controls the Seaborn theme and palette, while
+`plot_style.rc_params` accepts Matplotlib rcParam names such as
+`figure.facecolor`, `axes.labelsize`, or `savefig.dpi`.
 
 Set `SHOW_CONSOLE_INFO = False` to hide pipeline progress messages and Keras
 training output. The root `run_experiments.py` launcher has the same setting and
@@ -75,3 +80,9 @@ outputs/lstm_cluster_sweep_<STATE>_<STATION>_<timestamp>/
 The sweep folder contains summary CSV/text files and LaTeX tables. Each
 configuration subfolder contains run metrics, predictions, reports, and plots.
 Output writing is handled by `data.lstm_outputs`.
+
+Each configuration also saves `input_next_day_precipitation_by_cluster.csv`,
+which assigns the next-day precipitation target to every input window and its
+cluster. The matching horizontal histograms are saved as
+`08_input_precipitation_distribution_by_cluster.png` and as one figure per
+cluster under `input_precipitation_distribution_by_cluster/`.

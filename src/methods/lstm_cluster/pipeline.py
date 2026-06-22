@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Mapping
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -46,13 +47,44 @@ class ExperimentConfig:
         ).replace(".", "p")
 
 
-def setup_styling() -> None:
+DEFAULT_PLOT_STYLE: dict[str, object] = {
+    "seaborn": {
+        "style": "whitegrid",
+        "palette": "deep",
+    },
+    "rc_params": {
+        "figure.facecolor": "white",
+        "axes.labelsize": 10,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+    },
+}
+
+
+def _mapping_from_config(value: object) -> Mapping[str, object]:
+    """Return nested config dictionaries safely."""
+    return value if isinstance(value, Mapping) else {}
+
+
+def setup_styling(plot_style: Mapping[str, object] | None = None) -> None:
     """Apply shared plotting defaults for generated figures."""
-    sns.set_theme(style="whitegrid", palette="deep")
-    plt.rcParams["figure.facecolor"] = "white"
-    plt.rcParams["axes.labelsize"] = 10
-    plt.rcParams["xtick.labelsize"] = 9
-    plt.rcParams["ytick.labelsize"] = 9
+    plot_style = _mapping_from_config(plot_style)
+    default_seaborn = _mapping_from_config(DEFAULT_PLOT_STYLE["seaborn"])
+    default_rc_params = _mapping_from_config(DEFAULT_PLOT_STYLE["rc_params"])
+    seaborn_style = {
+        **default_seaborn,
+        **_mapping_from_config(plot_style.get("seaborn")),
+    }
+    rc_params = {
+        **default_rc_params,
+        **_mapping_from_config(plot_style.get("rc_params")),
+    }
+
+    sns.set_theme(
+        style=str(seaborn_style["style"]),
+        palette=seaborn_style.get("palette"),
+    )
+    plt.rcParams.update(rc_params)
 
 
 def build_configurations(
@@ -322,6 +354,8 @@ def run_configuration(
         config,
         output_dir,
         feature_columns,
+        targets,
+        c,
         y_train,
         y_val,
         y_test,
@@ -369,6 +403,7 @@ def run_experiment(
     sweep_name: str | None = None,
     sweep_name_prefix: str = "lstm_cluster_sweep",
     timestamp_format: str = "%Y%m%d_%H%M%S",
+    plot_style: Mapping[str, object] | None = None,
     show_console_info: bool = True,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
@@ -378,7 +413,7 @@ def run_experiment(
     output_root = Path(output_root)
     sweep_dir = output_root / sweep_name
 
-    setup_styling()
+    setup_styling(plot_style)
     sweep_dir.mkdir(parents=True, exist_ok=True)
 
     print_section("Loading Data", show_console_info)
