@@ -52,7 +52,8 @@ Change experiment variables in `run_experiment.py`:
 
 - station and data: `STATE`, `STATION_ID`
 - clustering sweep: `WINDOW_SIZES`, `N_CLUSTERS_LIST`,
-  `CLUSTERING_ALGORITHM`, `N_SIGMA_VALUES`, `USE_ALL_FEATURES`
+  `CLUSTERING_ALGORITHM`, `SIGMA_MODE`, `N_SIGMA_VALUES`,
+  `MANUAL_SIGMA_VALUES`, `USE_ALL_FEATURES`
 - exported table metrics: `QUANTITATIVE_METRICS`
 - model hyperparameters: `LSTM_UNITS`, `LSTM_UNITS_2`, `DROPOUT_RATE`,
   `LEARNING_RATE`
@@ -66,6 +67,11 @@ Change output naming and generated figure styling in `config_output.yaml`.
 The `plot_style.seaborn` section controls the Seaborn theme and palette, while
 `plot_style.rc_params` accepts Matplotlib rcParam names such as
 `figure.facecolor`, `axes.labelsize`, or `savefig.dpi`.
+
+For spectral clustering, set `SIGMA_MODE = "auto"` to generate
+`N_SIGMA_VALUES` candidates with the distance-based heuristic. Set
+`SIGMA_MODE = "manual"` to run the exact positive values listed in
+`MANUAL_SIGMA_VALUES`.
 
 Set `SHOW_CONSOLE_INFO = False` to hide pipeline progress messages and Keras
 training output. The root `run_experiments.py` launcher has the same setting and
