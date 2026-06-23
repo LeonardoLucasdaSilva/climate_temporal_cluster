@@ -17,8 +17,8 @@ import numpy as np
 from sklearn.cluster import KMeans
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+print(f"Added to path: {Path(__file__).parent.parent.parent / 'src'}")
 from config import DATA_ROOT, OUTPUTS_DIR
 from data.load_data import load_station_daily_data
 from methods.tools.sliding_windows import create_windows
