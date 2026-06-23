@@ -99,6 +99,10 @@ def render_report(
         r"\vspace{-2em}",
         r"\section*{Configuration}",
         config_summary_list(config),
+        r"\section*{LSTM Configs}",
+        lstm_configs_list(config),
+        r"\section*{Dataset}",
+        dataset_summary(config),
         r"\section*{Metrics}",
         metrics_table(output_dir / "metrics_summary.csv"),
         cluster_metrics_table(output_dir / "cluster_model_metrics.csv"),
@@ -185,12 +189,92 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
     )
 
 
+def lstm_configs_list(config: object | Mapping[str, object] | None) -> str:
+    """Return LSTM architecture and training hyperparameters as bullets."""
+    config_map = config_mapping(config)
+    layer_rows = [
+        ("LSTM layer 1 units", config_map.get("lstm_units")),
+        ("LSTM layer 2 units", config_map.get("lstm_units_2")),
+        ("Dense layer units", config_map.get("dense_units")),
+        ("Output units", config_map.get("output_units")),
+    ]
+    hyperparameter_rows = [
+        ("Dropout rate", config_map.get("dropout_rate")),
+        ("Learning rate", config_map.get("learning_rate")),
+        ("Epochs", config_map.get("epochs")),
+        ("Batch size", config_map.get("batch_size")),
+        ("Early stopping", config_map.get("early_stopping")),
+        ("Patience", config_map.get("patience")),
+        ("Optimizer", config_map.get("optimizer")),
+        ("Loss", config_map.get("loss")),
+        ("Metrics", config_map.get("metrics")),
+    ]
+    rows = [
+        *[(label, value) for label, value in layer_rows if value is not None],
+        *[(label, value) for label, value in hyperparameter_rows if value is not None],
+    ]
+    if not rows:
+        return unavailable_text("LSTM configuration was not provided.")
+
+    return bullet_list(rows)
+
+
+def dataset_summary(config: object | Mapping[str, object] | None) -> str:
+    """Return dataset feature, date range, and split details."""
+    config_map = config_mapping(config)
+    rows = []
+    if config_map.get("dataset_start_date") is not None:
+        rows.append(("Start date", config_map["dataset_start_date"]))
+    if config_map.get("dataset_end_date") is not None:
+        rows.append(("End date", config_map["dataset_end_date"]))
+    if config_map.get("features") is not None:
+        rows.append(("Features", config_map["features"]))
+    if config_map.get("n_samples") is not None:
+        rows.append(("Input samples", config_map["n_samples"]))
+
+    splits = config_map.get("splits")
+    if isinstance(splits, Mapping):
+        for split_name, split_values in splits.items():
+            if isinstance(split_values, Mapping):
+                samples = split_values.get("samples")
+                percent = split_values.get("percent")
+                rows.append((f"{split_name} split", format_split(samples, percent)))
+            else:
+                rows.append((f"{split_name} split", split_values))
+
+    if not rows:
+        return unavailable_text("Dataset metadata was not provided.")
+
+    return bullet_list(rows)
+
+
+def bullet_list(rows: Sequence[tuple[str, object]]) -> str:
+    """Return labeled rows as a compact LaTeX bullet list."""
+    items = "\n".join(
+        rf"\item \textbf{{{latex_escape(label)}:}} {latex_escape(format_value(value))}"
+        for label, value in rows
+    )
+    return "\n".join(
+        [
+            r"\begin{itemize}",
+            r"\setlength\itemsep{0.1em}",
+            items,
+            r"\end{itemize}",
+        ]
+    )
+
+
+def unavailable_text(message: str) -> str:
+    """Return a short LaTeX placeholder for missing report context."""
+    return rf"\textit{{{latex_escape(message)}}}"
+
+
 def metrics_table(csv_path: Path) -> str:
     """Return a compact split-level metric table when available."""
     if not csv_path.exists():
         return ""
     df = pd.read_csv(csv_path)
-    wanted = [column for column in ("Split", "MSE", "RMSE", "MAE", "R2") if column in df.columns]
+    wanted = [column for column in ("split", "MSE", "RMSE", "MAE", "R2") if column in df.columns]
     return dataframe_table(df[wanted], "General Metrics") if wanted else ""
 
 
@@ -199,7 +283,7 @@ def cluster_metrics_table(csv_path: Path) -> str:
     if not csv_path.exists():
         return ""
     df = pd.read_csv(csv_path)
-    wanted = [column for column in ("Cluster", "MSE", "RMSE", "MAE", "R2") if column in df.columns]
+    wanted = [column for column in ("cluster", "MSE", "RMSE", "MAE", "R2") if column in df.columns]
     return dataframe_table(df[wanted], "Cluster Metrics") if wanted else ""
 
 
@@ -388,11 +472,28 @@ def cleanup_latex_files(tex_path: Path) -> None:
 
 def format_value(value: object) -> str:
     """Format values for compact report tables."""
-    if value is None or pd.isna(value):
+    if value is None:
         return "N/A"
+    if isinstance(value, Mapping):
+        return ", ".join(f"{key}: {format_value(item)}" for key, item in value.items())
+    if isinstance(value, Sequence) and not isinstance(value, str):
+        return ", ".join(format_value(item) for item in value)
+    if pd.isna(value):
+        return "N/A"
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
     if isinstance(value, float):
         return f"{value:.4g}"
     return str(value)
+
+
+def format_split(samples: object, percent: object) -> str:
+    """Format split sample counts and percentages."""
+    if samples is None:
+        return "N/A"
+    if isinstance(percent, float):
+        return f"{samples} samples ({percent:.1%})"
+    return f"{samples} samples"
 
 
 def latex_escape(value: object) -> str:
