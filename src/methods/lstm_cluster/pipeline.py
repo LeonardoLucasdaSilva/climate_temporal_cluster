@@ -258,6 +258,8 @@ def run_configuration(
     df: pd.DataFrame,
     config: ExperimentConfig,
     numeric_cols: list[str],
+    normalize: bool,
+    variance_threshold: float | None,
     output_dir: Path,
     use_all_features: bool,
     train_ratio: float,
@@ -283,8 +285,8 @@ def run_configuration(
         df,
         window_size=config.window_size,
         columns=columns,
-        normalize=True,
-        variance_threshold=PCA_VARIANCE_THRESHOLD,
+        normalize=normalize,
+        variance_threshold=variance_threshold,
         verbose=show_console_info,
     )
     labels = cluster_feature_matrix(
@@ -367,7 +369,7 @@ def run_configuration(
         metrics_by_cluster,
         state=config.state,
         station_id=config.station_id,
-        pca_variance_threshold=PCA_VARIANCE_THRESHOLD,
+        pca_variance_threshold=variance_threshold,
     )
     print_info(
         f"  Test metrics: RMSE={result['test_rmse']:.4f}, "
@@ -381,6 +383,8 @@ def run_experiment(
     state: str,
     station_id: str,
     window_sizes: list[int],
+    normalize: bool,
+    variance_threshold: float | None,
     n_clusters_list: list[int],
     clustering_algorithm: str,
     n_sigma_values: int,
@@ -458,6 +462,8 @@ def run_experiment(
                 df,
                 config,
                 numeric_cols,
+                normalize,
+                variance_threshold,
                 sweep_dir / config.name,
                 use_all_features=use_all_features,
                 train_ratio=train_ratio,

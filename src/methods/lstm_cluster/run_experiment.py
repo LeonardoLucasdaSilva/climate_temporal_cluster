@@ -1,8 +1,10 @@
 """Small entry point for the LSTM cluster experiment."""
 
 from __future__ import annotations
-
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 
 from config import DATA_ROOT, load_output_config, output_root_from_config
 from methods.lstm_cluster.pipeline import run_experiment
@@ -13,26 +15,28 @@ STATE = "RS"
 STATION_ID = "A801"
 
 # Clustering sweep
-WINDOW_SIZES = [8]
+WINDOW_SIZES = [15]
+NORMALIZE = False
+PCA_VARIANCE_THRESHOLD = None
 N_CLUSTERS_LIST = [3]
 CLUSTERING_ALGORITHM = "spectral"
-N_SIGMA_VALUES = 5
+N_SIGMA_VALUES = 4
 USE_ALL_FEATURES = True
 
 # Metrics exported to compact comparison tables
 QUANTITATIVE_METRICS = ["MSE"]
 
 # Model hyperparameters
-LSTM_UNITS = 64
+LSTM_UNITS = 32
 LSTM_UNITS_2 = 32
-DROPOUT_RATE = 0.2
+DROPOUT_RATE = 0.1
 LEARNING_RATE = 0.001
 
 # Training settings
-EPOCHS = 50
-BATCH_SIZE = 32
+EPOCHS = 250
+BATCH_SIZE = 16
 EARLY_STOPPING = True
-PATIENCE = 10
+PATIENCE = 30
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True
 
@@ -52,6 +56,8 @@ def main() -> None:
         state=STATE,
         station_id=STATION_ID,
         window_sizes=WINDOW_SIZES,
+        normalize=NORMALIZE,
+        variance_threshold=PCA_VARIANCE_THRESHOLD,
         n_clusters_list=N_CLUSTERS_LIST,
         clustering_algorithm=CLUSTERING_ALGORITHM,
         n_sigma_values=N_SIGMA_VALUES,
