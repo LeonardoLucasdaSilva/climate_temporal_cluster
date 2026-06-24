@@ -360,7 +360,7 @@ def save_config_summary(
         f.write(f"Number of clusters: {config.n_clusters}\n")
         f.write(f"Clustering algorithm: {config.algorithm}\n")
         f.write(f"Sigma: {config.sigma if config.sigma is not None else 'not used'}\n")
-        f.write(f"PCA variance threshold: {pca_variance_threshold:.2f}\n")
+        f.write(f"PCA variance threshold: {pca_variance_threshold:.2f}\n" if pca_variance_threshold is not None else "PCA variance threshold: not used\n")
         f.write(f"Features ({len(feature_columns)}): {', '.join(feature_columns)}\n")
         f.write(f"Splits: {split_sizes}\n\n")
 
