@@ -53,9 +53,10 @@ climate_temporal_cluster/
 |   |   |   `-- cluster_pipeline.py
 |   |   |-- lstm_cluster/
 |   |   |   |-- run_experiment.py  # Main LSTM+Cluster runner
-|   |   |   |-- config_output.yaml # Output settings
+|   |   |   |-- config_output.yaml # Output and plot styling settings
 |   |   |   |-- console.py         # Console output helpers
 |   |   |   |-- lstm_cluster.md    # Folder documentation
+|   |   |   |-- report.py          # Per-configuration LaTeX report writer
 |   |   |   `-- pipeline.py        # Pipeline functions
 |   |   `-- tools/
 |   |       |-- sliding_windows.py
@@ -75,7 +76,8 @@ climate_temporal_cluster/
 ## LSTM+Cluster Pipeline
 
 The experiment is configured at the top of
-`src/methods/lstm_cluster/run_experiment.py`.
+`src/methods/lstm_cluster/run_experiment.py`. Output naming and shared figure
+styling live in `src/methods/lstm_cluster/config_output.yaml`.
 
 ```python
 STATE = "RS"
@@ -278,10 +280,14 @@ Each configuration folder contains:
 
 - `metrics_summary.csv`
 - `cluster_model_metrics.csv`
+- `input_next_day_precipitation_by_cluster.csv`
 - `test_predictions.csv`
 - `evaluation_report.txt`
 - `summary.txt`
+- `experiment_report.tex`
+- `experiment_report.pdf`, when a local LaTeX compiler is available
 - prediction, residual, error, cluster-performance, and histogram plots
+- input-window next-day precipitation distribution plots by cluster
 
 Metrics include:
 
@@ -298,6 +304,12 @@ Plot helpers live in:
 
 ```text
 src/evaluation/evaluation_plot_tools.py
+```
+
+Per-configuration report generation lives in:
+
+```text
+src/methods/lstm_cluster/report.py
 ```
 
 ## Running a Smaller Experiment

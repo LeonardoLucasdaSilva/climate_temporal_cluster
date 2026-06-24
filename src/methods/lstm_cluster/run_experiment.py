@@ -15,12 +15,13 @@ STATE = "RS"
 STATION_ID = "A801"
 
 # Clustering sweep
-WINDOW_SIZES = [15]
-NORMALIZE = False
-PCA_VARIANCE_THRESHOLD = None
-N_CLUSTERS_LIST = [3]
+
+WINDOW_SIZES = [8, 12, 16, 20, 24, 28, 32]
+N_CLUSTERS_LIST = [3, 4, 5]
 CLUSTERING_ALGORITHM = "spectral"
-N_SIGMA_VALUES = 4
+N_SIGMA_VALUES = 5
+SIGMA_MODE = "manual"  # "auto" or "manual"
+MANUAL_SIGMA_VALUES = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]  # Only used if SIGMA_MODE is "manual"
 USE_ALL_FEATURES = True
 
 # Metrics exported to compact comparison tables
@@ -51,6 +52,10 @@ OUTPUT_CONFIG = Path(__file__).with_name("config_output.yaml")
 
 def main() -> None:
     """Run the experiment using the variables above and config_output.yaml."""
+    sigma_mode = SIGMA_MODE.lower()
+    if sigma_mode not in {"auto", "manual"}:
+        raise ValueError("SIGMA_MODE must be either 'auto' or 'manual'.")
+
     output_config = load_output_config(OUTPUT_CONFIG)
     run_experiment(
         state=STATE,
@@ -61,6 +66,7 @@ def main() -> None:
         n_clusters_list=N_CLUSTERS_LIST,
         clustering_algorithm=CLUSTERING_ALGORITHM,
         n_sigma_values=N_SIGMA_VALUES,
+        sigma_values=MANUAL_SIGMA_VALUES if sigma_mode == "manual" else None,
         use_all_features=USE_ALL_FEATURES,
         quantitative_metrics=QUANTITATIVE_METRICS,
         lstm_units=LSTM_UNITS,

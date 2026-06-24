@@ -11,6 +11,8 @@ weather windows first, then training one LSTM model per cluster.
 - `pipeline.py`: library functions that load data, build windows, cluster,
   train models, and save one full sweep. It should not contain experiment
   constants or a script entry point.
+- `report.py`: LaTeX report writer for one configuration output folder. It
+  includes configuration details, metric tables, and generated figures.
 - `config_output.yaml`: output folder and plotting settings, including root
   path, optional fixed sweep name, generated name prefix, timestamp format,
   Seaborn theme defaults, and Matplotlib `rcParams`.
@@ -50,7 +52,8 @@ Change experiment variables in `run_experiment.py`:
 
 - station and data: `STATE`, `STATION_ID`
 - clustering sweep: `WINDOW_SIZES`, `N_CLUSTERS_LIST`,
-  `CLUSTERING_ALGORITHM`, `N_SIGMA_VALUES`, `USE_ALL_FEATURES`
+  `CLUSTERING_ALGORITHM`, `SIGMA_MODE`, `N_SIGMA_VALUES`,
+  `MANUAL_SIGMA_VALUES`, `USE_ALL_FEATURES`
 - exported table metrics: `QUANTITATIVE_METRICS`
 - model hyperparameters: `LSTM_UNITS`, `LSTM_UNITS_2`, `DROPOUT_RATE`,
   `LEARNING_RATE`
@@ -64,6 +67,11 @@ Change output naming and generated figure styling in `config_output.yaml`.
 The `plot_style.seaborn` section controls the Seaborn theme and palette, while
 `plot_style.rc_params` accepts Matplotlib rcParam names such as
 `figure.facecolor`, `axes.labelsize`, or `savefig.dpi`.
+
+For spectral clustering, set `SIGMA_MODE = "auto"` to generate
+`N_SIGMA_VALUES` candidates with the distance-based heuristic. Set
+`SIGMA_MODE = "manual"` to run the exact positive values listed in
+`MANUAL_SIGMA_VALUES`.
 
 Set `SHOW_CONSOLE_INFO = False` to hide pipeline progress messages and Keras
 training output. The root `run_experiments.py` launcher has the same setting and
@@ -80,6 +88,10 @@ outputs/lstm_cluster_sweep_<STATE>_<STATION>_<timestamp>/
 The sweep folder contains summary CSV/text files and LaTeX tables. Each
 configuration subfolder contains run metrics, predictions, reports, and plots.
 Output writing is handled by `data.lstm_outputs`.
+
+Each configuration folder also gets `experiment_report.tex`. If a local LaTeX
+compiler is available, the pipeline also writes `experiment_report.pdf`; if PDF
+compilation fails, `experiment_report_compile.log` is saved for troubleshooting.
 
 Each configuration also saves `input_next_day_precipitation_by_cluster.csv`,
 which assigns the next-day precipitation target to every input window and its

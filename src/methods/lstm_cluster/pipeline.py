@@ -24,6 +24,7 @@ from methods.cluster.cluster_pipeline import (
     numeric_feature_columns,
 )
 from methods.lstm_cluster.console import print_info, print_section
+from methods.lstm_cluster.report import generate_config_report
 from methods.tools.sigma_choosing import calculate_sigma_values
 
 
@@ -322,6 +323,42 @@ def run_configuration(
         f"  Split: train={len(y_train)}, val={len(y_val)}, test={len(y_test)}",
         show_console_info,
     )
+    n_samples = len(targets)
+    report_config = {
+        **asdict(config),
+        "name": config.name,
+        "dataset_start_date": df["Data"].min().date().isoformat(),
+        "dataset_end_date": df["Data"].max().date().isoformat(),
+        "features": feature_columns,
+        "n_samples": n_samples,
+        "splits": {
+            "Training": {
+                "samples": len(y_train),
+                "percent": len(y_train) / n_samples if n_samples else 0,
+            },
+            "Validation": {
+                "samples": len(y_val),
+                "percent": len(y_val) / n_samples if n_samples else 0,
+            },
+            "Test": {
+                "samples": len(y_test),
+                "percent": len(y_test) / n_samples if n_samples else 0,
+            },
+        },
+        "lstm_units": lstm_units,
+        "lstm_units_2": lstm_units_2,
+        "dense_units": [16, 8],
+        "output_units": 1,
+        "dropout_rate": dropout_rate,
+        "learning_rate": learning_rate,
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "early_stopping": early_stopping,
+        "patience": patience,
+        "optimizer": "Adam",
+        "loss": "mean_squared_error",
+        "metrics": ["mae", "mse"],
+    }
 
     (
         y_pred_train,
@@ -371,6 +408,10 @@ def run_configuration(
         station_id=config.station_id,
         pca_variance_threshold=variance_threshold,
     )
+    tex_path, pdf_path = generate_config_report(output_dir, report_config)
+    print_info(f"  Report: {tex_path.name}", show_console_info)
+    if pdf_path is not None:
+        print_info(f"  Report PDF: {pdf_path.name}", show_console_info)
     print_info(
         f"  Test metrics: RMSE={result['test_rmse']:.4f}, "
         f"MAE={result['test_mae']:.4f}, R2={result['test_r2']:.4f}",
@@ -409,6 +450,7 @@ def run_experiment(
     timestamp_format: str = "%Y%m%d_%H%M%S",
     plot_style: Mapping[str, object] | None = None,
     show_console_info: bool = True,
+    sigma_values: list[float] | None = None,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
     timestamp = datetime.now().strftime(timestamp_format)
@@ -430,17 +472,42 @@ def run_experiment(
     print_info(f"Numeric features: {numeric_cols}", show_console_info)
 
     if clustering_algorithm.lower() == "spectral":
-        print_section("Calculating Sigma Values", show_console_info)
-        sigma_values = calculate_sigma_values(df, n_values=n_sigma_values).tolist()
-        print_info(
-            f"Generated {len(sigma_values)} sigma values: {sigma_values}",
-            show_console_info,
-        )
+        if sigma_values is None:
+            print_section("Calculating Sigma Values", show_console_info)
+            selected_sigma_values = calculate_sigma_values(
+                df,
+                n_values=n_sigma_values,
+            ).tolist()
+            print_info(
+                f"Generated {len(selected_sigma_values)} sigma values: "
+                f"{selected_sigma_values}",
+                show_console_info,
+            )
+        else:
+            selected_sigma_values = [float(sigma) for sigma in sigma_values]
+            if not selected_sigma_values:
+                raise ValueError(
+                    "sigma_values must contain at least one value in manual mode."
+                )
+            valid_sigmas = all(
+                np.isfinite(sigma) and sigma > 0
+                for sigma in selected_sigma_values
+            )
+            if not valid_sigmas:
+                raise ValueError(
+                    "Every manual sigma value must be a positive, finite number."
+                )
+            print_section("Using Manual Sigma Values", show_console_info)
+            print_info(
+                f"Using {len(selected_sigma_values)} sigma values: "
+                f"{selected_sigma_values}",
+                show_console_info,
+            )
     else:
-        sigma_values = [None]
+        selected_sigma_values = [None]
 
     configurations = build_configurations(
-        sigma_values,
+        selected_sigma_values,
         state=state,
         station_id=station_id,
         window_sizes=window_sizes,
