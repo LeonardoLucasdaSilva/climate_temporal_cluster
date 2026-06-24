@@ -37,6 +37,10 @@ and cluster-specific LSTM precipitation models.
   functions. If duplicates exist, keep the implementation in the most suitable
   module. If duplicates are in the same file, keep the function with the
   clearest and most accurate name.
+- For every new feature request, sweep the repository before implementation for
+  existing functions, helpers, and patterns that can support the feature.
+  Prefer reusing or extending suitable code over creating a parallel
+  implementation, while preserving existing behavior.
 - Prefer small, focused modules under `src/`; keep experiment scripts compact.
 - Keep file-writing/report-generation helpers in `src/data/`, not embedded in
   experiment scripts.
