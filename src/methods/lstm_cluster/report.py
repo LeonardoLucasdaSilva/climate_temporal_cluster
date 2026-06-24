@@ -16,21 +16,6 @@ import pandas as pd
 REPORT_TEX_NAME = "experiment_report.tex"
 
 FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
-    ("Model Fit", ("01_training_history_cluster_*.png",)),
-    (
-        "Predictions",
-        (
-            "02_predictions_vs_actual.png",
-            "03_residuals_analysis.png",
-            "04_error_by_magnitude.png",
-        ),
-    ),
-    (
-        "Prediction Time Series Splits",
-        (
-            "02_predictions_timeseries_split_*_of_04.png",
-        ),
-    ),
     (
         "Cluster Diagnostics",
         (
@@ -51,6 +36,21 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
         (
             "cluster_precipitation_histograms/*.png",
             "cluster_prediction_histograms/*.png",
+        ),
+    ),
+    ("Model Fit", ("01_training_history_cluster_*.png",)),
+    (
+        "Predictions",
+        (
+            "02_predictions_vs_actual.png",
+            "03_residuals_analysis.png",
+            "04_error_by_magnitude.png",
+        ),
+    ),
+    (
+        "Prediction Time Series Splits",
+        (
+            "02_predictions_timeseries_split_*_of_04.png",
         ),
     ),
 )
@@ -97,12 +97,12 @@ def render_report(
         r"\date{}",
         r"\maketitle",
         r"\vspace{-2em}",
+        r"\section*{Dataset}",
+        dataset_summary(config),
         r"\section*{Configuration}",
         config_summary_list(config),
         r"\section*{LSTM Configs}",
         lstm_configs_list(config),
-        r"\section*{Dataset}",
-        dataset_summary(config),
         r"\section*{Metrics}",
         metrics_table(output_dir / "metrics_summary.csv"),
         cluster_metrics_table(output_dir / "cluster_model_metrics.csv"),
