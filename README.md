@@ -49,6 +49,7 @@ climate_temporal_cluster/
 |   |   `-- visualize_data.py      # Starter visualization module
 |   |-- methods/
 |   |   |-- cluster/
+|   |   |   |-- manual.py          # Horizon-rain-guided clustering
 |   |   |   |-- ng.py              # Spectral clustering implementation
 |   |   |   `-- cluster_pipeline.py
 |   |   |-- lstm_cluster/
@@ -84,7 +85,8 @@ STATE = "RS"
 STATION_ID = "A801"
 WINDOW_SIZES = [8, 12, 16, 20, 24, 28]
 N_CLUSTERS_LIST = [3, 4, 5]
-CLUSTERING_ALGORITHM = "spectral"  # or "kmeans"
+CLUSTERING_ALGORITHM = "spectral"  # "kmeans", "spectral", or "manual"
+FORECAST_HORIZON = 1
 N_SIGMA_VALUES = 5
 SHOW_CONSOLE_INFO = True
 ```
@@ -95,8 +97,8 @@ For each configuration, the experiment runs these stages:
 2. Select numeric climate features.
 3. Build sliding windows.
 4. Apply PCA dimensionality reduction using a variance threshold.
-5. Cluster windows with K-means or spectral clustering.
-6. Create next-day precipitation targets.
+5. Cluster windows with K-means, spectral, or manual rain clustering.
+6. Create precipitation targets at the configured forecast horizon.
 7. Split samples into train, validation, and test sets while preserving cluster
    information when possible.
 8. Train one LSTM model per training cluster.
@@ -215,6 +217,29 @@ Supported algorithms:
 - `spectral`: uses the local implementation in
   `src/methods/cluster/ng.py`
 
+The `methods.cluster.manual` module provides horizon-rain-guided clustering
+through the same `cluster_feature_matrix` dispatcher. Cluster `0` represents
+known zero-rain horizons, while known positive horizons are split into `k - 1`
+ordered groups from lower to heavier rain. Missing horizons are assigned to the
+nearest learned window-feature centroid.
+
+```python
+from methods.cluster.cluster_pipeline import cluster_feature_matrix
+from methods.cluster.manual import horizon_precipitation
+
+horizon_rain = horizon_precipitation(df, window_size=20, horizon=1)
+labels = cluster_feature_matrix(
+    windows_flat,
+    n_clusters=3,
+    algorithm="manual",
+    horizon_rain=horizon_rain,
+)
+```
+
+The `horizon` argument is general: `1` means the day after the window, and
+larger values select later forecast days. See
+`src/methods/cluster/cluster.md` for assumptions and the estimator interface.
+
 The spectral implementation follows the Ng, Jordan, and Weiss style workflow:
 
 1. Build a Gaussian affinity matrix.
@@ -288,6 +313,8 @@ Each configuration folder contains:
 - `experiment_report.pdf`, when a local LaTeX compiler is available
 - prediction, residual, error, cluster-performance, and histogram plots
 - input-window next-day precipitation distribution plots by cluster
+- per-cluster test performance time series with actual values, predictions,
+  residuals, cluster metrics, and compressed large temporal gaps
 
 Metrics include:
 
@@ -380,6 +407,7 @@ results = run_clustering_pipeline(
 | Sliding windows | `methods.tools.sliding_windows` |
 | Sigma selection | `methods.tools.sigma_choosing` |
 | Cluster feature matrix and dispatch | `methods.cluster.cluster_pipeline` |
+| Horizon-rain-guided clustering | `methods.cluster.manual` |
 | Spectral clustering | `methods.cluster.ng` |
 | LSTM model | `models.lstm` |
 | Metrics and reports | `evaluation.metrics` |
