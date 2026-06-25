@@ -53,6 +53,12 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
             "02_predictions_timeseries_split_*_of_04.png",
         ),
     ),
+    (
+        "Cluster Prediction Time Series",
+        (
+            "cluster_prediction_timeseries/*.png",
+        ),
+    ),
 )
 
 
@@ -166,6 +172,8 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
         ("n_clusters", "Number of Clusters"),
         ("algorithm", "Algorithm"),
         ("sigma", "Sigma"),
+        ("forecast_horizon", "Forecast Horizon"),
+        ("manual_zero_tolerance", "Manual Zero Tolerance"),
     )
     rows = [
         (label, config_map.get(key))

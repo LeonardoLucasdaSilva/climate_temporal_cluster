@@ -19,10 +19,12 @@ from evaluation.metrics import calculate_regression_metrics
 from models.lstm import LSTMPrecipitationPredictor
 from methods.cluster.cluster_pipeline import (
     PCA_VARIANCE_THRESHOLD,
+    SUPPORTED_CLUSTERING_ALGORITHMS,
     cluster_feature_matrix,
     create_cluster_feature_matrix,
     numeric_feature_columns,
 )
+from methods.cluster.manual import horizon_precipitation
 from methods.lstm_cluster.console import print_info, print_section
 from methods.lstm_cluster.report import generate_config_report
 from methods.tools.sigma_choosing import calculate_sigma_values
@@ -116,6 +118,7 @@ def split_by_cluster(
     X: np.ndarray,
     y: np.ndarray,
     cluster_labels: np.ndarray,
+    sample_indices: np.ndarray,
     train_ratio: float,
     val_ratio: float,
     random_state: int,
@@ -128,10 +131,11 @@ def split_by_cluster(
     counts = pd.Series(cluster_labels).value_counts()
     stratify = cluster_labels if counts.min() >= 3 else None
 
-    X_tv, X_test, y_tv, y_test, c_tv, c_test = train_test_split(
+    X_tv, X_test, y_tv, y_test, c_tv, c_test, i_tv, i_test = train_test_split(
         X,
         y,
         cluster_labels,
+        sample_indices,
         test_size=test_ratio,
         stratify=stratify,
         random_state=random_state,
@@ -140,16 +144,46 @@ def split_by_cluster(
     tv_counts = pd.Series(c_tv).value_counts()
     stratify_tv = c_tv if len(tv_counts) > 0 and tv_counts.min() >= 2 else None
     val_ratio_adjusted = val_ratio / (train_ratio + val_ratio)
-    X_train, X_val, y_train, y_val, c_train, c_val = train_test_split(
+    X_train, X_val, y_train, y_val, c_train, c_val, i_train, i_val = train_test_split(
         X_tv,
         y_tv,
         c_tv,
+        i_tv,
         test_size=val_ratio_adjusted,
         stratify=stratify_tv,
         random_state=random_state,
     )
 
-    return X_train, X_val, X_test, y_train, y_val, y_test, c_train, c_val, c_test
+    return (
+        X_train,
+        X_val,
+        X_test,
+        y_train,
+        y_val,
+        y_test,
+        c_train,
+        c_val,
+        c_test,
+        i_train,
+        i_val,
+        i_test,
+    )
+
+
+def precipitation_targets(
+    df: pd.DataFrame,
+    window_size: int,
+    n_windows: int,
+    horizon: int = 1,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return indices and known precipitation targets at a forecast horizon."""
+    all_targets = horizon_precipitation(
+        df,
+        window_size=window_size,
+        horizon=horizon,
+    )[:n_windows]
+    valid_indices = np.flatnonzero(np.isfinite(all_targets))
+    return valid_indices, all_targets[valid_indices]
 
 
 def next_day_precipitation_targets(
@@ -157,11 +191,8 @@ def next_day_precipitation_targets(
     window_size: int,
     n_windows: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Align each window with the following day's precipitation."""
-    valid_indices = np.arange(min(n_windows, len(df) - window_size))
-    target_indices = valid_indices + window_size
-    targets = df.iloc[target_indices]["PRECIPITACAO_TOTAL"].to_numpy(dtype=float)
-    return valid_indices, targets
+    """Backward-compatible alias for horizon-one precipitation targets."""
+    return precipitation_targets(df, window_size, n_windows, horizon=1)
 
 
 def to_lstm_shape(X: np.ndarray) -> np.ndarray:
@@ -261,6 +292,8 @@ def run_configuration(
     numeric_cols: list[str],
     output_dir: Path,
     use_all_features: bool,
+    forecast_horizon: int,
+    manual_zero_tolerance: float,
     train_ratio: float,
     val_ratio: float,
     random_state: int,
@@ -288,25 +321,47 @@ def run_configuration(
         variance_threshold=PCA_VARIANCE_THRESHOLD,
         verbose=show_console_info,
     )
+    all_horizon_rain = horizon_precipitation(
+        df,
+        window_size=config.window_size,
+        horizon=forecast_horizon,
+    )[:len(windows)]
     labels = cluster_feature_matrix(
         windows_flat,
         n_clusters=config.n_clusters,
         algorithm=config.algorithm,
         sigma=config.sigma,
         random_state=random_state,
+        horizon_rain=all_horizon_rain,
+        zero_tolerance=manual_zero_tolerance,
     )
-    valid_indices, targets = next_day_precipitation_targets(
+    valid_indices, targets = precipitation_targets(
         df,
         config.window_size,
         len(windows),
+        horizon=forecast_horizon,
     )
 
     X = windows_flat[valid_indices]
     c = labels[valid_indices]
-    X_train, X_val, X_test, y_train, y_val, y_test, c_train, c_val, c_test = split_by_cluster(
+    (
+        X_train,
+        X_val,
+        X_test,
+        y_train,
+        y_val,
+        y_test,
+        c_train,
+        c_val,
+        c_test,
+        _i_train,
+        _i_val,
+        i_test,
+    ) = split_by_cluster(
         X,
         targets,
         c,
+        valid_indices,
         train_ratio=train_ratio,
         val_ratio=val_ratio,
         random_state=random_state,
@@ -329,6 +384,8 @@ def run_configuration(
         "dataset_end_date": df["Data"].max().date().isoformat(),
         "features": feature_columns,
         "n_samples": n_samples,
+        "forecast_horizon": forecast_horizon,
+        "manual_zero_tolerance": manual_zero_tolerance,
         "splits": {
             "Training": {
                 "samples": len(y_train),
@@ -400,6 +457,7 @@ def run_configuration(
         y_pred_val,
         y_pred_test,
         c_test,
+        i_test,
         histories_by_cluster,
         metrics_by_cluster,
         state=config.state,
@@ -447,8 +505,22 @@ def run_experiment(
     plot_style: Mapping[str, object] | None = None,
     show_console_info: bool = True,
     sigma_values: list[float] | None = None,
+    forecast_horizon: int = 1,
+    manual_zero_tolerance: float = 0.0,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
+    clustering_algorithm = clustering_algorithm.lower()
+    if clustering_algorithm not in SUPPORTED_CLUSTERING_ALGORITHMS:
+        supported = ", ".join(SUPPORTED_CLUSTERING_ALGORITHMS)
+        raise ValueError(
+            f"Unsupported clustering algorithm: {clustering_algorithm!r}. "
+            f"Use one of: {supported}"
+        )
+    if forecast_horizon <= 0:
+        raise ValueError("forecast_horizon must be positive.")
+    if manual_zero_tolerance < 0:
+        raise ValueError("manual_zero_tolerance cannot be negative.")
+
     timestamp = datetime.now().strftime(timestamp_format)
     if sweep_name is None:
         sweep_name = f"{sweep_name_prefix}_{state}_{station_id}_{timestamp}"
@@ -527,6 +599,8 @@ def run_experiment(
                 numeric_cols,
                 sweep_dir / config.name,
                 use_all_features=use_all_features,
+                forecast_horizon=forecast_horizon,
+                manual_zero_tolerance=manual_zero_tolerance,
                 train_ratio=train_ratio,
                 val_ratio=val_ratio,
                 random_state=random_state,
