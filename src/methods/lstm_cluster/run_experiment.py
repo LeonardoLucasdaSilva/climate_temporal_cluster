@@ -14,8 +14,10 @@ STATION_ID = "A801"
 
 # Clustering sweep
 WINDOW_SIZES = [15]
-N_CLUSTERS_LIST = [3]
-CLUSTERING_ALGORITHM = "spectral"
+N_CLUSTERS_LIST = [5]
+CLUSTERING_ALGORITHM = "spectral"  # "kmeans", "spectral", or "manual"
+FORECAST_HORIZON = 1
+MANUAL_ZERO_TOLERANCE = 0.0
 N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"  # "auto" or "manual"
 MANUAL_SIGMA_VALUES = [0.1]  # Only used if SIGMA_MODE is "manual"
@@ -60,6 +62,8 @@ def main() -> None:
         window_sizes=WINDOW_SIZES,
         n_clusters_list=N_CLUSTERS_LIST,
         clustering_algorithm=CLUSTERING_ALGORITHM,
+        forecast_horizon=FORECAST_HORIZON,
+        manual_zero_tolerance=MANUAL_ZERO_TOLERANCE,
         n_sigma_values=N_SIGMA_VALUES,
         sigma_values=MANUAL_SIGMA_VALUES if sigma_mode == "manual" else None,
         use_all_features=USE_ALL_FEATURES,

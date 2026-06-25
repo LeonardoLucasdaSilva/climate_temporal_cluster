@@ -39,8 +39,8 @@ Or use the root launcher:
 2. Select numeric climate features.
 3. Build sliding windows.
 4. Reduce window features with PCA.
-5. Cluster windows with K-means or spectral clustering.
-6. Use the day after each window as the precipitation target.
+5. Cluster windows with K-means, spectral, or manual rain clustering.
+6. Use precipitation at the configured forecast horizon as the target.
 7. Split samples into train, validation, and test sets.
 8. Train one LSTM per training cluster.
 9. Merge cluster-specific predictions.
@@ -52,8 +52,8 @@ Change experiment variables in `run_experiment.py`:
 
 - station and data: `STATE`, `STATION_ID`
 - clustering sweep: `WINDOW_SIZES`, `N_CLUSTERS_LIST`,
-  `CLUSTERING_ALGORITHM`, `SIGMA_MODE`, `N_SIGMA_VALUES`,
-  `MANUAL_SIGMA_VALUES`, `USE_ALL_FEATURES`
+  `CLUSTERING_ALGORITHM`, `FORECAST_HORIZON`, `MANUAL_ZERO_TOLERANCE`,
+  `SIGMA_MODE`, `N_SIGMA_VALUES`, `MANUAL_SIGMA_VALUES`, `USE_ALL_FEATURES`
 - exported table metrics: `QUANTITATIVE_METRICS`
 - model hyperparameters: `LSTM_UNITS`, `LSTM_UNITS_2`, `DROPOUT_RATE`,
   `LEARNING_RATE`
@@ -72,6 +72,13 @@ For spectral clustering, set `SIGMA_MODE = "auto"` to generate
 `N_SIGMA_VALUES` candidates with the distance-based heuristic. Set
 `SIGMA_MODE = "manual"` to run the exact positive values listed in
 `MANUAL_SIGMA_VALUES`.
+
+Set `CLUSTERING_ALGORITHM` to `"kmeans"`, `"spectral"`, or `"manual"`.
+Manual clustering reserves label `0` for known zero-rain targets and splits
+known positive targets into ordered lower-to-heavier rain groups. Set
+`FORECAST_HORIZON = 1` for next-day rain or use a larger positive integer for
+a later horizon. `MANUAL_ZERO_TOLERANCE` controls the maximum precipitation
+treated as zero.
 
 Set `SHOW_CONSOLE_INFO = False` to hide pipeline progress messages and Keras
 training output. The root `run_experiments.py` launcher has the same setting and
@@ -98,3 +105,16 @@ which assigns the next-day precipitation target to every input window and its
 cluster. The matching horizontal histograms are saved as
 `08_input_precipitation_distribution_by_cluster.png` and as one figure per
 cluster under `input_precipitation_distribution_by_cluster/`.
+
+The automatic report includes a `Cluster Prediction Time Series` section with
+one out-of-sample performance figure per cluster. Each figure contains:
+
+- actual and predicted test precipitation in original chronological order;
+- a residual time series (`actual - predicted`);
+- cluster-level sample count, RMSE, MAE, and R2;
+- original window indices on the x-axis.
+
+Because the test split is sparse along the original timeline, gaps larger than
+ten windows are shortened for readability and marked with vertical dotted
+lines. The original indices remain on the ticks, so this compression does not
+change sample order or metric calculations.

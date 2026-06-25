@@ -224,6 +224,160 @@ def save_cluster_prediction_histograms(
         plt.close(fig)
 
 
+def compressed_time_positions(
+    original_indices: np.ndarray,
+    max_gap: int = 10,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return chronological plot positions with only large gaps shortened."""
+    indices = np.asarray(original_indices, dtype=int)
+    if indices.ndim != 1:
+        raise ValueError("original_indices must be one-dimensional.")
+    if max_gap <= 0:
+        raise ValueError("max_gap must be positive.")
+    if len(indices) == 0:
+        return np.array([], dtype=float), np.array([], dtype=bool)
+    if np.any(np.diff(indices) <= 0):
+        raise ValueError("original_indices must be strictly increasing.")
+
+    original_gaps = np.diff(indices)
+    compressed_intervals = original_gaps > max_gap
+    plotted_gaps = np.minimum(original_gaps, max_gap)
+    positions = np.concatenate(([0.0], np.cumsum(plotted_gaps, dtype=float)))
+    return positions, compressed_intervals
+
+
+def save_cluster_prediction_timeseries(
+    y_test: np.ndarray,
+    y_pred_test: np.ndarray,
+    c_test: np.ndarray,
+    test_indices: np.ndarray,
+    output_dir: Path,
+    max_gap: int = 10,
+) -> None:
+    """Save actual, predicted, and residual time series for each test cluster."""
+    y_test = np.asarray(y_test, dtype=float)
+    y_pred_test = np.asarray(y_pred_test, dtype=float)
+    c_test = np.asarray(c_test)
+    test_indices = np.asarray(test_indices, dtype=int)
+    lengths = {len(y_test), len(y_pred_test), len(c_test), len(test_indices)}
+    if len(lengths) != 1:
+        raise ValueError("Test values, labels, predictions, and indices must align.")
+
+    plot_dir = output_dir / "cluster_prediction_timeseries"
+    plot_dir.mkdir(exist_ok=True)
+
+    for cluster_id in sorted(np.unique(c_test)):
+        cluster_offsets = np.flatnonzero(c_test == cluster_id)
+        chronological_order = np.argsort(test_indices[cluster_offsets], kind="stable")
+        cluster_offsets = cluster_offsets[chronological_order]
+        original_indices = test_indices[cluster_offsets]
+        actual = y_test[cluster_offsets]
+        predicted = y_pred_test[cluster_offsets]
+        residuals = actual - predicted
+        positions, compressed_intervals = compressed_time_positions(
+            original_indices,
+            max_gap=max_gap,
+        )
+        metrics = calculate_regression_metrics(actual, predicted)
+
+        fig, axes = plt.subplots(
+            2,
+            1,
+            figsize=(14, 8),
+            sharex=True,
+            gridspec_kw={"height_ratios": [2.2, 1.0]},
+        )
+        axes[0].plot(
+            positions,
+            actual,
+            label="Actual",
+            color="#4C78A8",
+            linewidth=1.5,
+            alpha=0.85,
+        )
+        axes[0].scatter(
+            positions,
+            actual,
+            color="#4C78A8",
+            s=10,
+            alpha=0.65,
+            zorder=3,
+        )
+        axes[0].plot(
+            positions,
+            predicted,
+            label="Predicted",
+            color="#F58518",
+            linewidth=1.5,
+            alpha=0.85,
+        )
+        axes[0].set_ylabel("Precipitation (mm)")
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
+        axes[0].set_title(
+            f"Cluster {int(cluster_id)} Test Performance | "
+            f"n={len(actual)} | RMSE={metrics['RMSE']:.3f} | "
+            f"MAE={metrics['MAE']:.3f} | R2={metrics['R2']:.3f}"
+        )
+
+        axes[1].axhline(0.0, color="black", linestyle="--", linewidth=1)
+        axes[1].plot(
+            positions,
+            residuals,
+            color="#54A24B",
+            linewidth=1.2,
+            alpha=0.85,
+        )
+        axes[1].fill_between(
+            positions,
+            residuals,
+            0.0,
+            color="#54A24B",
+            alpha=0.18,
+        )
+        axes[1].set_ylabel("Residual (mm)")
+        axes[1].grid(True, alpha=0.3)
+
+        for interval_offset in np.flatnonzero(compressed_intervals):
+            gap_marker = (
+                positions[interval_offset] + positions[interval_offset + 1]
+            ) / 2
+            for ax in axes:
+                ax.axvline(
+                    gap_marker,
+                    color="#888888",
+                    linestyle=":",
+                    linewidth=0.8,
+                    alpha=0.55,
+                )
+
+        tick_count = min(9, len(positions))
+        tick_offsets = np.unique(
+            np.linspace(0, len(positions) - 1, tick_count, dtype=int)
+        )
+        axes[1].set_xticks(positions[tick_offsets])
+        axes[1].set_xticklabels(original_indices[tick_offsets])
+        axes[1].set_xlabel(
+            "Compressed test timeline (labels show original window index)"
+        )
+
+        compressed_count = int(compressed_intervals.sum())
+        if compressed_count:
+            fig.text(
+                0.5,
+                0.01,
+                f"{compressed_count} gaps larger than {max_gap} windows were "
+                f"displayed as {max_gap} windows.",
+                ha="center",
+                fontsize=9,
+            )
+        fig.tight_layout(rect=(0, 0.03, 1, 1))
+        fig.savefig(
+            plot_dir / f"cluster_{int(cluster_id)}_prediction_timeseries.png"
+        )
+        plt.close(fig)
+
+
 def save_precipitation_by_cluster_plot(
     y_test: np.ndarray,
     c_test: np.ndarray,
@@ -297,6 +451,7 @@ def save_visualizations(
     y_test: np.ndarray,
     y_pred_test: np.ndarray,
     c_test: np.ndarray,
+    test_indices: np.ndarray,
     next_day_precipitation: np.ndarray,
     input_cluster_labels: np.ndarray,
     histories_by_cluster: dict[int, object],
@@ -313,6 +468,13 @@ def save_visualizations(
     fig.savefig(output_dir / "02_predictions_vs_actual.png")
     plt.close(fig)
     save_prediction_timeseries_splits(y_test, y_pred_test, output_dir)
+    save_cluster_prediction_timeseries(
+        y_test,
+        y_pred_test,
+        c_test,
+        test_indices,
+        output_dir,
+    )
 
     fig, _ = plot_residuals(y_test, y_pred_test, title="Test Set: Residual Analysis")
     fig.savefig(output_dir / "03_residuals_analysis.png")
@@ -444,6 +606,7 @@ def save_run_outputs(
     y_pred_val: np.ndarray,
     y_pred_test: np.ndarray,
     c_test: np.ndarray,
+    test_indices: np.ndarray,
     histories_by_cluster: dict[int, object],
     metrics_by_cluster: dict[int, dict[str, float]],
     state: str,
@@ -474,14 +637,16 @@ def save_run_outputs(
         input_cluster_labels,
         output_dir,
     )
-    pd.DataFrame(
+    predictions_df = pd.DataFrame(
         {
             "actual": y_test,
             "predicted": y_pred_test,
             "residual": y_test - y_pred_test,
             "cluster": c_test,
+            "window_index": test_indices,
         }
-    ).to_csv(output_dir / "test_predictions.csv", index=False)
+    ).sort_values("window_index")
+    predictions_df.to_csv(output_dir / "test_predictions.csv", index=False)
 
     with open(output_dir / "evaluation_report.txt", "w", encoding="utf-8") as f:
         f.write(
@@ -514,6 +679,7 @@ def save_run_outputs(
         y_test,
         y_pred_test,
         c_test,
+        test_indices,
         next_day_precipitation,
         input_cluster_labels,
         histories_by_cluster,

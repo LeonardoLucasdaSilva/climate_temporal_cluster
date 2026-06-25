@@ -11,11 +11,12 @@ from sklearn.cluster import KMeans
 
 from config import DATA_ROOT
 from data.load_data import load_station_daily_data
+from methods.cluster.manual import manual_clustering
 from methods.cluster.ng import spectral_clustering
 from methods.tools.sliding_windows import create_windows
 
 
-SUPPORTED_CLUSTERING_ALGORITHMS = ("kmeans", "spectral")
+SUPPORTED_CLUSTERING_ALGORITHMS = ("kmeans", "spectral", "manual")
 PCA_VARIANCE_THRESHOLD = 0.90
 KMEANS_N_INIT = 10
 
@@ -89,17 +90,23 @@ def cluster_feature_matrix(
     algorithm: str = "kmeans",
     sigma: float | None = None,
     random_state: int = 42,
+    horizon_rain: np.ndarray | None = None,
+    zero_tolerance: float = 0.0,
 ) -> np.ndarray:
-    """Cluster a feature matrix with K-means or spectral clustering.
+    """Cluster a feature matrix with K-means, spectral, or manual clustering.
 
     Args:
         feature_matrix: 2D matrix with shape `(n_samples, n_features)`.
         n_clusters: Number of clusters to produce.
-        algorithm: Clustering algorithm name. Supported values are `kmeans`
-            and `spectral`.
+        algorithm: Clustering algorithm name. Supported values are `kmeans`,
+            `spectral`, and `manual`.
         sigma: Gaussian-kernel bandwidth for spectral clustering. Required
             when `algorithm="spectral"`.
         random_state: Random seed used by K-means and spectral clustering.
+        horizon_rain: Horizon precipitation aligned with `feature_matrix`.
+            Required when `algorithm="manual"`. Missing horizons may be `NaN`.
+        zero_tolerance: Maximum precipitation treated as zero by manual
+            clustering.
 
     Returns:
         One-dimensional array of cluster labels with length `n_samples`.
@@ -122,6 +129,18 @@ def cluster_feature_matrix(
             sigma=sigma,
             k=n_clusters,
             random_state=random_state,
+        )
+
+    if algorithm == "manual":
+        if horizon_rain is None:
+            raise ValueError(
+                "horizon_rain must be provided when algorithm='manual'"
+            )
+        return manual_clustering(
+            feature_matrix,
+            horizon_rain,
+            k=n_clusters,
+            zero_tolerance=zero_tolerance,
         )
 
     supported = ", ".join(SUPPORTED_CLUSTERING_ALGORITHMS)
