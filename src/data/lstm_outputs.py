@@ -22,6 +22,7 @@ from evaluation.metrics import (
     calculate_zero_precipitation_metrics,
     create_evaluation_report,
 )
+from methods.tools.precipitation_utils import precipitation_bin_edges
 
 
 class ExperimentConfigLike(Protocol):
@@ -89,22 +90,6 @@ def save_cluster_precipitation_histograms(
             hist_dir / f"cluster_{int(cluster_id)}_precipitation_histogram.png",
         )
         plt.close(fig)
-
-
-def precipitation_bin_edges(values: np.ndarray) -> np.ndarray:
-    """Return readable shared precipitation bins for cluster histograms."""
-    values = np.asarray(values, dtype=float)
-    values = values[np.isfinite(values)]
-    if values.size == 0:
-        return np.array([0.0, 1.0])
-
-    max_value = float(values.max())
-    if max_value <= 0:
-        return np.array([0.0, 1.0])
-
-    raw_edges = np.histogram_bin_edges(values, bins="fd")
-    n_bins = max(8, min(len(raw_edges) - 1, 35))
-    return np.linspace(0.0, max_value, n_bins + 1)
 
 
 def save_input_precipitation_assignments(

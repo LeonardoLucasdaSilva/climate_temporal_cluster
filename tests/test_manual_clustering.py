@@ -9,10 +9,10 @@ import pandas as pd
 
 from methods.cluster.manual import (
     ManualRainClustering,
-    horizon_precipitation,
     manual_clustering,
 )
 from methods.cluster.cluster_pipeline import cluster_feature_matrix
+from methods.tools.precipitation_utils import horizon_precipitation
 
 
 class ManualRainClusteringTests(unittest.TestCase):

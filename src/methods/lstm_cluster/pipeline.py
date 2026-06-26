@@ -24,9 +24,12 @@ from methods.cluster.cluster_pipeline import (
     create_cluster_feature_matrix,
     numeric_feature_columns,
 )
-from methods.cluster.manual import horizon_precipitation
 from methods.lstm_cluster.console import print_info, print_section
 from methods.lstm_cluster.report import generate_config_report
+from methods.tools.precipitation_utils import (
+    horizon_precipitation,
+    precipitation_targets,
+)
 from methods.tools.sigma_choosing import calculate_sigma_values
 
 
@@ -168,31 +171,6 @@ def split_by_cluster(
         i_val,
         i_test,
     )
-
-
-def precipitation_targets(
-    df: pd.DataFrame,
-    window_size: int,
-    n_windows: int,
-    horizon: int = 1,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return indices and known precipitation targets at a forecast horizon."""
-    all_targets = horizon_precipitation(
-        df,
-        window_size=window_size,
-        horizon=horizon,
-    )[:n_windows]
-    valid_indices = np.flatnonzero(np.isfinite(all_targets))
-    return valid_indices, all_targets[valid_indices]
-
-
-def next_day_precipitation_targets(
-    df: pd.DataFrame,
-    window_size: int,
-    n_windows: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Backward-compatible alias for horizon-one precipitation targets."""
-    return precipitation_targets(df, window_size, n_windows, horizon=1)
 
 
 def to_lstm_shape(X: np.ndarray) -> np.ndarray:
