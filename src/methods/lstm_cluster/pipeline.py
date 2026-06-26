@@ -205,6 +205,277 @@ def clipped_predictions(model: LSTMPrecipitationPredictor, X: np.ndarray) -> np.
     return np.maximum(model.predict(X).ravel(), 0.0)
 
 
+def bootstrap_mean_ci(
+    values: np.ndarray,
+    random_state: int,
+    n_bootstrap: int = 2000,
+    confidence: float = 0.95,
+) -> tuple[float, float, float]:
+    """Return a bootstrap CI and probability that the mean is positive."""
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return np.nan, np.nan, np.nan
+
+    rng = np.random.default_rng(random_state)
+    sample_indices = rng.integers(0, values.size, size=(n_bootstrap, values.size))
+    bootstrap_means = values[sample_indices].mean(axis=1)
+    alpha = (1.0 - confidence) / 2.0
+    return (
+        float(np.quantile(bootstrap_means, alpha)),
+        float(np.quantile(bootstrap_means, 1.0 - alpha)),
+        float(np.mean(bootstrap_means > 0.0)),
+    )
+
+
+def evaluate_test_samples_with_all_models(
+    models_by_cluster: dict[int, LSTMPrecipitationPredictor],
+    X_test_lstm: np.ndarray,
+    y_test: np.ndarray,
+    c_test: np.ndarray,
+    original_y_pred_test: np.ndarray,
+    random_state: int,
+) -> tuple[np.ndarray, dict[int, dict[str, float]], dict[str, object]]:
+    """Select the best trained LSTM per test sample and metric."""
+    model_items = sorted(models_by_cluster.items())
+    model_cluster_ids = np.array([cluster_id for cluster_id, _model in model_items], dtype=int)
+    y_pred_by_model = np.column_stack(
+        [clipped_predictions(model, X_test_lstm) for _cluster_id, model in model_items]
+    )
+    original_model_by_sample = np.asarray(c_test, dtype=int)
+    primary_metric = "RMSE"
+
+    per_metric_errors = {
+        "MSE": (y_test[:, None] - y_pred_by_model) ** 2,
+        "RMSE": (y_test[:, None] - y_pred_by_model) ** 2,
+        "MAE": np.abs(y_test[:, None] - y_pred_by_model),
+        "RMSLE": (
+            np.log1p(np.maximum(y_test[:, None], 0.0))
+            - np.log1p(np.maximum(y_pred_by_model, 0.0))
+        )
+        ** 2,
+    }
+    mape_report_errors = np.full_like(y_pred_by_model, np.nan, dtype=float)
+    mape_selection_errors = per_metric_errors["MAE"].copy()
+    nonzero_target = y_test != 0
+    mape_report_errors[nonzero_target] = (
+        np.abs(
+            (y_test[nonzero_target, None] - y_pred_by_model[nonzero_target])
+            / y_test[nonzero_target, None]
+        )
+        * 100.0
+    )
+    mape_selection_errors[nonzero_target] = mape_report_errors[nonzero_target]
+    per_metric_errors["MAPE"] = mape_selection_errors
+
+    y_pred_selected_by_metric: dict[str, np.ndarray] = {}
+    selected_model_by_metric: dict[str, np.ndarray] = {}
+    for metric_name, errors in per_metric_errors.items():
+        comparable_errors = np.where(np.isfinite(errors), errors, np.inf)
+        best_offsets = np.argmin(comparable_errors, axis=1)
+        y_pred_selected_by_metric[metric_name] = y_pred_by_model[
+            np.arange(len(y_test)),
+            best_offsets,
+        ]
+        selected_model_by_metric[metric_name] = model_cluster_ids[best_offsets]
+
+    y_pred_selected = y_pred_selected_by_metric[primary_metric]
+    selected_model_by_sample = selected_model_by_metric[primary_metric].astype(float)
+    comparison_rows: list[dict[str, float | int | bool]] = []
+    selection_rows: list[dict[str, float | int | str | bool]] = []
+    metric_summary_rows: list[dict[str, float | int | str]] = []
+    metrics_by_test_cluster: dict[int, dict[str, float]] = {}
+
+    for sample_index, (actual, test_cluster_id) in enumerate(zip(y_test, c_test)):
+        for model_offset, model_cluster_id in enumerate(model_cluster_ids):
+            comparison_rows.append(
+                {
+                    "sample_index": sample_index,
+                    "test_cluster": int(test_cluster_id),
+                    "model_cluster": int(model_cluster_id),
+                    "is_same_cluster_model": int(model_cluster_id)
+                    == int(test_cluster_id),
+                    "actual": float(actual),
+                    "predicted": float(y_pred_by_model[sample_index, model_offset]),
+                    "squared_error": float(
+                        per_metric_errors["MSE"][sample_index, model_offset]
+                    ),
+                    "absolute_error": float(
+                        per_metric_errors["MAE"][sample_index, model_offset]
+                    ),
+                    "squared_log_error": float(
+                        per_metric_errors["RMSLE"][sample_index, model_offset]
+                    ),
+                    "absolute_percentage_error": float(
+                        mape_report_errors[sample_index, model_offset]
+                    ),
+                }
+            )
+
+        for metric_name in per_metric_errors:
+            selected_model = int(selected_model_by_metric[metric_name][sample_index])
+            selected_prediction = float(
+                y_pred_selected_by_metric[metric_name][sample_index]
+            )
+            original_prediction = float(original_y_pred_test[sample_index])
+            selection_rows.append(
+                {
+                    "sample_index": sample_index,
+                    "test_cluster": int(test_cluster_id),
+                    "metric": metric_name,
+                    "selected_model_cluster": selected_model,
+                    "selected_is_same_cluster": selected_model
+                    == int(test_cluster_id),
+                    "actual": float(actual),
+                    "selected_prediction": selected_prediction,
+                    "same_cluster_prediction": original_prediction,
+                    "selected_absolute_error": abs(float(actual) - selected_prediction),
+                    "same_cluster_absolute_error": abs(
+                        float(actual) - original_prediction
+                    ),
+                }
+            )
+
+    original_metrics = calculate_regression_metrics(y_test, original_y_pred_test)
+    for metric_name, selected_predictions in y_pred_selected_by_metric.items():
+        selected_metrics = calculate_regression_metrics(y_test, selected_predictions)
+        selected_models = selected_model_by_metric[metric_name]
+        metric_summary_rows.append(
+            {
+                "metric_selection": metric_name,
+                "original_mse": float(original_metrics["MSE"]),
+                "selected_mse": float(selected_metrics["MSE"]),
+                "mse_improvement": float(
+                    original_metrics["MSE"] - selected_metrics["MSE"]
+                ),
+                "mse_improvement_percent": float(
+                    (
+                        (original_metrics["MSE"] - selected_metrics["MSE"])
+                        / original_metrics["MSE"]
+                        * 100.0
+                    )
+                    if original_metrics["MSE"] != 0
+                    else np.nan
+                ),
+                "original_rmse": float(original_metrics["RMSE"]),
+                "selected_rmse": float(selected_metrics["RMSE"]),
+                "rmse_improvement": float(
+                    original_metrics["RMSE"] - selected_metrics["RMSE"]
+                ),
+                "rmse_improvement_percent": float(
+                    (
+                        (original_metrics["RMSE"] - selected_metrics["RMSE"])
+                        / original_metrics["RMSE"]
+                        * 100.0
+                    )
+                    if original_metrics["RMSE"] != 0
+                    else np.nan
+                ),
+                "original_mae": float(original_metrics["MAE"]),
+                "selected_mae": float(selected_metrics["MAE"]),
+                "mae_improvement": float(
+                    original_metrics["MAE"] - selected_metrics["MAE"]
+                ),
+                "mae_improvement_percent": float(
+                    (
+                        (original_metrics["MAE"] - selected_metrics["MAE"])
+                        / original_metrics["MAE"]
+                        * 100.0
+                    )
+                    if original_metrics["MAE"] != 0
+                    else np.nan
+                ),
+                "original_rmsle": float(original_metrics["RMSLE"]),
+                "selected_rmsle": float(selected_metrics["RMSLE"]),
+                "rmsle_improvement": float(
+                    original_metrics["RMSLE"] - selected_metrics["RMSLE"]
+                ),
+                "rmsle_improvement_percent": float(
+                    (
+                        (original_metrics["RMSLE"] - selected_metrics["RMSLE"])
+                        / original_metrics["RMSLE"]
+                        * 100.0
+                    )
+                    if original_metrics["RMSLE"] != 0
+                    else np.nan
+                ),
+                "original_r2": float(original_metrics["R2"]),
+                "selected_r2": float(selected_metrics["R2"]),
+                "r2_improvement": float(
+                    selected_metrics["R2"] - original_metrics["R2"]
+                ),
+                "original_mape": float(original_metrics["MAPE"]),
+                "selected_mape": float(selected_metrics["MAPE"]),
+                "mape_improvement": float(
+                    original_metrics["MAPE"] - selected_metrics["MAPE"]
+                ),
+                "mape_improvement_percent": float(
+                    (
+                        (original_metrics["MAPE"] - selected_metrics["MAPE"])
+                        / original_metrics["MAPE"]
+                        * 100.0
+                    )
+                    if np.isfinite(original_metrics["MAPE"])
+                    and original_metrics["MAPE"] != 0
+                    else np.nan
+                ),
+                "switched_samples": int(np.sum(selected_models != original_model_by_sample)),
+                "n_test": int(len(y_test)),
+                "switched_samples_percent": float(
+                    np.mean(selected_models != original_model_by_sample) * 100.0
+                ),
+            }
+        )
+
+    for test_cluster_id in sorted(np.unique(c_test)):
+        mask = c_test == test_cluster_id
+        metrics_by_test_cluster[int(test_cluster_id)] = calculate_regression_metrics(
+            y_test[mask],
+            y_pred_selected[mask],
+        )
+
+    selected_metrics = calculate_regression_metrics(y_test, y_pred_selected)
+    squared_error_improvement = (
+        (y_test - original_y_pred_test) ** 2 - (y_test - y_pred_selected) ** 2
+    )
+    ci_low, ci_high, improvement_probability = bootstrap_mean_ci(
+        squared_error_improvement,
+        random_state=random_state,
+    )
+    switched_samples = int(selected_model_by_sample.astype(int).size) - int(
+        np.sum(selected_model_by_sample.astype(int) == original_model_by_sample)
+    )
+    summary = {
+        "primary_metric": primary_metric,
+        "original_mse": float(original_metrics["MSE"]),
+        "selected_mse": float(selected_metrics["MSE"]),
+        "mse_improvement": float(original_metrics["MSE"] - selected_metrics["MSE"]),
+        "original_rmse": float(original_metrics["RMSE"]),
+        "selected_rmse": float(selected_metrics["RMSE"]),
+        "rmse_improvement": float(original_metrics["RMSE"] - selected_metrics["RMSE"]),
+        "original_mae": float(original_metrics["MAE"]),
+        "selected_mae": float(selected_metrics["MAE"]),
+        "mae_improvement": float(original_metrics["MAE"] - selected_metrics["MAE"]),
+        "mse_improvement_ci_low": ci_low,
+        "mse_improvement_ci_high": ci_high,
+        "mse_improvement_probability": improvement_probability,
+        "n_test_clusters": int(len(np.unique(c_test))),
+        "n_test_samples": int(len(y_test)),
+        "switched_samples": switched_samples,
+    }
+    test_model_selection = {
+        "comparison_rows": comparison_rows,
+        "selection_rows": selection_rows,
+        "metric_summary_rows": metric_summary_rows,
+        "summary": summary,
+        "selected_model_by_sample": selected_model_by_sample,
+        "original_prediction_by_sample": original_y_pred_test,
+        "selected_prediction_by_metric": y_pred_selected_by_metric,
+        "selected_model_by_metric": selected_model_by_metric,
+    }
+    return y_pred_selected, metrics_by_test_cluster, test_model_selection
+
+
 def train_cluster_models(
     X_train: np.ndarray,
     X_val: np.ndarray,
@@ -226,7 +497,15 @@ def train_cluster_models(
     verbose_training: int,
     random_state: int,
     show_console_info: bool,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[int, object], dict[int, dict[str, float]]]:
+    test_all_models: bool,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[int, object],
+    dict[int, dict[str, float]],
+    dict[str, object] | None,
+]:
     """Train cluster-specific LSTMs and merge their predictions."""
     X_train_lstm = to_lstm_shape(X_train)
     X_val_lstm = to_lstm_shape(X_val)
@@ -237,6 +516,7 @@ def train_cluster_models(
     y_pred_test = np.zeros_like(y_test, dtype=float)
     histories_by_cluster: dict[int, object] = {}
     metrics_by_cluster: dict[int, dict[str, float]] = {}
+    models_by_cluster: dict[int, LSTMPrecipitationPredictor] = {}
 
     for cluster_id in sorted(np.unique(c_train)):
         tr_mask = c_train == cluster_id
@@ -282,8 +562,46 @@ def train_cluster_models(
             )
 
         histories_by_cluster[int(cluster_id)] = history
+        models_by_cluster[int(cluster_id)] = model
 
-    return y_pred_train, y_pred_val, y_pred_test, histories_by_cluster, metrics_by_cluster
+    if not test_all_models:
+        return (
+            y_pred_train,
+            y_pred_val,
+            y_pred_test,
+            histories_by_cluster,
+            metrics_by_cluster,
+            None,
+        )
+
+    y_pred_test_selected, selected_metrics_by_cluster, test_model_selection = (
+        evaluate_test_samples_with_all_models(
+            models_by_cluster,
+            X_test_lstm,
+            y_test,
+            c_test,
+            original_y_pred_test=y_pred_test.copy(),
+            random_state=random_state,
+        )
+    )
+
+    selection_summary = dict(test_model_selection["summary"])
+    print_info(
+        "  Per-sample test model selection "
+        f"({selection_summary['primary_metric']} primary): "
+        f"{selection_summary['switched_samples']} of "
+        f"{selection_summary['n_test_samples']} samples switched models",
+        show_console_info,
+    )
+
+    return (
+        y_pred_train,
+        y_pred_val,
+        y_pred_test_selected,
+        histories_by_cluster,
+        selected_metrics_by_cluster,
+        test_model_selection,
+    )
 
 
 def run_configuration(
@@ -307,6 +625,7 @@ def run_configuration(
     patience: int,
     verbose_training: int,
     show_console_info: bool,
+    test_all_models: bool,
 ) -> dict[str, float | int | str | None]:
     """Run one sweep configuration and save its artifacts."""
     print_section(f"Running {config.name}", show_console_info)
@@ -413,6 +732,7 @@ def run_configuration(
         "optimizer": "Adam",
         "loss": "mean_squared_error",
         "metrics": ["mae", "mse"],
+        "test_all_models": test_all_models,
     }
 
     (
@@ -421,6 +741,7 @@ def run_configuration(
         y_pred_test,
         histories_by_cluster,
         metrics_by_cluster,
+        test_model_selection,
     ) = train_cluster_models(
         X_train,
         X_val,
@@ -442,6 +763,7 @@ def run_configuration(
         verbose_training=verbose_training,
         random_state=random_state,
         show_console_info=show_console_info,
+        test_all_models=test_all_models,
     )
 
     result = save_run_outputs(
@@ -463,6 +785,7 @@ def run_configuration(
         state=config.state,
         station_id=config.station_id,
         pca_variance_threshold=PCA_VARIANCE_THRESHOLD,
+        test_model_selection=test_model_selection,
     )
     tex_path, pdf_path = generate_config_report(output_dir, report_config)
     print_info(f"  Report: {tex_path.name}", show_console_info)
@@ -507,6 +830,7 @@ def run_experiment(
     sigma_values: list[float] | None = None,
     forecast_horizon: int = 1,
     manual_zero_tolerance: float = 0.0,
+    test_all_models: bool = True,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
     clustering_algorithm = clustering_algorithm.lower()
@@ -614,6 +938,7 @@ def run_experiment(
                 patience=patience,
                 verbose_training=verbose_training,
                 show_console_info=show_console_info,
+                test_all_models=test_all_models,
             )
         )
 
