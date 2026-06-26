@@ -232,7 +232,7 @@ nearest learned window-feature centroid.
 
 ```python
 from methods.cluster.cluster_pipeline import cluster_feature_matrix
-from methods.cluster.manual import horizon_precipitation
+from methods.tools.precipitation_utils import horizon_precipitation
 
 horizon_rain = horizon_precipitation(df, window_size=20, horizon=1)
 labels = cluster_feature_matrix(

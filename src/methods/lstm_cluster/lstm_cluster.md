@@ -85,6 +85,11 @@ known positive targets into ordered lower-to-heavier rain groups. Set
 a later horizon. `MANUAL_ZERO_TOLERANCE` controls the maximum precipitation
 treated as zero.
 
+Forecast-horizon precipitation alignment is handled by
+`methods.tools.precipitation_utils`. The LSTM pipeline uses
+`horizon_precipitation` for manual clustering context and
+`precipitation_targets` to select finite supervised targets.
+
 Set `SHOW_CONSOLE_INFO = False` to hide pipeline progress messages and Keras
 training output. The root `run_experiments.py` launcher has the same setting and
 passes it to this runner through `LSTM_CLUSTER_SHOW_CONSOLE_INFO`.
