@@ -43,8 +43,12 @@ Or use the root launcher:
 6. Use precipitation at the configured forecast horizon as the target.
 7. Split samples into train, validation, and test sets.
 8. Train one LSTM per training cluster.
-9. Merge cluster-specific predictions.
-10. Save metrics, reports, plots, predictions, and LaTeX tables.
+9. Keep train and validation predictions tied to each sample's own cluster
+   model.
+10. Evaluate test samples with either their own cluster model only or, when
+   `TEST_ALL_MODELS = True`, every trained cluster model with per-metric sample
+   selection.
+11. Save metrics, reports, plots, predictions, and LaTeX tables.
 
 ## Configuration
 
@@ -54,6 +58,7 @@ Change experiment variables in `run_experiment.py`:
 - clustering sweep: `WINDOW_SIZES`, `N_CLUSTERS_LIST`,
   `CLUSTERING_ALGORITHM`, `FORECAST_HORIZON`, `MANUAL_ZERO_TOLERANCE`,
   `SIGMA_MODE`, `N_SIGMA_VALUES`, `MANUAL_SIGMA_VALUES`, `USE_ALL_FEATURES`
+- test evaluation mode: `TEST_ALL_MODELS`
 - exported table metrics: `QUANTITATIVE_METRICS`
 - model hyperparameters: `LSTM_UNITS`, `LSTM_UNITS_2`, `DROPOUT_RATE`,
   `LEARNING_RATE`
@@ -80,9 +85,20 @@ known positive targets into ordered lower-to-heavier rain groups. Set
 a later horizon. `MANUAL_ZERO_TOLERANCE` controls the maximum precipitation
 treated as zero.
 
+Forecast-horizon precipitation alignment is handled by
+`methods.tools.precipitation_utils`. The LSTM pipeline uses
+`horizon_precipitation` for manual clustering context and
+`precipitation_targets` to select finite supervised targets.
+
 Set `SHOW_CONSOLE_INFO = False` to hide pipeline progress messages and Keras
 training output. The root `run_experiments.py` launcher has the same setting and
 passes it to this runner through `LSTM_CLUSTER_SHOW_CONSOLE_INFO`.
+
+Set `TEST_ALL_MODELS = False` to use the original test behavior where each
+test sample is predicted only by the LSTM trained on its own cluster. Set
+`TEST_ALL_MODELS = True` to evaluate every test sample with every trained LSTM,
+choose the best model per sample and metric, and save the extra model-selection
+diagnostics.
 
 ## Outputs
 
@@ -96,15 +112,48 @@ The sweep folder contains summary CSV/text files and LaTeX tables. Each
 configuration subfolder contains run metrics, predictions, reports, and plots.
 Output writing is handled by `data.lstm_outputs`.
 
-Each configuration folder also gets `experiment_report.tex`. If a local LaTeX
-compiler is available, the pipeline also writes `experiment_report.pdf`; if PDF
-compilation fails, `experiment_report_compile.log` is saved for troubleshooting.
+When `TEST_ALL_MODELS = True`, each configuration also includes cross-cluster
+test model selection artifacts:
+
+- `test_model_comparison.csv`: errors for every test-sample/model-cluster
+  pairing.
+- `test_model_selection.csv`: the selected model for each test sample and
+  metric.
+- `test_model_metric_summary.csv`: aggregate metrics for each metric-specific
+  sample-level selection strategy.
+- `test_model_selection_report.txt`: a readable comparison between the
+  original same-cluster strategy and the selected-model strategy, including a
+  paired bootstrap interval for squared-error improvement.
+
+The model selection is performed on the test split at sample level, so this
+report should be read as an oracle-style diagnostic for cross-cluster transfer
+and not as an unbiased estimate of future performance.
+
+Because the selection unit is one scalar target, MSE, RMSE, MAE, and MAPE
+usually choose the same model for a sample: for a fixed observed precipitation
+value, they all rank candidate predictions by closeness to the actual value.
+RMSLE can differ because it ranks closeness after applying the logarithmic
+transform.
+
+Each configuration folder also gets `experiment_report.tex`. When all-model
+test selection is enabled, this report includes a compact `Test Model
+Selection` section showing changed sample counts and metric improvements. If a
+local LaTeX compiler is available, the pipeline also writes
+`experiment_report.pdf`; if PDF compilation fails,
+`experiment_report_compile.log` is saved for troubleshooting.
+
+Each configuration also groups generated images by purpose. General prediction
+plots go under `prediction_overview/`, split time-series plots under
+`prediction_timeseries_splits/`, residual/error plots under
+`residual_diagnostics/`, cluster diagnostics under `cluster_diagnostics/`, and
+training curves under `model_fit/`. Existing per-cluster collections remain in
+folders such as `cluster_precipitation_histograms/`,
+`cluster_prediction_histograms/`, and `cluster_prediction_timeseries/`.
 
 Each configuration also saves `input_next_day_precipitation_by_cluster.csv`,
 which assigns the next-day precipitation target to every input window and its
-cluster. The matching horizontal histograms are saved as
-`08_input_precipitation_distribution_by_cluster.png` and as one figure per
-cluster under `input_precipitation_distribution_by_cluster/`.
+cluster. The matching horizontal histograms are saved under
+`input_precipitation_distribution_by_cluster/`.
 
 The automatic report includes a `Cluster Prediction Time Series` section with
 one out-of-sample performance figure per cluster. Each figure contains:

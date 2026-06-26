@@ -11,49 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-import pandas as pd
 
-
-DEFAULT_PRECIPITATION_COLUMN = "PRECIPITACAO_TOTAL"
-
-
-def horizon_precipitation(
-    df: pd.DataFrame,
-    window_size: int,
-    horizon: int = 1,
-    precipitation_column: str = DEFAULT_PRECIPITATION_COLUMN,
-) -> np.ndarray:
-    """Return precipitation at the selected horizon for every sliding window.
-
-    A window beginning at row ``i`` ends at ``i + window_size - 1``. Its
-    horizon target is therefore row ``i + window_size - 1 + horizon``.
-    Targets beyond the dataframe are returned as ``NaN`` so those windows can
-    later be assigned by feature-space distance.
-    """
-    if window_size <= 0:
-        raise ValueError("window_size must be positive.")
-    if horizon <= 0:
-        raise ValueError("horizon must be positive.")
-    if precipitation_column not in df.columns:
-        raise ValueError(
-            f"Dataframe does not contain precipitation column "
-            f"{precipitation_column!r}."
-        )
-    if len(df) < window_size:
-        raise ValueError(
-            f"Dataframe has {len(df)} rows but window_size is {window_size}."
-        )
-
-    n_windows = len(df) - window_size + 1
-    targets = np.full(n_windows, np.nan, dtype=float)
-    available = max(n_windows - horizon, 0)
-    if available:
-        target_indices = np.arange(available) + window_size - 1 + horizon
-        targets[:available] = pd.to_numeric(
-            df.iloc[target_indices][precipitation_column],
-            errors="coerce",
-        ).to_numpy(dtype=float)
-    return targets
+from methods.tools.precipitation_utils import horizon_precipitation
 
 
 @dataclass

@@ -22,6 +22,7 @@ N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"  # "auto" or "manual"
 MANUAL_SIGMA_VALUES = [0.1]  # Only used if SIGMA_MODE is "manual"
 USE_ALL_FEATURES = True
+TEST_ALL_MODELS = False  # True: test each sample on every LSTM; False: own cluster only
 
 # Metrics exported to compact comparison tables
 QUANTITATIVE_METRICS = ["MSE"]
@@ -87,6 +88,7 @@ def main() -> None:
         timestamp_format=str(output_config.get("timestamp_format", "%Y%m%d_%H%M%S")),
         plot_style=output_config.get("plot_style"),
         show_console_info=SHOW_CONSOLE_INFO,
+        test_all_models=TEST_ALL_MODELS,
     )
 
 

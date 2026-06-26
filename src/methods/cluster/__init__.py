@@ -9,10 +9,10 @@ from methods.cluster.cluster_pipeline import (
 )
 from methods.cluster.manual import (
     ManualRainClustering,
-    horizon_precipitation,
     manual_clustering,
 )
 from methods.cluster.ng import fit_predict, spectral_clustering
+from methods.tools.precipitation_utils import horizon_precipitation
 
 __all__ = [
     "ManualRainClustering",

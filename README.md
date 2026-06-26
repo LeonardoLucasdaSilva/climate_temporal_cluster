@@ -6,7 +6,9 @@ clustering workflow and cluster-specific LSTM precipitation models.
 The main experiment is configured in `methods.lstm_cluster.run_experiment` and
 executed by `methods.lstm_cluster.pipeline`. It builds sliding windows from
 daily station data, clusters those windows, trains one LSTM model per cluster,
-and writes metrics, predictions, plots, and LaTeX-ready summary tables.
+tests each sample with every trained LSTM before selecting the best test-time
+model per metric, and writes metrics, predictions, plots, and LaTeX-ready
+summary tables.
 
 ## Quick Start
 
@@ -88,6 +90,7 @@ N_CLUSTERS_LIST = [3, 4, 5]
 CLUSTERING_ALGORITHM = "spectral"  # "kmeans", "spectral", or "manual"
 FORECAST_HORIZON = 1
 N_SIGMA_VALUES = 5
+TEST_ALL_MODELS = True
 SHOW_CONSOLE_INFO = True
 ```
 
@@ -102,8 +105,12 @@ For each configuration, the experiment runs these stages:
 7. Split samples into train, validation, and test sets while preserving cluster
    information when possible.
 8. Train one LSTM model per training cluster.
-9. Predict train, validation, and test precipitation.
-10. Save metrics, reports, predictions, plots, and LaTeX tables.
+9. Predict train and validation precipitation with each sample's own cluster
+   model.
+10. Evaluate test samples with either their own cluster model only or, when
+   `TEST_ALL_MODELS = True`, every trained cluster model with per-metric sample
+   selection.
+11. Save metrics, reports, predictions, plots, and LaTeX tables.
 
 ## Data Loading
 
@@ -225,7 +232,7 @@ nearest learned window-feature centroid.
 
 ```python
 from methods.cluster.cluster_pipeline import cluster_feature_matrix
-from methods.cluster.manual import horizon_precipitation
+from methods.tools.precipitation_utils import horizon_precipitation
 
 horizon_rain = horizon_precipitation(df, window_size=20, horizon=1)
 labels = cluster_feature_matrix(
@@ -281,10 +288,20 @@ For each cluster, the training loop:
 1. Selects train/validation/test samples assigned to that cluster.
 2. Builds an LSTM model with two LSTM layers, dropout, and dense layers.
 3. Trains with optional early stopping.
-4. Writes predictions back into aggregate train/validation/test arrays.
-5. Calculates cluster-level test metrics.
+4. Writes train and validation predictions back into aggregate arrays.
+5. Evaluates test samples with their own cluster model, or with every trained
+   cluster model when `TEST_ALL_MODELS = True`.
+6. In all-model mode, selects the best model per sample and per metric; the
+   main prediction output uses the RMSE/MSE-equivalent squared-error selection.
+7. Calculates selected-model cluster-level test metrics from those sample-level
+   predictions.
 
 The model predicts one value: next-day precipitation in millimeters.
+
+Set `TEST_ALL_MODELS = False` in `run_experiment.py` to keep the original
+behavior where each test sample is predicted only by the LSTM trained on its
+own cluster. Set it to `True` to enable the all-model diagnostic selection and
+write the extra model-selection reports.
 
 ## Evaluation Outputs
 
@@ -305,14 +322,23 @@ Each configuration folder contains:
 
 - `metrics_summary.csv`
 - `cluster_model_metrics.csv`
+- `test_model_comparison.csv`, when `TEST_ALL_MODELS = True`
+- `test_model_selection.csv`, when `TEST_ALL_MODELS = True`
+- `test_model_metric_summary.csv`, when `TEST_ALL_MODELS = True`
+- `test_model_selection_report.txt`, when `TEST_ALL_MODELS = True`
 - `input_next_day_precipitation_by_cluster.csv`
 - `test_predictions.csv`
 - `evaluation_report.txt`
 - `summary.txt`
 - `experiment_report.tex`
 - `experiment_report.pdf`, when a local LaTeX compiler is available
-- prediction, residual, error, cluster-performance, and histogram plots
-- input-window next-day precipitation distribution plots by cluster
+- grouped prediction, residual, error, cluster-performance, and histogram plots
+  under folders such as `prediction_overview/`,
+  `prediction_timeseries_splits/`, `residual_diagnostics/`,
+  `cluster_diagnostics/`, `model_fit/`, `cluster_precipitation_histograms/`,
+  and `cluster_prediction_histograms/`
+- input-window next-day precipitation distribution plots by cluster under
+  `input_precipitation_distribution_by_cluster/`
 - per-cluster test performance time series with actual values, predictions,
   residuals, cluster metrics, and compressed large temporal gaps
 
@@ -326,6 +352,21 @@ Metrics include:
 - MAPE
 - zero-day and rainy-day metrics
 - per-cluster metrics
+
+When `TEST_ALL_MODELS = True`, the test model selection report compares the
+original same-cluster test prediction strategy against the selected-model
+strategy. It includes the model chosen for each test sample and metric,
+same-cluster versus selected aggregate metrics, and a paired bootstrap
+confidence interval for the mean squared-error improvement. The automatic
+`experiment_report.tex` also includes a compact `Test Model Selection` section.
+Because the selection is made on the test set at sample level, the improvement
+is descriptive and useful for diagnosing cross-cluster transfer rather than an
+unbiased generalization estimate.
+
+Since selection is made for one scalar target at a time, MSE, RMSE, MAE, and
+MAPE usually choose the same model: for a fixed observed precipitation value,
+all of them rank candidate predictions by closeness to the actual value. RMSLE
+can differ because it ranks closeness after a logarithmic transform.
 
 Plot helpers live in:
 

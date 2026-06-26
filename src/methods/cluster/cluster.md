@@ -53,7 +53,7 @@ For manual clustering, pass horizon-aligned precipitation through the same
 dispatcher:
 
 ```python
-from methods.cluster.manual import horizon_precipitation
+from methods.tools.precipitation_utils import horizon_precipitation
 
 horizon_rain = horizon_precipitation(df, window_size=20, horizon=1)
 labels = cluster_feature_matrix(
@@ -87,10 +87,8 @@ values support future multi-day forecast horizons. Targets beyond the available
 data are returned as `NaN` and inferred by centroid distance.
 
 ```python
-from methods.cluster.manual import (
-    ManualRainClustering,
-    horizon_precipitation,
-)
+from methods.cluster.manual import ManualRainClustering
+from methods.tools.precipitation_utils import horizon_precipitation
 
 horizon_rain = horizon_precipitation(
     df,
