@@ -22,6 +22,7 @@ from evaluation.metrics import (
     calculate_zero_precipitation_metrics,
     create_evaluation_report,
 )
+from methods.tools.precipitation_utils import precipitation_bin_edges
 
 
 class ExperimentConfigLike(Protocol):
@@ -39,6 +40,9 @@ def save_training_history_plots(
     output_dir: Path,
 ) -> None:
     """Save loss and MAE curves for each cluster model."""
+    plot_dir = output_dir / "model_fit"
+    plot_dir.mkdir(exist_ok=True)
+
     for cluster_id, history in histories_by_cluster.items():
         hist = history.history
         fig, axes = plt.subplots(1, 2, figsize=(14, 4))
@@ -60,7 +64,7 @@ def save_training_history_plots(
         axes[1].legend()
 
         fig.tight_layout()
-        fig.savefig(output_dir / f"01_training_history_cluster_{cluster_id}.png")
+        fig.savefig(plot_dir / f"01_training_history_cluster_{cluster_id}.png")
         plt.close(fig)
 
 
@@ -86,22 +90,6 @@ def save_cluster_precipitation_histograms(
             hist_dir / f"cluster_{int(cluster_id)}_precipitation_histogram.png",
         )
         plt.close(fig)
-
-
-def precipitation_bin_edges(values: np.ndarray) -> np.ndarray:
-    """Return readable shared precipitation bins for cluster histograms."""
-    values = np.asarray(values, dtype=float)
-    values = values[np.isfinite(values)]
-    if values.size == 0:
-        return np.array([0.0, 1.0])
-
-    max_value = float(values.max())
-    if max_value <= 0:
-        return np.array([0.0, 1.0])
-
-    raw_edges = np.histogram_bin_edges(values, bins="fd")
-    n_bins = max(8, min(len(raw_edges) - 1, 35))
-    return np.linspace(0.0, max_value, n_bins + 1)
 
 
 def save_input_precipitation_assignments(
@@ -185,7 +173,7 @@ def save_input_precipitation_distribution_by_cluster(
 
     fig.suptitle("Input Window Next-day Precipitation Distribution by Cluster", y=1.0)
     fig.tight_layout()
-    fig.savefig(output_dir / "08_input_precipitation_distribution_by_cluster.png")
+    fig.savefig(hist_dir / "08_input_precipitation_distribution_by_cluster.png")
     plt.close(fig)
 
 
@@ -224,12 +212,169 @@ def save_cluster_prediction_histograms(
         plt.close(fig)
 
 
+def compressed_time_positions(
+    original_indices: np.ndarray,
+    max_gap: int = 10,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return chronological plot positions with only large gaps shortened."""
+    indices = np.asarray(original_indices, dtype=int)
+    if indices.ndim != 1:
+        raise ValueError("original_indices must be one-dimensional.")
+    if max_gap <= 0:
+        raise ValueError("max_gap must be positive.")
+    if len(indices) == 0:
+        return np.array([], dtype=float), np.array([], dtype=bool)
+    if np.any(np.diff(indices) <= 0):
+        raise ValueError("original_indices must be strictly increasing.")
+
+    original_gaps = np.diff(indices)
+    compressed_intervals = original_gaps > max_gap
+    plotted_gaps = np.minimum(original_gaps, max_gap)
+    positions = np.concatenate(([0.0], np.cumsum(plotted_gaps, dtype=float)))
+    return positions, compressed_intervals
+
+
+def save_cluster_prediction_timeseries(
+    y_test: np.ndarray,
+    y_pred_test: np.ndarray,
+    c_test: np.ndarray,
+    test_indices: np.ndarray,
+    output_dir: Path,
+    max_gap: int = 10,
+) -> None:
+    """Save actual, predicted, and residual time series for each test cluster."""
+    y_test = np.asarray(y_test, dtype=float)
+    y_pred_test = np.asarray(y_pred_test, dtype=float)
+    c_test = np.asarray(c_test)
+    test_indices = np.asarray(test_indices, dtype=int)
+    lengths = {len(y_test), len(y_pred_test), len(c_test), len(test_indices)}
+    if len(lengths) != 1:
+        raise ValueError("Test values, labels, predictions, and indices must align.")
+
+    plot_dir = output_dir / "cluster_prediction_timeseries"
+    plot_dir.mkdir(exist_ok=True)
+
+    for cluster_id in sorted(np.unique(c_test)):
+        cluster_offsets = np.flatnonzero(c_test == cluster_id)
+        chronological_order = np.argsort(test_indices[cluster_offsets], kind="stable")
+        cluster_offsets = cluster_offsets[chronological_order]
+        original_indices = test_indices[cluster_offsets]
+        actual = y_test[cluster_offsets]
+        predicted = y_pred_test[cluster_offsets]
+        residuals = actual - predicted
+        positions, compressed_intervals = compressed_time_positions(
+            original_indices,
+            max_gap=max_gap,
+        )
+        metrics = calculate_regression_metrics(actual, predicted)
+
+        fig, axes = plt.subplots(
+            2,
+            1,
+            figsize=(14, 8),
+            sharex=True,
+            gridspec_kw={"height_ratios": [2.2, 1.0]},
+        )
+        axes[0].plot(
+            positions,
+            actual,
+            label="Actual",
+            color="#4C78A8",
+            linewidth=1.5,
+            alpha=0.85,
+        )
+        axes[0].scatter(
+            positions,
+            actual,
+            color="#4C78A8",
+            s=10,
+            alpha=0.65,
+            zorder=3,
+        )
+        axes[0].plot(
+            positions,
+            predicted,
+            label="Predicted",
+            color="#F58518",
+            linewidth=1.5,
+            alpha=0.85,
+        )
+        axes[0].set_ylabel("Precipitation (mm)")
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
+        axes[0].set_title(
+            f"Cluster {int(cluster_id)} Test Performance | "
+            f"n={len(actual)} | RMSE={metrics['RMSE']:.3f} | "
+            f"MAE={metrics['MAE']:.3f} | R2={metrics['R2']:.3f}"
+        )
+
+        axes[1].axhline(0.0, color="black", linestyle="--", linewidth=1)
+        axes[1].plot(
+            positions,
+            residuals,
+            color="#54A24B",
+            linewidth=1.2,
+            alpha=0.85,
+        )
+        axes[1].fill_between(
+            positions,
+            residuals,
+            0.0,
+            color="#54A24B",
+            alpha=0.18,
+        )
+        axes[1].set_ylabel("Residual (mm)")
+        axes[1].grid(True, alpha=0.3)
+
+        for interval_offset in np.flatnonzero(compressed_intervals):
+            gap_marker = (
+                positions[interval_offset] + positions[interval_offset + 1]
+            ) / 2
+            for ax in axes:
+                ax.axvline(
+                    gap_marker,
+                    color="#888888",
+                    linestyle=":",
+                    linewidth=0.8,
+                    alpha=0.55,
+                )
+
+        tick_count = min(9, len(positions))
+        tick_offsets = np.unique(
+            np.linspace(0, len(positions) - 1, tick_count, dtype=int)
+        )
+        axes[1].set_xticks(positions[tick_offsets])
+        axes[1].set_xticklabels(original_indices[tick_offsets])
+        axes[1].set_xlabel(
+            "Compressed test timeline (labels show original window index)"
+        )
+
+        compressed_count = int(compressed_intervals.sum())
+        if compressed_count:
+            fig.text(
+                0.5,
+                0.01,
+                f"{compressed_count} gaps larger than {max_gap} windows were "
+                f"displayed as {max_gap} windows.",
+                ha="center",
+                fontsize=9,
+            )
+        fig.tight_layout(rect=(0, 0.03, 1, 1))
+        fig.savefig(
+            plot_dir / f"cluster_{int(cluster_id)}_prediction_timeseries.png"
+        )
+        plt.close(fig)
+
+
 def save_precipitation_by_cluster_plot(
     y_test: np.ndarray,
     c_test: np.ndarray,
     output_dir: Path,
 ) -> None:
     """Save a boxplot showing the target distribution by cluster."""
+    plot_dir = output_dir / "cluster_diagnostics"
+    plot_dir.mkdir(exist_ok=True)
+
     plot_df = pd.DataFrame({"cluster": c_test, "precipitation_mm": y_test})
     fig, ax = plt.subplots(figsize=(10, 5))
     sns.boxplot(data=plot_df, x="cluster", y="precipitation_mm", ax=ax)
@@ -237,12 +382,15 @@ def save_precipitation_by_cluster_plot(
     ax.set_xlabel("Cluster")
     ax.set_ylabel("Next-day precipitation (mm)")
     fig.tight_layout()
-    fig.savefig(output_dir / "07_precipitation_distribution_by_cluster.png")
+    fig.savefig(plot_dir / "07_precipitation_distribution_by_cluster.png")
     plt.close(fig)
 
 
 def save_cluster_distribution_plot(c_test: np.ndarray, output_dir: Path) -> None:
     """Save cluster sample counts for the test set."""
+    plot_dir = output_dir / "cluster_diagnostics"
+    plot_dir.mkdir(exist_ok=True)
+
     unique_clusters, counts = np.unique(c_test, return_counts=True)
     fig, ax = plt.subplots(figsize=(10, 5))
     bars = ax.bar(unique_clusters, counts, color="#4C78A8", alpha=0.8)
@@ -251,7 +399,7 @@ def save_cluster_distribution_plot(c_test: np.ndarray, output_dir: Path) -> None
     ax.set_ylabel("Samples")
     ax.bar_label(bars)
     fig.tight_layout()
-    fig.savefig(output_dir / "06_cluster_distribution.png")
+    fig.savefig(plot_dir / "06_cluster_distribution.png")
     plt.close(fig)
 
 
@@ -262,6 +410,9 @@ def save_prediction_timeseries_splits(
     n_splits: int = 4,
 ) -> None:
     """Save the prediction time series in readable sequential splits."""
+    plot_dir = output_dir / "prediction_timeseries_splits"
+    plot_dir.mkdir(exist_ok=True)
+
     indices = np.arange(len(y_test))
     for split_index, split_indices in enumerate(np.array_split(indices, n_splits), start=1):
         if split_indices.size == 0:
@@ -289,7 +440,7 @@ def save_prediction_timeseries_splits(
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
         fig.savefig(
-            output_dir / f"02_predictions_timeseries_split_{split_index:02d}_of_{n_splits:02d}.png"
+            plot_dir / f"02_predictions_timeseries_split_{split_index:02d}_of_{n_splits:02d}.png"
         )
         plt.close(fig)
 
@@ -297,12 +448,20 @@ def save_visualizations(
     y_test: np.ndarray,
     y_pred_test: np.ndarray,
     c_test: np.ndarray,
+    test_indices: np.ndarray,
     next_day_precipitation: np.ndarray,
     input_cluster_labels: np.ndarray,
     histories_by_cluster: dict[int, object],
     output_dir: Path,
 ) -> None:
     """Save the diagnostic plots for one configuration."""
+    prediction_dir = output_dir / "prediction_overview"
+    residual_dir = output_dir / "residual_diagnostics"
+    cluster_dir = output_dir / "cluster_diagnostics"
+    prediction_dir.mkdir(exist_ok=True)
+    residual_dir.mkdir(exist_ok=True)
+    cluster_dir.mkdir(exist_ok=True)
+
     save_training_history_plots(histories_by_cluster, output_dir)
 
     fig, _ = plot_predictions_vs_actual(
@@ -310,12 +469,19 @@ def save_visualizations(
         y_pred_test,
         title="Test Set: Predictions vs Actual Precipitation",
     )
-    fig.savefig(output_dir / "02_predictions_vs_actual.png")
+    fig.savefig(prediction_dir / "02_predictions_vs_actual.png")
     plt.close(fig)
     save_prediction_timeseries_splits(y_test, y_pred_test, output_dir)
+    save_cluster_prediction_timeseries(
+        y_test,
+        y_pred_test,
+        c_test,
+        test_indices,
+        output_dir,
+    )
 
     fig, _ = plot_residuals(y_test, y_pred_test, title="Test Set: Residual Analysis")
-    fig.savefig(output_dir / "03_residuals_analysis.png")
+    fig.savefig(residual_dir / "03_residuals_analysis.png")
     plt.close(fig)
 
     fig, _ = plot_error_by_magnitude(
@@ -324,7 +490,7 @@ def save_visualizations(
         n_bins=10,
         title="Test Set: Error by Precipitation Magnitude",
     )
-    fig.savefig(output_dir / "04_error_by_magnitude.png")
+    fig.savefig(residual_dir / "04_error_by_magnitude.png")
     plt.close(fig)
 
     fig, _ = plot_cluster_performance(
@@ -333,7 +499,7 @@ def save_visualizations(
         y_pred_test,
         title="Test Set: LSTM Performance by Cluster",
     )
-    fig.savefig(output_dir / "05_cluster_performance.png")
+    fig.savefig(cluster_dir / "05_cluster_performance.png")
     plt.close(fig)
 
     save_cluster_distribution_plot(c_test, output_dir)
@@ -375,6 +541,124 @@ def cluster_metrics_dataframe(metrics_by_cluster: dict[int, dict[str, float]]) -
     return pd.DataFrame(rows)
 
 
+def save_test_model_selection_report(
+    output_dir: Path,
+    test_model_selection: dict[str, object],
+) -> None:
+    """Save cross-cluster test model selection details and a text summary."""
+    comparison_df = pd.DataFrame(test_model_selection.get("comparison_rows", []))
+    selection_df = pd.DataFrame(test_model_selection.get("selection_rows", []))
+    metric_summary_df = pd.DataFrame(
+        test_model_selection.get("metric_summary_rows", [])
+    )
+    summary = dict(test_model_selection.get("summary", {}))
+
+    comparison_df.to_csv(output_dir / "test_model_comparison.csv", index=False)
+    selection_df.to_csv(output_dir / "test_model_selection.csv", index=False)
+    metric_summary_df.to_csv(output_dir / "test_model_metric_summary.csv", index=False)
+
+    with open(output_dir / "test_model_selection_report.txt", "w", encoding="utf-8") as f:
+        f.write("TEST CLUSTER MODEL SELECTION REPORT\n")
+        f.write("=" * 72 + "\n\n")
+        f.write(
+            "Each test sample was evaluated with every trained cluster LSTM. "
+            "A winning model is selected independently for each sample and "
+            "metric. The main prediction columns use the RMSE/MSE-equivalent "
+            "per-sample squared-error choice.\n\n"
+        )
+        f.write(
+            "Important interpretation note: model selection is performed on the "
+            "test set itself, so the reported improvement is descriptive and "
+            "strongly optimistic at sample level. Treat it as an oracle-style "
+            "diagnostic for cross-cluster transfer, not as an unbiased "
+            "generalization estimate.\n\n"
+        )
+        f.write(
+            "Metric-selection note: because selection is done one scalar sample "
+            "at a time, MSE, RMSE, MAE, and MAPE usually select the same model; "
+            "they are monotonic with absolute prediction error for a fixed "
+            "target. RMSLE can differ because it ranks log-scale distance.\n\n"
+        )
+
+        f.write("Overall comparison\n")
+        f.write("-" * 72 + "\n")
+        f.write(f"Primary selected metric: {summary.get('primary_metric', 'RMSE')}\n")
+        f.write(f"Original same-cluster RMSE: {summary.get('original_rmse', float('nan')):.4f}\n")
+        f.write(f"Selected-model RMSE:       {summary.get('selected_rmse', float('nan')):.4f}\n")
+        f.write(f"RMSE improvement:          {summary.get('rmse_improvement', float('nan')):.4f}\n")
+        f.write(f"Original same-cluster MAE:  {summary.get('original_mae', float('nan')):.4f}\n")
+        f.write(f"Selected-model MAE:        {summary.get('selected_mae', float('nan')):.4f}\n")
+        f.write(f"MAE improvement:           {summary.get('mae_improvement', float('nan')):.4f}\n")
+        f.write(f"Original same-cluster MSE:  {summary.get('original_mse', float('nan')):.4f}\n")
+        f.write(f"Selected-model MSE:        {summary.get('selected_mse', float('nan')):.4f}\n")
+        f.write(f"MSE improvement:           {summary.get('mse_improvement', float('nan')):.4f}\n")
+        f.write(
+            "Bootstrap 95% CI for mean squared-error improvement: "
+            f"[{summary.get('mse_improvement_ci_low', float('nan')):.4f}, "
+            f"{summary.get('mse_improvement_ci_high', float('nan')):.4f}]\n"
+        )
+        f.write(
+            f"Bootstrap probability improvement > 0: "
+            f"{summary.get('mse_improvement_probability', float('nan')):.3f}\n"
+        )
+        f.write(
+            f"Samples switched to a different model by primary metric: "
+            f"{summary.get('switched_samples', 0)} of {summary.get('n_test_samples', 0)}\n\n"
+        )
+
+        f.write("Selected-model aggregate metrics by selection metric\n")
+        f.write("-" * 72 + "\n")
+        if metric_summary_df.empty:
+            f.write("No test samples were available for model selection.\n")
+        else:
+            for _, row in metric_summary_df.sort_values("metric_selection").iterrows():
+                f.write(
+                    f"{row['metric_selection']} selection: "
+                    f"switched {int(row['switched_samples'])}/"
+                    f"{int(row['n_test'])} samples "
+                    f"({row['switched_samples_percent']:.1f}%).\n"
+                )
+                f.write(
+                    f"  MSE:   {row['original_mse']:.4f} -> "
+                    f"{row['selected_mse']:.4f} "
+                    f"(change {row['mse_improvement']:.4f}, "
+                    f"{row['mse_improvement_percent']:.2f}%)\n"
+                )
+                f.write(
+                    f"  RMSE:  {row['original_rmse']:.4f} -> "
+                    f"{row['selected_rmse']:.4f} "
+                    f"(change {row['rmse_improvement']:.4f}, "
+                    f"{row['rmse_improvement_percent']:.2f}%)\n"
+                )
+                f.write(
+                    f"  MAE:   {row['original_mae']:.4f} -> "
+                    f"{row['selected_mae']:.4f} "
+                    f"(change {row['mae_improvement']:.4f}, "
+                    f"{row['mae_improvement_percent']:.2f}%)\n"
+                )
+                f.write(
+                    f"  RMSLE: {row['original_rmsle']:.4f} -> "
+                    f"{row['selected_rmsle']:.4f} "
+                    f"(change {row['rmsle_improvement']:.4f}, "
+                    f"{row['rmsle_improvement_percent']:.2f}%)\n"
+                )
+                f.write(
+                    f"  R2:    {row['original_r2']:.4f} -> "
+                    f"{row['selected_r2']:.4f} "
+                    f"(changed {row['r2_improvement']:.4f})\n"
+                )
+                f.write(
+                    f"  MAPE:  {row['original_mape']:.4f} -> "
+                    f"{row['selected_mape']:.4f} "
+                    f"(change {row['mape_improvement']:.4f}, "
+                    f"{row['mape_improvement_percent']:.2f}%)\n"
+                )
+
+        f.write("\nFull model-by-sample errors are in test_model_comparison.csv.\n")
+        f.write("Per-sample selected models by metric are in test_model_selection.csv.\n")
+        f.write("Metric-level selected prediction summaries are in test_model_metric_summary.csv.\n")
+
+
 def save_config_summary(
     config: ExperimentConfigLike,
     output_dir: Path,
@@ -384,6 +668,7 @@ def save_config_summary(
     test_metrics: dict[str, float],
     zero_metrics: dict[str, float],
     metrics_by_cluster: dict[int, dict[str, float]],
+    test_model_selection: dict[str, object] | None,
     split_sizes: dict[str, int],
     state: str,
     station_id: str,
@@ -430,6 +715,21 @@ def save_config_summary(
                 f"R2={metrics['R2']:.4f}\n"
             )
 
+        if test_model_selection is not None:
+            summary = dict(test_model_selection.get("summary", {}))
+            f.write("\nCross-cluster test model selection\n")
+            f.write("-" * 72 + "\n")
+            f.write(
+                f"Same-cluster RMSE={summary.get('original_rmse', float('nan')):.4f}, "
+                f"selected-model RMSE={summary.get('selected_rmse', float('nan')):.4f}, "
+                f"improvement={summary.get('rmse_improvement', float('nan')):.4f}\n"
+            )
+            f.write(
+                f"Primary metric: {summary.get('primary_metric', 'RMSE')}; "
+                f"switched samples: {summary.get('switched_samples', 0)} of "
+                f"{summary.get('n_test_samples', 0)}\n"
+            )
+
 
 def save_run_outputs(
     config: ExperimentConfigLike,
@@ -444,11 +744,13 @@ def save_run_outputs(
     y_pred_val: np.ndarray,
     y_pred_test: np.ndarray,
     c_test: np.ndarray,
+    test_indices: np.ndarray,
     histories_by_cluster: dict[int, object],
     metrics_by_cluster: dict[int, dict[str, float]],
     state: str,
     station_id: str,
     pca_variance_threshold: float,
+    test_model_selection: dict[str, object] | None = None,
 ) -> dict[str, float | int | str | None]:
     """Save all artifacts for one run and return one sweep-level result row."""
     train_metrics = calculate_regression_metrics(y_train, y_pred_train)
@@ -474,14 +776,53 @@ def save_run_outputs(
         input_cluster_labels,
         output_dir,
     )
-    pd.DataFrame(
+    predictions_df = pd.DataFrame(
         {
             "actual": y_test,
             "predicted": y_pred_test,
             "residual": y_test - y_pred_test,
             "cluster": c_test,
+            "window_index": test_indices,
         }
-    ).to_csv(output_dir / "test_predictions.csv", index=False)
+    )
+    if test_model_selection is not None:
+        selected_model_by_sample = np.asarray(
+            test_model_selection.get("selected_model_by_sample", []),
+            dtype=float,
+        )
+        original_prediction_by_sample = np.asarray(
+            test_model_selection.get("original_prediction_by_sample", []),
+            dtype=float,
+        )
+        if len(selected_model_by_sample) == len(predictions_df):
+            predictions_df["selected_model_cluster"] = selected_model_by_sample
+        if len(original_prediction_by_sample) == len(predictions_df):
+            predictions_df["same_cluster_prediction"] = original_prediction_by_sample
+            predictions_df["same_cluster_residual"] = y_test - original_prediction_by_sample
+        selected_prediction_by_metric = dict(
+            test_model_selection.get("selected_prediction_by_metric", {})
+        )
+        selected_model_by_metric = dict(
+            test_model_selection.get("selected_model_by_metric", {})
+        )
+        for metric_name, metric_predictions in selected_prediction_by_metric.items():
+            metric_key = str(metric_name).lower()
+            metric_predictions = np.asarray(metric_predictions, dtype=float)
+            if len(metric_predictions) == len(predictions_df):
+                predictions_df[f"selected_prediction_{metric_key}"] = metric_predictions
+                predictions_df[f"selected_residual_{metric_key}"] = (
+                    y_test - metric_predictions
+                )
+        for metric_name, metric_models in selected_model_by_metric.items():
+            metric_key = str(metric_name).lower()
+            metric_models = np.asarray(metric_models, dtype=float)
+            if len(metric_models) == len(predictions_df):
+                predictions_df[f"selected_model_cluster_{metric_key}"] = metric_models
+    predictions_df = predictions_df.sort_values("window_index")
+    predictions_df.to_csv(output_dir / "test_predictions.csv", index=False)
+
+    if test_model_selection is not None:
+        save_test_model_selection_report(output_dir, test_model_selection)
 
     with open(output_dir / "evaluation_report.txt", "w", encoding="utf-8") as f:
         f.write(
@@ -505,6 +846,7 @@ def save_run_outputs(
         test_metrics=test_metrics,
         zero_metrics=zero_metrics,
         metrics_by_cluster=metrics_by_cluster,
+        test_model_selection=test_model_selection,
         split_sizes=split_sizes,
         state=state,
         station_id=station_id,
@@ -514,6 +856,7 @@ def save_run_outputs(
         y_test,
         y_pred_test,
         c_test,
+        test_indices,
         next_day_precipitation,
         input_cluster_labels,
         histories_by_cluster,
@@ -544,6 +887,11 @@ def save_run_outputs(
     for cluster_id, metrics in sorted(metrics_by_cluster.items()):
         for metric_name, value in metrics.items():
             result[f"cluster_{cluster_id}_{metric_name.lower()}"] = value
+
+    if test_model_selection is not None:
+        selection_summary = dict(test_model_selection.get("summary", {}))
+        for key, value in selection_summary.items():
+            result[f"test_selection_{key}"] = value
 
     return result
 

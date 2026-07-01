@@ -16,20 +16,22 @@ STATION_ID = "A801"
 
 # Clustering sweep
 
-WINDOW_SIZES = [8, 12, 16, 20, 24, 28, 32]
-N_CLUSTERS_LIST = [3, 4, 5]
+WINDOW_SIZES = [60]
+N_CLUSTERS_LIST = [3]
+PCA_VARIANCE_THRESHOLD = None
+NORMALIZE = True
 CLUSTERING_ALGORITHM = "spectral"
 N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"  # "auto" or "manual"
-MANUAL_SIGMA_VALUES = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]  # Only used if SIGMA_MODE is "manual"
+MANUAL_SIGMA_VALUES = [0.3,0.5,0.8]  # Only used if SIGMA_MODE is "manual"
 USE_ALL_FEATURES = True
 
 # Metrics exported to compact comparison tables
 QUANTITATIVE_METRICS = ["MSE"]
 
 # Model hyperparameters
-LSTM_UNITS = 32
-LSTM_UNITS_2 = 32
+LSTM_UNITS = 16
+LSTM_UNITS_2 = 16
 DROPOUT_RATE = 0.1
 LEARNING_RATE = 0.001
 

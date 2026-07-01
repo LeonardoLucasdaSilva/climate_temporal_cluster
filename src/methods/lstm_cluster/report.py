@@ -16,24 +16,12 @@ import pandas as pd
 REPORT_TEX_NAME = "experiment_report.tex"
 
 FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
-    ("Model Fit", ("01_training_history_cluster_*.png",)),
-    (
-        "Predictions",
-        (
-            "02_predictions_vs_actual.png",
-            "03_residuals_analysis.png",
-            "04_error_by_magnitude.png",
-        ),
-    ),
-    (
-        "Prediction Time Series Splits",
-        (
-            "02_predictions_timeseries_split_*_of_04.png",
-        ),
-    ),
     (
         "Cluster Diagnostics",
         (
+            "cluster_diagnostics/05_cluster_performance.png",
+            "cluster_diagnostics/06_cluster_distribution.png",
+            "cluster_diagnostics/07_precipitation_distribution_by_cluster.png",
             "05_cluster_performance.png",
             "06_cluster_distribution.png",
             "07_precipitation_distribution_by_cluster.png",
@@ -42,6 +30,7 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
     (
         "Input Precipitation",
         (
+            "input_precipitation_distribution_by_cluster/08_input_precipitation_distribution_by_cluster.png",
             "08_input_precipitation_distribution_by_cluster.png",
             "input_precipitation_distribution_by_cluster/*.png",
         ),
@@ -51,6 +40,31 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
         (
             "cluster_precipitation_histograms/*.png",
             "cluster_prediction_histograms/*.png",
+        ),
+    ),
+    ("Model Fit", ("model_fit/01_training_history_cluster_*.png", "01_training_history_cluster_*.png")),
+    (
+        "Predictions",
+        (
+            "prediction_overview/02_predictions_vs_actual.png",
+            "residual_diagnostics/03_residuals_analysis.png",
+            "residual_diagnostics/04_error_by_magnitude.png",
+            "02_predictions_vs_actual.png",
+            "03_residuals_analysis.png",
+            "04_error_by_magnitude.png",
+        ),
+    ),
+    (
+        "Prediction Time Series Splits",
+        (
+            "prediction_timeseries_splits/02_predictions_timeseries_split_*_of_04.png",
+            "02_predictions_timeseries_split_*_of_04.png",
+        ),
+    ),
+    (
+        "Cluster Prediction Time Series",
+        (
+            "cluster_prediction_timeseries/*.png",
         ),
     ),
 )
@@ -97,15 +111,16 @@ def render_report(
         r"\date{}",
         r"\maketitle",
         r"\vspace{-2em}",
+        r"\section*{Dataset}",
+        dataset_summary(config),
         r"\section*{Configuration}",
         config_summary_list(config),
         r"\section*{LSTM Configs}",
         lstm_configs_list(config),
-        r"\section*{Dataset}",
-        dataset_summary(config),
         r"\section*{Metrics}",
         metrics_table(output_dir / "metrics_summary.csv"),
         cluster_metrics_table(output_dir / "cluster_model_metrics.csv"),
+        test_model_selection_section(output_dir),
     ]
 
     for section_title, patterns in FIGURE_SECTIONS:
@@ -166,6 +181,9 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
         ("n_clusters", "Number of Clusters"),
         ("algorithm", "Algorithm"),
         ("sigma", "Sigma"),
+        ("forecast_horizon", "Forecast Horizon"),
+        ("manual_zero_tolerance", "Manual Zero Tolerance"),
+        ("test_all_models", "Test Samples on All Models"),
     )
     rows = [
         (label, config_map.get(key))
@@ -287,6 +305,56 @@ def cluster_metrics_table(csv_path: Path) -> str:
     return dataframe_table(df[wanted], "Cluster Metrics") if wanted else ""
 
 
+def test_model_selection_section(output_dir: Path) -> str:
+    """Return a compact section describing optional all-model test selection."""
+    summary_path = output_dir / "test_model_metric_summary.csv"
+    if not summary_path.exists():
+        return ""
+
+    df = pd.read_csv(summary_path)
+    if df.empty:
+        return ""
+
+    rows = []
+    for _, row in df.sort_values("metric_selection").iterrows():
+        rows.append(
+            {
+                "Selection": row["metric_selection"],
+                "Changed Samples": (
+                    f"{int(row['switched_samples'])}/{int(row['n_test'])} "
+                    f"({row['switched_samples_percent']:.1f}%)"
+                ),
+                "RMSE Change": (
+                    f"{row['rmse_improvement']:.4g} "
+                    f"({row['rmse_improvement_percent']:.2f}%)"
+                ),
+                "MAE Change": (
+                    f"{row['mae_improvement']:.4g} "
+                    f"({row['mae_improvement_percent']:.2f}%)"
+                ),
+                "R2 Change": f"{row['r2_improvement']:.4g}",
+            }
+        )
+
+    paragraph = (
+        "Test samples were optionally evaluated by every trained cluster model. "
+        "The table reports how many samples changed model and the metric change "
+        "relative to the original same-cluster test prediction. Positive changes "
+        "mean lower error, except for R2 where positive means higher R2. Because "
+        "selection happens one scalar sample at a time, MSE, RMSE, MAE, and MAPE "
+        "usually select the same model; they are all monotonic with absolute "
+        "prediction error for a fixed target. RMSLE can differ because it ranks "
+        "distance on the log scale."
+    )
+    return "\n".join(
+        [
+            r"\section*{Test Model Selection}",
+            latex_escape(paragraph),
+            dataframe_table(pd.DataFrame(rows), "Per-Sample Selection Summary"),
+        ]
+    )
+
+
 def dataframe_table(df: pd.DataFrame, caption: str) -> str:
     """Return a small LaTeX table from a dataframe."""
     alignment = "l" + "r" * max(len(df.columns) - 1, 0)
@@ -318,9 +386,13 @@ def dataframe_table(df: pd.DataFrame, caption: str) -> str:
 def collect_figures(output_dir: Path, patterns: Sequence[str]) -> list[Path]:
     """Collect existing figures for a report section."""
     figures: list[Path] = []
+    seen: set[Path] = set()
     for pattern in patterns:
-        figures.extend(sorted(output_dir.glob(pattern)))
-    return [path for path in figures if path.is_file()]
+        for path in sorted(output_dir.glob(pattern)):
+            if path.is_file() and path not in seen:
+                figures.append(path)
+                seen.add(path)
+    return figures
 
 
 def timeseries_split_figure_blocks(output_dir: Path, figures: Sequence[Path]) -> list[str]:
