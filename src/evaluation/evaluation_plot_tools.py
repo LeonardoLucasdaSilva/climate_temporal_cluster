@@ -17,6 +17,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 def plot_predictions_vs_actual(
     y_true: np.ndarray,
     y_pred: np.ndarray,
+    cluster_labels: np.ndarray | None = None,
     title: str = "Predictions vs Actual Precipitation",
     figsize: Tuple[int, int] = (12, 4),
 ) -> Tuple[plt.Figure, np.ndarray]:
@@ -31,6 +32,8 @@ def plot_predictions_vs_actual(
             Expected shape is `(n_samples,)`.
         y_pred: One-dimensional array with predicted precipitation values.
             Must have the same length as `y_true`.
+        cluster_labels: Optional one-dimensional array with one cluster id per
+            sample. When provided, scatter points are colored by cluster.
         title: Base title used for both subplots.
         figsize: Matplotlib figure size as `(width, height)` in inches.
 
@@ -51,7 +54,23 @@ def plot_predictions_vs_actual(
     ax1.grid(True, alpha=0.3)
 
     ax2 = axes[1]
-    ax2.scatter(y_true, y_pred, alpha=0.5, s=20)
+    if cluster_labels is None:
+        ax2.scatter(y_true, y_pred, alpha=0.5, s=20)
+    else:
+        cluster_labels = np.asarray(cluster_labels)
+        if len(cluster_labels) != len(y_true):
+            raise ValueError("cluster_labels must have the same length as y_true.")
+        colors = plt.cm.tab10(np.linspace(0, 1, len(np.unique(cluster_labels))))
+        for color, cluster_id in zip(colors, sorted(np.unique(cluster_labels))):
+            mask = cluster_labels == cluster_id
+            ax2.scatter(
+                y_true[mask],
+                y_pred[mask],
+                alpha=0.55,
+                s=20,
+                color=color,
+                label=f"Cluster {int(cluster_id)}",
+            )
     min_val = min(y_true.min(), y_pred.min())
     max_val = max(y_true.max(), y_pred.max())
     ax2.plot([min_val, max_val], [min_val, max_val], "r--", linewidth=2, label="Perfect Prediction")
@@ -68,6 +87,7 @@ def plot_predictions_vs_actual(
 def plot_residuals(
     y_true: np.ndarray,
     y_pred: np.ndarray,
+    cluster_labels: np.ndarray | None = None,
     title: str = "Residual Analysis",
     figsize: Tuple[int, int] = (12, 4),
 ) -> Tuple[plt.Figure, np.ndarray]:
@@ -82,6 +102,8 @@ def plot_residuals(
             Expected shape is `(n_samples,)`.
         y_pred: One-dimensional array with predicted precipitation values.
             Must have the same length as `y_true`.
+        cluster_labels: Optional one-dimensional array with one cluster id per
+            sample. When provided, residual points are colored by cluster.
         title: Base title used for both subplots.
         figsize: Matplotlib figure size as `(width, height)` in inches.
 
@@ -94,7 +116,25 @@ def plot_residuals(
     fig, axes = plt.subplots(1, 2, figsize=figsize)
 
     ax1 = axes[0]
-    ax1.scatter(range(len(residuals)), residuals, alpha=0.5, s=20)
+    if cluster_labels is None:
+        ax1.scatter(range(len(residuals)), residuals, alpha=0.5, s=20)
+    else:
+        cluster_labels = np.asarray(cluster_labels)
+        if len(cluster_labels) != len(residuals):
+            raise ValueError("cluster_labels must have the same length as y_true.")
+        colors = plt.cm.tab10(np.linspace(0, 1, len(np.unique(cluster_labels))))
+        sample_indices = np.arange(len(residuals))
+        for color, cluster_id in zip(colors, sorted(np.unique(cluster_labels))):
+            mask = cluster_labels == cluster_id
+            ax1.scatter(
+                sample_indices[mask],
+                residuals[mask],
+                alpha=0.55,
+                s=20,
+                color=color,
+                label=f"Cluster {int(cluster_id)}",
+            )
+        ax1.legend()
     ax1.axhline(y=0, color="r", linestyle="--", linewidth=2)
     ax1.set_xlabel("Sample Index")
     ax1.set_ylabel("Residuals (mm)")
