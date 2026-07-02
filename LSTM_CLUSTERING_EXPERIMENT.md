@@ -156,7 +156,7 @@ Calculated for each data set (train, val, test):
 | **MAE** | $\dfrac{1}{n}\sum\|y_{true} - y_{pred}$\| | Mean absolute error - robust to outliers |
 | **RMSLE** | $\dfrac{\sum(log(y_{true}+1) - log(y_{pred}+1))²}{\sqrt{n}}$ | Root mean squared log error - for positive values |
 | **R²** | 1 - $\dfrac{SS_{res}}{SS_{tot}}$ | Coefficient of determination (0-1 scale) |
-| **MAPE** | (1/n)Σ\|(y_true - y_pred)/y_true\| × 100 | Mean absolute percentage error |
+| **MAPE** | $ \dfrac{1}{n} \sum \|\dfrac{y_{true} - y_p{pred}}{y_{true}}\| × 100$ |  Mean absolute percentage error |
 
 ### Precipitation-Specific Metrics
 Account for high frequency of zero-precipitation days:
