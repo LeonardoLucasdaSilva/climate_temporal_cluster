@@ -467,6 +467,7 @@ def save_visualizations(
     fig, _ = plot_predictions_vs_actual(
         y_test,
         y_pred_test,
+        cluster_labels=c_test,
         title="Test Set: Predictions vs Actual Precipitation",
     )
     fig.savefig(prediction_dir / "02_predictions_vs_actual.png")
@@ -480,7 +481,12 @@ def save_visualizations(
         output_dir,
     )
 
-    fig, _ = plot_residuals(y_test, y_pred_test, title="Test Set: Residual Analysis")
+    fig, _ = plot_residuals(
+        y_test,
+        y_pred_test,
+        cluster_labels=c_test,
+        title="Test Set: Residual Analysis",
+    )
     fig.savefig(residual_dir / "03_residuals_analysis.png")
     plt.close(fig)
 
