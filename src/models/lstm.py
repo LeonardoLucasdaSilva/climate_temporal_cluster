@@ -2,12 +2,93 @@
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Callable, Sequence, Tuple
 
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from keras import layers
+
+
+SUPPORTED_LOSS_FUNCTIONS = (
+    "mean_squared_error",
+    "mse",
+    "mean_absolute_error",
+    "mae",
+    "huber",
+    "quantile_weighted_mse",
+)
+
+
+def quantile_weighted_mse_loss(
+    thresholds_mm: Sequence[float],
+    weights: Sequence[float],
+) -> Callable:
+    """Return MSE weighted by target bins separated by precipitation thresholds.
+
+    Args:
+        thresholds_mm: Increasing precipitation thresholds in millimeters.
+            With `n` thresholds, the loss has `n + 1` target bins.
+        weights: Positive weight for each target bin. Must contain exactly
+            `len(thresholds_mm) + 1` values.
+
+    Returns:
+        A Keras-compatible loss function.
+    """
+    thresholds = np.asarray(thresholds_mm, dtype=np.float32)
+    bin_weights = np.asarray(weights, dtype=np.float32)
+    if thresholds.ndim != 1:
+        raise ValueError("thresholds_mm must be one-dimensional.")
+    if bin_weights.ndim != 1:
+        raise ValueError("weights must be one-dimensional.")
+    if len(bin_weights) != len(thresholds) + 1:
+        raise ValueError(
+            "weights must contain exactly len(thresholds_mm) + 1 values."
+        )
+    if len(thresholds) and np.any(np.diff(thresholds) <= 0):
+        raise ValueError("thresholds_mm must be strictly increasing.")
+    if np.any(bin_weights <= 0):
+        raise ValueError("weights must be positive.")
+
+    thresholds_tf = tf.constant(thresholds, dtype=tf.float32)
+    weights_tf = tf.constant(bin_weights, dtype=tf.float32)
+
+    def loss(y_true, y_pred):
+        y_true_float = tf.cast(y_true, tf.float32)
+        y_pred_float = tf.cast(y_pred, tf.float32)
+        bin_indices = tf.reduce_sum(
+            tf.cast(y_true_float[..., tf.newaxis] > thresholds_tf, tf.int32),
+            axis=-1,
+        )
+        sample_weights = tf.gather(weights_tf, bin_indices)
+        return tf.reduce_mean(sample_weights * tf.square(y_true_float - y_pred_float))
+
+    loss.__name__ = "quantile_weighted_mse"
+    return loss
+
+
+def resolve_loss_function(
+    loss_function: str,
+    quantile_thresholds_mm: Sequence[float] | None = None,
+    quantile_weights: Sequence[float] | None = None,
+) -> str | Callable:
+    """Return a Keras loss from a configured loss name and optional parameters."""
+    normalized_loss = loss_function.lower()
+    if normalized_loss not in SUPPORTED_LOSS_FUNCTIONS:
+        supported = ", ".join(SUPPORTED_LOSS_FUNCTIONS)
+        raise ValueError(
+            f"Unsupported loss_function: {loss_function!r}. Use one of: {supported}"
+        )
+    if normalized_loss == "quantile_weighted_mse":
+        if quantile_thresholds_mm is None or quantile_weights is None:
+            raise ValueError(
+                "quantile_weighted_mse requires thresholds and weights."
+            )
+        return quantile_weighted_mse_loss(
+            quantile_thresholds_mm,
+            quantile_weights,
+        )
+    return normalized_loss
 
 
 class LSTMPrecipitationPredictor:
@@ -31,6 +112,9 @@ class LSTMPrecipitationPredictor:
         dropout_rate: float = 0.2,
         learning_rate: float = 0.001,
         random_state: int = 42,
+        loss_function: str = "mean_squared_error",
+        loss_quantile_thresholds_mm: Sequence[float] | None = None,
+        loss_quantile_weights: Sequence[float] | None = None,
     ):
         """Initialize LSTM model.
 
@@ -41,6 +125,11 @@ class LSTMPrecipitationPredictor:
             dropout_rate: Dropout rate for regularization
             learning_rate: Learning rate for optimizer
             random_state: Random seed for reproducibility
+            loss_function: Keras loss name or `quantile_weighted_mse`.
+            loss_quantile_thresholds_mm: Cluster-specific rain thresholds used
+                by `quantile_weighted_mse`.
+            loss_quantile_weights: Target-bin weights used by
+                `quantile_weighted_mse`.
         """
         self.input_shape = input_shape
         self.lstm_units = lstm_units
@@ -48,6 +137,9 @@ class LSTMPrecipitationPredictor:
         self.dropout_rate = dropout_rate
         self.learning_rate = learning_rate
         self.random_state = random_state
+        self.loss_function = loss_function
+        self.loss_quantile_thresholds_mm = loss_quantile_thresholds_mm
+        self.loss_quantile_weights = loss_quantile_weights
         self.history = None
         self.model = None
 
@@ -88,9 +180,14 @@ class LSTMPrecipitationPredictor:
 
         # Compile model
         optimizer = keras.optimizers.Adam(learning_rate=self.learning_rate)
+        loss = resolve_loss_function(
+            self.loss_function,
+            quantile_thresholds_mm=self.loss_quantile_thresholds_mm,
+            quantile_weights=self.loss_quantile_weights,
+        )
         model.compile(
             optimizer=optimizer,
-            loss='mean_squared_error',
+            loss=loss,
             metrics=['mae', 'mse'],
         )
 

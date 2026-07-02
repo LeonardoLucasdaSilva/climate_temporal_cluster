@@ -225,6 +225,8 @@ def lstm_configs_list(config: object | Mapping[str, object] | None) -> str:
         ("Patience", config_map.get("patience")),
         ("Optimizer", config_map.get("optimizer")),
         ("Loss", config_map.get("loss")),
+        ("Loss quantiles", config_map.get("loss_quantiles")),
+        ("Loss quantile weights", config_map.get("loss_quantile_weights")),
         ("Metrics", config_map.get("metrics")),
     ]
     rows = [

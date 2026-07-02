@@ -5,31 +5,38 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from sklearn.model_selection import train_test_split
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 from data.load_data import load_station_daily_data
 from data.lstm_outputs import save_run_outputs, save_sweep_outputs
 from evaluation.metrics import calculate_regression_metrics
 from models.lstm import LSTMPrecipitationPredictor
+from methods.cluster.manual import ManualRainClustering
+from methods.cluster.ng import spectral_clustering
 from methods.cluster.cluster_pipeline import (
+    KMEANS_N_INIT,
     PCA_VARIANCE_THRESHOLD,
     SUPPORTED_CLUSTERING_ALGORITHMS,
-    cluster_feature_matrix,
-    create_cluster_feature_matrix,
     numeric_feature_columns,
 )
 from methods.lstm_cluster.console import print_info, print_section
 from methods.lstm_cluster.report import generate_config_report
+from methods.tools.dimensionality_reduction_tools import (
+    determine_pca_components,
+    flatten_windows,
+)
 from methods.tools.precipitation_utils import (
-    horizon_precipitation,
     precipitation_targets,
 )
+from methods.tools.sliding_windows import create_windows
 from methods.tools.sigma_choosing import calculate_sigma_values
 
 
@@ -53,6 +60,39 @@ class ExperimentConfig:
         ).replace(".", "p")
 
 
+@dataclass(frozen=True)
+class DailyDataSplits:
+    """Chronological train, validation, and test dataframe splits."""
+
+    train: pd.DataFrame
+    val: pd.DataFrame
+    test: pd.DataFrame
+    train_offset: int
+    val_offset: int
+    test_offset: int
+
+
+@dataclass(frozen=True)
+class WindowSplitData:
+    """Window features, targets, labels, and original indices by split."""
+
+    X_train: np.ndarray
+    X_val: np.ndarray
+    X_test: np.ndarray
+    y_train: np.ndarray
+    y_val: np.ndarray
+    y_test: np.ndarray
+    c_train: np.ndarray
+    c_val: np.ndarray
+    c_test: np.ndarray
+    i_train: np.ndarray
+    i_val: np.ndarray
+    i_test: np.ndarray
+    all_targets: np.ndarray
+    all_cluster_labels: np.ndarray
+    n_windows: int
+
+
 DEFAULT_PLOT_STYLE: dict[str, object] = {
     "seaborn": {
         "style": "whitegrid",
@@ -66,10 +106,104 @@ DEFAULT_PLOT_STYLE: dict[str, object] = {
     },
 }
 
+SUPPORTED_SCALER_TYPES = ("standard", "minmax")
+SUPPORTED_LSTM_LOSS_FUNCTIONS = (
+    "mean_squared_error",
+    "mse",
+    "mean_absolute_error",
+    "mae",
+    "huber",
+    "quantile_weighted_mse",
+)
+FeatureScaler = StandardScaler | MinMaxScaler
+
 
 def _mapping_from_config(value: object) -> Mapping[str, object]:
     """Return nested config dictionaries safely."""
     return value if isinstance(value, Mapping) else {}
+
+
+def create_feature_scaler(scaler_type: str) -> FeatureScaler:
+    """Return the configured scaler for weather feature normalization."""
+    scaler_type = scaler_type.lower()
+    if scaler_type == "standard":
+        return StandardScaler()
+    if scaler_type == "minmax":
+        return MinMaxScaler()
+    supported = ", ".join(SUPPORTED_SCALER_TYPES)
+    raise ValueError(
+        f"Unsupported scaler_type: {scaler_type!r}. Use one of: {supported}"
+    )
+
+
+def validate_loss_function(loss_function: str) -> str:
+    """Return a normalized LSTM loss name after validation."""
+    loss_function = loss_function.lower()
+    if loss_function not in SUPPORTED_LSTM_LOSS_FUNCTIONS:
+        supported = ", ".join(SUPPORTED_LSTM_LOSS_FUNCTIONS)
+        raise ValueError(
+            f"Unsupported lstm_loss_function: {loss_function!r}. "
+            f"Use one of: {supported}"
+        )
+    return loss_function
+
+
+def quantile_weighted_mse_config(
+    values: np.ndarray,
+    quantiles: Sequence[float],
+    weights: Sequence[float] | str = "auto",
+) -> tuple[list[float], list[float]]:
+    """Return rain thresholds and bin weights for quantile-weighted MSE.
+
+    Thresholds are calculated from the cluster's own training precipitation in
+    millimeters. In automatic mode, each bin receives inverse-frequency weight,
+    normalized so the most common non-empty bin has weight 1.
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return [], [1.0]
+
+    quantile_array = np.asarray(quantiles, dtype=float)
+    if quantile_array.ndim != 1 or quantile_array.size == 0:
+        raise ValueError("loss_quantiles must be a non-empty one-dimensional list.")
+    if np.any((quantile_array <= 0) | (quantile_array >= 1)):
+        raise ValueError("loss_quantiles must contain values between 0 and 1.")
+    if np.any(np.diff(quantile_array) <= 0):
+        raise ValueError("loss_quantiles must be strictly increasing.")
+
+    thresholds = np.quantile(values, quantile_array)
+    thresholds = np.unique(thresholds[np.isfinite(thresholds)])
+    thresholds = thresholds.tolist()
+
+    if isinstance(weights, str):
+        weights = weights.lower()
+    if weights != "auto":
+        configured_weights = [float(weight) for weight in weights]
+        if len(configured_weights) != len(thresholds) + 1:
+            raise ValueError(
+                "loss_quantile_weights must contain one more value than the "
+                "number of unique cluster quantile thresholds."
+            )
+        if any(weight <= 0 for weight in configured_weights):
+            raise ValueError("loss_quantile_weights must be positive.")
+        return [float(threshold) for threshold in thresholds], configured_weights
+
+    bin_indices = np.digitize(values, thresholds, right=True)
+    counts = np.bincount(bin_indices, minlength=len(thresholds) + 1).astype(float)
+    positive_counts = counts[counts > 0]
+    if positive_counts.size == 0:
+        return [float(threshold) for threshold in thresholds], [1.0] * (len(thresholds) + 1)
+
+    min_count = positive_counts.min()
+    auto_weights = np.ones_like(counts, dtype=float)
+    nonempty = counts > 0
+    auto_weights[nonempty] = min_count / counts[nonempty]
+    auto_weights = auto_weights / auto_weights[auto_weights > 0].min()
+    return (
+        [float(threshold) for threshold in thresholds],
+        [float(weight) for weight in auto_weights],
+    )
 
 
 def setup_styling(plot_style: Mapping[str, object] | None = None) -> None:
@@ -117,59 +251,276 @@ def build_configurations(
     ]
 
 
-def split_by_cluster(
-    X: np.ndarray,
-    y: np.ndarray,
-    cluster_labels: np.ndarray,
-    sample_indices: np.ndarray,
+def split_daily_dataframe(
+    df: pd.DataFrame,
     train_ratio: float,
     val_ratio: float,
-    random_state: int,
-) -> tuple[np.ndarray, ...]:
-    """Split samples while preserving cluster balance when possible."""
+) -> DailyDataSplits:
+    """Split daily observations chronologically before window creation."""
     test_ratio = 1 - train_ratio - val_ratio
     if test_ratio <= 0:
         raise ValueError("TRAIN_RATIO + VAL_RATIO must be smaller than 1.")
+    if train_ratio <= 0 or val_ratio <= 0:
+        raise ValueError("TRAIN_RATIO and VAL_RATIO must be positive.")
 
-    counts = pd.Series(cluster_labels).value_counts()
-    stratify = cluster_labels if counts.min() >= 3 else None
+    n_rows = len(df)
+    train_end = int(np.floor(n_rows * train_ratio))
+    val_end = train_end + int(np.floor(n_rows * val_ratio))
+    if train_end <= 0 or val_end <= train_end or val_end >= n_rows:
+        raise ValueError(
+            "Split ratios leave at least one empty dataframe. "
+            f"Got {n_rows} rows, train_end={train_end}, val_end={val_end}."
+        )
 
-    X_tv, X_test, y_tv, y_test, c_tv, c_test, i_tv, i_test = train_test_split(
-        X,
-        y,
-        cluster_labels,
-        sample_indices,
-        test_size=test_ratio,
-        stratify=stratify,
-        random_state=random_state,
+    return DailyDataSplits(
+        train=df.iloc[:train_end].reset_index(drop=True),
+        val=df.iloc[train_end:val_end].reset_index(drop=True),
+        test=df.iloc[val_end:].reset_index(drop=True),
+        train_offset=0,
+        val_offset=train_end,
+        test_offset=val_end,
     )
 
-    tv_counts = pd.Series(c_tv).value_counts()
-    stratify_tv = c_tv if len(tv_counts) > 0 and tv_counts.min() >= 2 else None
-    val_ratio_adjusted = val_ratio / (train_ratio + val_ratio)
-    X_train, X_val, y_train, y_val, c_train, c_val, i_train, i_val = train_test_split(
-        X_tv,
-        y_tv,
-        c_tv,
-        i_tv,
-        test_size=val_ratio_adjusted,
-        stratify=stratify_tv,
-        random_state=random_state,
+
+def _create_window_tensor_from_features(
+    features: np.ndarray,
+    columns: list[str],
+    window_size: int,
+) -> np.ndarray:
+    feature_df = pd.DataFrame(features, columns=columns)
+    windows, _ = create_windows(
+        feature_df,
+        window_size=window_size,
+        columns=columns,
+        normalize=False,
+        variance_threshold=None,
+        verbose=False,
+    )
+    return windows
+
+
+def _split_feature_matrix(
+    df: pd.DataFrame,
+    columns: list[str],
+    window_size: int,
+    scaler: FeatureScaler | None,
+    scaler_type: str,
+    pca: PCA | None,
+    fit_scaler: bool,
+    fit_pca: bool,
+    variance_threshold: float | None,
+) -> tuple[np.ndarray, np.ndarray, FeatureScaler | None, PCA | None]:
+    values = df[columns].to_numpy(dtype=float)
+
+    if fit_scaler:
+        scaler = create_feature_scaler(scaler_type).fit(values)
+    if scaler is not None:
+        values = scaler.transform(values)
+
+    windows = _create_window_tensor_from_features(values, columns, window_size)
+    windows_flat = flatten_windows(windows)
+
+    if fit_pca and variance_threshold is not None:
+        n_components = determine_pca_components(windows_flat, variance_threshold)
+        pca = PCA(n_components=n_components).fit(windows_flat)
+    if pca is not None:
+        windows_flat = pca.transform(windows_flat)
+
+    return windows, windows_flat, scaler, pca
+
+
+def _valid_supervised_windows(
+    df: pd.DataFrame,
+    windows_flat: np.ndarray,
+    window_size: int,
+    horizon: int,
+    offset: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    valid_indices, targets = precipitation_targets(
+        df,
+        window_size,
+        len(windows_flat),
+        horizon=horizon,
+    )
+    return windows_flat[valid_indices], targets, valid_indices + offset
+
+
+def _nearest_centroid_labels(
+    feature_matrix: np.ndarray,
+    centroids: np.ndarray,
+) -> np.ndarray:
+    if len(feature_matrix) == 0:
+        return np.array([], dtype=int)
+    distances_sq = np.sum(
+        (feature_matrix[:, None, :] - centroids[None, :, :]) ** 2,
+        axis=2,
+    )
+    return np.argmin(distances_sq, axis=1).astype(int)
+
+
+def _cluster_window_splits(
+    config: ExperimentConfig,
+    X_train: np.ndarray,
+    X_val: np.ndarray,
+    X_test: np.ndarray,
+    y_train: np.ndarray,
+    random_state: int,
+    manual_zero_tolerance: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Fit cluster assignments on training windows and infer held-out labels."""
+    if len(X_train) < config.n_clusters:
+        raise ValueError(
+            f"Need at least {config.n_clusters} training windows for clustering; "
+            f"got {len(X_train)}."
+        )
+
+    if config.algorithm == "kmeans":
+        model = KMeans(
+            n_clusters=config.n_clusters,
+            random_state=random_state,
+            n_init=KMEANS_N_INIT,
+        ).fit(X_train)
+        return model.labels_, model.predict(X_val), model.predict(X_test)
+
+    if config.algorithm == "manual":
+        model = ManualRainClustering(
+            n_clusters=config.n_clusters,
+            zero_tolerance=manual_zero_tolerance,
+        )
+        c_train = model.fit_predict(X_train, y_train)
+        return c_train, model.predict(X_val), model.predict(X_test)
+
+    if config.algorithm == "spectral":
+        if config.sigma is None:
+            raise ValueError("sigma must be provided when algorithm='spectral'")
+        c_train = spectral_clustering(
+            X_train,
+            sigma=config.sigma,
+            k=config.n_clusters,
+            random_state=random_state,
+        )
+        centroids = np.vstack(
+            [
+                X_train[c_train == cluster_id].mean(axis=0)
+                for cluster_id in range(config.n_clusters)
+            ]
+        )
+        if not np.all(np.isfinite(centroids)):
+            raise ValueError("Spectral clustering produced an empty training cluster.")
+        return (
+            c_train,
+            _nearest_centroid_labels(X_val, centroids),
+            _nearest_centroid_labels(X_test, centroids),
+        )
+
+    supported = ", ".join(SUPPORTED_CLUSTERING_ALGORITHMS)
+    raise ValueError(
+        f"Unsupported clustering algorithm: {config.algorithm!r}. "
+        f"Use one of: {supported}"
     )
 
-    return (
+
+def create_window_split_data(
+    df: pd.DataFrame,
+    config: ExperimentConfig,
+    feature_columns: list[str],
+    normalize: bool,
+    scaler_type: str,
+    variance_threshold: float | None,
+    forecast_horizon: int,
+    train_ratio: float,
+    val_ratio: float,
+    random_state: int,
+    manual_zero_tolerance: float,
+) -> tuple[WindowSplitData, DailyDataSplits]:
+    """Create independent split windows from chronological dataframe blocks."""
+    splits = split_daily_dataframe(df, train_ratio=train_ratio, val_ratio=val_ratio)
+
+    train_windows, train_flat, scaler, pca = _split_feature_matrix(
+        splits.train,
+        feature_columns,
+        config.window_size,
+        scaler=None,
+        scaler_type=scaler_type,
+        pca=None,
+        fit_scaler=normalize,
+        fit_pca=True,
+        variance_threshold=variance_threshold,
+    )
+    val_windows, val_flat, _, _ = _split_feature_matrix(
+        splits.val,
+        feature_columns,
+        config.window_size,
+        scaler=scaler,
+        scaler_type=scaler_type,
+        pca=pca,
+        fit_scaler=False,
+        fit_pca=False,
+        variance_threshold=variance_threshold,
+    )
+    test_windows, test_flat, _, _ = _split_feature_matrix(
+        splits.test,
+        feature_columns,
+        config.window_size,
+        scaler=scaler,
+        scaler_type=scaler_type,
+        pca=pca,
+        fit_scaler=False,
+        fit_pca=False,
+        variance_threshold=variance_threshold,
+    )
+
+    X_train, y_train, i_train = _valid_supervised_windows(
+        splits.train,
+        train_flat,
+        config.window_size,
+        forecast_horizon,
+        splits.train_offset,
+    )
+    X_val, y_val, i_val = _valid_supervised_windows(
+        splits.val,
+        val_flat,
+        config.window_size,
+        forecast_horizon,
+        splits.val_offset,
+    )
+    X_test, y_test, i_test = _valid_supervised_windows(
+        splits.test,
+        test_flat,
+        config.window_size,
+        forecast_horizon,
+        splits.test_offset,
+    )
+
+    c_train, c_val, c_test = _cluster_window_splits(
+        config,
         X_train,
         X_val,
         X_test,
         y_train,
-        y_val,
-        y_test,
-        c_train,
-        c_val,
-        c_test,
-        i_train,
-        i_val,
-        i_test,
+        random_state=random_state,
+        manual_zero_tolerance=manual_zero_tolerance,
+    )
+
+    return (
+        WindowSplitData(
+            X_train=X_train,
+            X_val=X_val,
+            X_test=X_test,
+            y_train=y_train,
+            y_val=y_val,
+            y_test=y_test,
+            c_train=c_train,
+            c_val=c_val,
+            c_test=c_test,
+            i_train=i_train,
+            i_val=i_val,
+            i_test=i_test,
+            all_targets=np.concatenate([y_train, y_val, y_test]),
+            all_cluster_labels=np.concatenate([c_train, c_val, c_test]),
+            n_windows=len(train_windows) + len(val_windows) + len(test_windows),
+        ),
+        splits,
     )
 
 
@@ -472,6 +823,9 @@ def train_cluster_models(
     batch_size: int,
     early_stopping: bool,
     patience: int,
+    lstm_loss_function: str,
+    loss_quantiles: Sequence[float],
+    loss_quantile_weights: Sequence[float] | str,
     verbose_training: int,
     random_state: int,
     show_console_info: bool,
@@ -509,6 +863,20 @@ def train_cluster_models(
         if n_tr == 0:
             continue
 
+        loss_thresholds = None
+        loss_weights = None
+        if lstm_loss_function == "quantile_weighted_mse":
+            loss_thresholds, loss_weights = quantile_weighted_mse_config(
+                y_train[tr_mask],
+                quantiles=loss_quantiles,
+                weights=loss_quantile_weights,
+            )
+            print_info(
+                "    Quantile-weighted MSE: "
+                f"thresholds_mm={loss_thresholds}, weights={loss_weights}",
+                show_console_info,
+            )
+
         model = LSTMPrecipitationPredictor(
             input_shape=(1, X_train_lstm.shape[2]),
             lstm_units=lstm_units,
@@ -516,6 +884,9 @@ def train_cluster_models(
             dropout_rate=dropout_rate,
             learning_rate=learning_rate,
             random_state=random_state,
+            loss_function=lstm_loss_function,
+            loss_quantile_thresholds_mm=loss_thresholds,
+            loss_quantile_weights=loss_weights,
         )
         history = model.fit(
             X_train_lstm[tr_mask],
@@ -587,6 +958,7 @@ def run_configuration(
     config: ExperimentConfig,
     numeric_cols: list[str],
     normalize: bool,
+    scaler_type: str,
     variance_threshold: float | None,
     output_dir: Path,
     use_all_features: bool,
@@ -603,6 +975,9 @@ def run_configuration(
     batch_size: int,
     early_stopping: bool,
     patience: int,
+    lstm_loss_function: str,
+    loss_quantiles: Sequence[float],
+    loss_quantile_weights: Sequence[float] | str,
     verbose_training: int,
     show_console_info: bool,
     test_all_models: bool,
@@ -611,77 +986,56 @@ def run_configuration(
     print_section(f"Running {config.name}", show_console_info)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    columns = numeric_cols if use_all_features else None
-    windows, windows_flat, _, _, feature_columns = create_cluster_feature_matrix(
+    feature_columns = numeric_cols if use_all_features else numeric_feature_columns(df)
+    split_data, daily_splits = create_window_split_data(
         df,
-        window_size=config.window_size,
-        columns=columns,
+        config,
+        feature_columns,
         normalize=normalize,
+        scaler_type=scaler_type,
         variance_threshold=variance_threshold,
-        verbose=show_console_info,
-    )
-    all_horizon_rain = horizon_precipitation(
-        df,
-        window_size=config.window_size,
-        horizon=forecast_horizon,
-    )[:len(windows)]
-    labels = cluster_feature_matrix(
-        windows_flat,
-        n_clusters=config.n_clusters,
-        algorithm=config.algorithm,
-        sigma=config.sigma,
+        forecast_horizon=forecast_horizon,
         random_state=random_state,
-        horizon_rain=all_horizon_rain,
-        zero_tolerance=manual_zero_tolerance,
-    )
-    valid_indices, targets = precipitation_targets(
-        df,
-        config.window_size,
-        len(windows),
-        horizon=forecast_horizon,
-    )
-
-    X = windows_flat[valid_indices]
-    c = labels[valid_indices]
-    (
-        X_train,
-        X_val,
-        X_test,
-        y_train,
-        y_val,
-        y_test,
-        c_train,
-        c_val,
-        c_test,
-        _i_train,
-        _i_val,
-        i_test,
-    ) = split_by_cluster(
-        X,
-        targets,
-        c,
-        valid_indices,
         train_ratio=train_ratio,
         val_ratio=val_ratio,
-        random_state=random_state,
+        manual_zero_tolerance=manual_zero_tolerance,
     )
 
+    X_train = split_data.X_train
+    X_val = split_data.X_val
+    X_test = split_data.X_test
+    y_train = split_data.y_train
+    y_val = split_data.y_val
+    y_test = split_data.y_test
+    c_train = split_data.c_train
+    c_val = split_data.c_val
+    c_test = split_data.c_test
+    i_test = split_data.i_test
+
     print_info(
-        f"  Windows={len(windows)}, samples={len(targets)}, "
-        f"features={X.shape[1]}, clusters={sorted(np.unique(c).tolist())}",
+        f"  Daily rows: train={len(daily_splits.train)}, "
+        f"val={len(daily_splits.val)}, test={len(daily_splits.test)}",
+        show_console_info,
+    )
+    print_info(
+        f"  Windows={split_data.n_windows}, "
+        f"samples={len(split_data.all_targets)}, features={X_train.shape[1]}, "
+        f"clusters={sorted(np.unique(split_data.all_cluster_labels).tolist())}",
         show_console_info,
     )
     print_info(
         f"  Split: train={len(y_train)}, val={len(y_val)}, test={len(y_test)}",
         show_console_info,
     )
-    n_samples = len(targets)
+    n_samples = len(split_data.all_targets)
     report_config = {
         **asdict(config),
         "name": config.name,
         "dataset_start_date": df["Data"].min().date().isoformat(),
         "dataset_end_date": df["Data"].max().date().isoformat(),
         "features": feature_columns,
+        "normalize": normalize,
+        "scaler_type": scaler_type if normalize else "none",
         "n_samples": n_samples,
         "forecast_horizon": forecast_horizon,
         "manual_zero_tolerance": manual_zero_tolerance,
@@ -710,7 +1064,9 @@ def run_configuration(
         "early_stopping": early_stopping,
         "patience": patience,
         "optimizer": "Adam",
-        "loss": "mean_squared_error",
+        "loss": lstm_loss_function,
+        "loss_quantiles": list(loss_quantiles),
+        "loss_quantile_weights": loss_quantile_weights,
         "metrics": ["mae", "mse"],
         "test_all_models": test_all_models,
     }
@@ -740,6 +1096,9 @@ def run_configuration(
         batch_size=batch_size,
         early_stopping=early_stopping,
         patience=patience,
+        lstm_loss_function=lstm_loss_function,
+        loss_quantiles=loss_quantiles,
+        loss_quantile_weights=loss_quantile_weights,
         verbose_training=verbose_training,
         random_state=random_state,
         show_console_info=show_console_info,
@@ -750,8 +1109,8 @@ def run_configuration(
         config,
         output_dir,
         feature_columns,
-        targets,
-        c,
+        split_data.all_targets,
+        split_data.all_cluster_labels,
         y_train,
         y_val,
         y_test,
@@ -765,6 +1124,7 @@ def run_configuration(
         state=config.state,
         station_id=config.station_id,
         pca_variance_threshold=variance_threshold,
+        test_model_selection=test_model_selection,
     )
     tex_path, pdf_path = generate_config_report(output_dir, report_config)
     print_info(f"  Report: {tex_path.name}", show_console_info)
@@ -783,6 +1143,7 @@ def run_experiment(
     station_id: str,
     window_sizes: list[int],
     normalize: bool,
+    scaler_type: str,
     variance_threshold: float | None,
     n_clusters_list: list[int],
     clustering_algorithm: str,
@@ -797,6 +1158,9 @@ def run_experiment(
     batch_size: int,
     early_stopping: bool,
     patience: int,
+    lstm_loss_function: str,
+    loss_quantiles: Sequence[float],
+    loss_quantile_weights: Sequence[float] | str,
     verbose_training: int,
     train_ratio: float,
     val_ratio: float,
@@ -815,11 +1179,18 @@ def run_experiment(
 ) -> Path:
     """Run the configured sweep and return its output directory."""
     clustering_algorithm = clustering_algorithm.lower()
+    scaler_type = scaler_type.lower()
+    lstm_loss_function = validate_loss_function(lstm_loss_function)
     if clustering_algorithm not in SUPPORTED_CLUSTERING_ALGORITHMS:
         supported = ", ".join(SUPPORTED_CLUSTERING_ALGORITHMS)
         raise ValueError(
             f"Unsupported clustering algorithm: {clustering_algorithm!r}. "
             f"Use one of: {supported}"
+        )
+    if scaler_type not in SUPPORTED_SCALER_TYPES:
+        supported = ", ".join(SUPPORTED_SCALER_TYPES)
+        raise ValueError(
+            f"Unsupported scaler_type: {scaler_type!r}. Use one of: {supported}"
         )
     if forecast_horizon <= 0:
         raise ValueError("forecast_horizon must be positive.")
@@ -890,6 +1261,11 @@ def run_experiment(
     print_section("LSTM CLUSTER SWEEP", show_console_info)
     print_info(f"Station: {state}/{station_id}", show_console_info)
     print_info(f"Output directory: {sweep_dir}", show_console_info)
+    print_info(
+        f"Normalization: {'off' if not normalize else scaler_type}",
+        show_console_info,
+    )
+    print_info(f"LSTM loss: {lstm_loss_function}", show_console_info)
     print_info(f"Configurations: {len(configurations)}", show_console_info)
     for config in configurations:
         print_info(f"  - {config.name}: {asdict(config)}", show_console_info)
@@ -903,6 +1279,7 @@ def run_experiment(
                 config,
                 numeric_cols,
                 normalize,
+                scaler_type,
                 variance_threshold,
                 sweep_dir / config.name,
                 use_all_features=use_all_features,
@@ -919,6 +1296,9 @@ def run_experiment(
                 batch_size=batch_size,
                 early_stopping=early_stopping,
                 patience=patience,
+                lstm_loss_function=lstm_loss_function,
+                loss_quantiles=loss_quantiles,
+                loss_quantile_weights=loss_quantile_weights,
                 verbose_training=verbose_training,
                 show_console_info=show_console_info,
                 test_all_models=test_all_models,

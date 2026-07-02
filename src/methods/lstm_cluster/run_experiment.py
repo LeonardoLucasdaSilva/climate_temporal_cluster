@@ -16,30 +16,34 @@ STATION_ID = "A801"
 
 # Clustering sweep
 
-WINDOW_SIZES = [60]
+WINDOW_SIZES = [15]
 N_CLUSTERS_LIST = [3]
 PCA_VARIANCE_THRESHOLD = None
 NORMALIZE = True
+SCALER_TYPE = "minmax"  # "standard" or "minmax"; ignored when NORMALIZE=False
 CLUSTERING_ALGORITHM = "spectral"
 N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"  # "auto" or "manual"
-MANUAL_SIGMA_VALUES = [0.3,0.5,0.8]  # Only used if SIGMA_MODE is "manual"
+MANUAL_SIGMA_VALUES = [0.3,0.5,0.7]  # Only used if SIGMA_MODE is "manual"
 USE_ALL_FEATURES = True
 
 # Metrics exported to compact comparison tables
 QUANTITATIVE_METRICS = ["MSE"]
 
 # Model hyperparameters
-LSTM_UNITS = 16
-LSTM_UNITS_2 = 16
+LSTM_UNITS = 256
+LSTM_UNITS_2 = 256
 DROPOUT_RATE = 0.1
 LEARNING_RATE = 0.001
+LSTM_LOSS_FUNCTION = "quantile_weighted_mse"  # "mean_squared_error", "mae", "huber", or "quantile_weighted_mse"
+LOSS_QUANTILES = [0.5, 0.75, 0.9, 0.95]
+LOSS_QUANTILE_WEIGHTS = "auto"  # "auto" or one positive weight per quantile bin
 
 # Training settings
 EPOCHS = 250
-BATCH_SIZE = 16
+BATCH_SIZE = 32
 EARLY_STOPPING = True
-PATIENCE = 30
+PATIENCE = 100
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True
 
@@ -64,6 +68,7 @@ def main() -> None:
         station_id=STATION_ID,
         window_sizes=WINDOW_SIZES,
         normalize=NORMALIZE,
+        scaler_type=SCALER_TYPE,
         variance_threshold=PCA_VARIANCE_THRESHOLD,
         n_clusters_list=N_CLUSTERS_LIST,
         clustering_algorithm=CLUSTERING_ALGORITHM,
@@ -79,6 +84,9 @@ def main() -> None:
         batch_size=BATCH_SIZE,
         early_stopping=EARLY_STOPPING,
         patience=PATIENCE,
+        lstm_loss_function=LSTM_LOSS_FUNCTION,
+        loss_quantiles=LOSS_QUANTILES,
+        loss_quantile_weights=LOSS_QUANTILE_WEIGHTS,
         verbose_training=VERBOSE_TRAINING,
         train_ratio=TRAIN_RATIO,
         val_ratio=VAL_RATIO,
