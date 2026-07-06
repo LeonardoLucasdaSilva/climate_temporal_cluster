@@ -1,8 +1,8 @@
 # LSTM Cluster
 
 This folder contains the active LSTM-by-cluster precipitation experiment. The
-experiment predicts next-day precipitation for one INMET station by clustering
-weather windows first, then training one LSTM model per cluster. Train,
+experiment predicts precipitation at a configurable forecast horizon for one
+INMET station by clustering weather windows first, then training one LSTM model per cluster. Train,
 validation, and test are chronological dataframe splits made before sliding
 windows are created, so raw daily observations are not shared across splits.
 
@@ -164,10 +164,18 @@ training curves under `model_fit/`. Existing per-cluster collections remain in
 folders such as `cluster_precipitation_histograms/`,
 `cluster_prediction_histograms/`, and `cluster_prediction_timeseries/`.
 
-Each configuration also saves `input_next_day_precipitation_by_cluster.csv`,
-which assigns the next-day precipitation target to every input window and its
-cluster. The matching horizontal histograms are saved under
-`input_precipitation_distribution_by_cluster/`.
+Each configuration also saves
+`input_forecast_horizon_precipitation_by_cluster.csv`, which assigns the
+configured horizon target to every input window and its cluster. The legacy
+`input_next_day_precipitation_by_cluster.csv` is still written for older
+analysis scripts. Both files include `current_window_precipitation_mm`,
+`forecast_horizon_precipitation_mm`, and `target_minus_current_mm`.
+
+Forecast-horizon diagnostics are saved under
+`forecast_horizon_diagnostics/`. They compare the precipitation on the final
+input-window day with the target at `FORECAST_HORIZON`, include a persistence
+baseline that uses current precipitation as the forecast, and add the same
+section to `experiment_report.tex`.
 
 The automatic report includes a `Cluster Prediction Time Series` section with
 one out-of-sample performance figure per cluster. Each figure contains:

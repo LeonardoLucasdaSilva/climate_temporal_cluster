@@ -36,6 +36,14 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
         ),
     ),
     (
+        "Forecast Horizon Diagnostics",
+        (
+            "forecast_horizon_diagnostics/09_current_vs_forecast_horizon_by_split.png",
+            "forecast_horizon_diagnostics/10_test_current_target_prediction_timeseries.png",
+            "forecast_horizon_diagnostics/11_test_current_vs_horizon_by_cluster.png",
+        ),
+    ),
+    (
         "Cluster Histograms",
         (
             "cluster_precipitation_histograms/*.png",
@@ -120,6 +128,7 @@ def render_report(
         r"\section*{Metrics}",
         metrics_table(output_dir / "metrics_summary.csv"),
         cluster_metrics_table(output_dir / "cluster_model_metrics.csv"),
+        forecast_horizon_section(output_dir),
         test_model_selection_section(output_dir),
     ]
 
@@ -353,6 +362,30 @@ def test_model_selection_section(output_dir: Path) -> str:
             r"\section*{Test Model Selection}",
             latex_escape(paragraph),
             dataframe_table(pd.DataFrame(rows), "Per-Sample Selection Summary"),
+        ]
+    )
+
+
+def forecast_horizon_section(output_dir: Path) -> str:
+    """Return the generated forecast-horizon behavior report when available."""
+    report_path = (
+        output_dir
+        / "forecast_horizon_diagnostics"
+        / "forecast_horizon_behavior_report.txt"
+    )
+    if not report_path.exists():
+        return ""
+
+    content = report_path.read_text(encoding="utf-8").strip()
+    if not content:
+        return ""
+
+    return "\n".join(
+        [
+            r"\section*{Forecast Horizon Behavior}",
+            r"\begin{verbatim}",
+            content,
+            r"\end{verbatim}",
         ]
     )
 

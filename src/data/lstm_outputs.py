@@ -93,30 +93,47 @@ def save_cluster_precipitation_histograms(
 
 
 def save_input_precipitation_assignments(
-    next_day_precipitation: np.ndarray,
+    forecast_horizon_precipitation: np.ndarray,
+    current_precipitation: np.ndarray,
     cluster_labels: np.ndarray,
     output_dir: Path,
+    forecast_horizon: int,
 ) -> None:
-    """Save the next-day precipitation target assigned to each input window."""
-    pd.DataFrame(
+    """Save the forecast-horizon precipitation target for each input window."""
+    assignments = pd.DataFrame(
         {
-            "input_index": np.arange(len(next_day_precipitation)),
+            "input_index": np.arange(len(forecast_horizon_precipitation)),
             "cluster": cluster_labels.astype(int),
-            "next_day_precipitation_mm": next_day_precipitation,
+            "forecast_horizon": forecast_horizon,
+            "current_window_precipitation_mm": current_precipitation,
+            "forecast_horizon_precipitation_mm": forecast_horizon_precipitation,
+            "target_minus_current_mm": (
+                forecast_horizon_precipitation - current_precipitation
+            ),
+            "next_day_precipitation_mm": forecast_horizon_precipitation,
         }
-    ).to_csv(output_dir / "input_next_day_precipitation_by_cluster.csv", index=False)
+    )
+    assignments.to_csv(
+        output_dir / "input_forecast_horizon_precipitation_by_cluster.csv",
+        index=False,
+    )
+    assignments.to_csv(
+        output_dir / "input_next_day_precipitation_by_cluster.csv",
+        index=False,
+    )
 
 
 def save_input_precipitation_distribution_by_cluster(
-    next_day_precipitation: np.ndarray,
+    forecast_horizon_precipitation: np.ndarray,
     cluster_labels: np.ndarray,
     output_dir: Path,
+    forecast_horizon: int,
 ) -> None:
-    """Save horizontal histograms of next-day precipitation for each input cluster."""
+    """Save horizontal histograms of horizon precipitation for each cluster."""
     hist_dir = output_dir / "input_precipitation_distribution_by_cluster"
     hist_dir.mkdir(exist_ok=True)
 
-    bin_edges = precipitation_bin_edges(next_day_precipitation)
+    bin_edges = precipitation_bin_edges(forecast_horizon_precipitation)
     cluster_ids = sorted(np.unique(cluster_labels))
     n_clusters = len(cluster_ids)
     n_cols = min(3, n_clusters)
@@ -135,7 +152,7 @@ def save_input_precipitation_distribution_by_cluster(
 
     for ax, cluster_id in zip(axes.ravel(), cluster_ids):
         mask = cluster_labels == cluster_id
-        values = next_day_precipitation[mask]
+        values = forecast_horizon_precipitation[mask]
         rainy_ratio = float(np.mean(values > 0)) if values.size else 0.0
         ax.hist(
             values,
@@ -147,7 +164,7 @@ def save_input_precipitation_distribution_by_cluster(
         )
         ax.set_title(f"Cluster {int(cluster_id)} | n={values.size} | rainy={rainy_ratio:.1%}")
         ax.set_xlabel("Samples")
-        ax.set_ylabel("Next-day precipitation (mm)")
+        ax.set_ylabel(f"Horizon +{forecast_horizon} precipitation (mm)")
         ax.grid(True, alpha=0.25, axis="x")
 
         cluster_fig, cluster_ax = plt.subplots(figsize=(8, 6))
@@ -160,10 +177,11 @@ def save_input_precipitation_distribution_by_cluster(
             alpha=0.9,
         )
         cluster_ax.set_title(
-            f"Input Windows in Cluster {int(cluster_id)}: Next-day Precipitation"
+            f"Input Windows in Cluster {int(cluster_id)}: "
+            f"Horizon +{forecast_horizon} Precipitation"
         )
         cluster_ax.set_xlabel("Samples")
-        cluster_ax.set_ylabel("Next-day precipitation (mm)")
+        cluster_ax.set_ylabel(f"Horizon +{forecast_horizon} precipitation (mm)")
         cluster_ax.grid(True, alpha=0.25, axis="x")
         cluster_fig.tight_layout()
         cluster_fig.savefig(
@@ -171,10 +189,243 @@ def save_input_precipitation_distribution_by_cluster(
         )
         plt.close(cluster_fig)
 
-    fig.suptitle("Input Window Next-day Precipitation Distribution by Cluster", y=1.0)
+    fig.suptitle(
+        f"Input Window Horizon +{forecast_horizon} Precipitation Distribution by Cluster",
+        y=1.0,
+    )
     fig.tight_layout()
     fig.savefig(hist_dir / "08_input_precipitation_distribution_by_cluster.png")
     plt.close(fig)
+
+
+def _finite_correlation(x: np.ndarray, y: np.ndarray) -> float:
+    mask = np.isfinite(x) & np.isfinite(y)
+    if int(mask.sum()) < 2:
+        return float("nan")
+    return float(np.corrcoef(x[mask], y[mask])[0, 1])
+
+
+def _safe_regression_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+) -> dict[str, float]:
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    if int(mask.sum()) == 0:
+        return {
+            "MSE": float("nan"),
+            "RMSE": float("nan"),
+            "MAE": float("nan"),
+            "RMSLE": float("nan"),
+            "R2": float("nan"),
+            "MAPE": float("nan"),
+        }
+    return calculate_regression_metrics(y_true[mask], y_pred[mask])
+
+
+def save_forecast_horizon_diagnostics(
+    y_train: np.ndarray,
+    y_val: np.ndarray,
+    y_test: np.ndarray,
+    current_train: np.ndarray,
+    current_val: np.ndarray,
+    current_test: np.ndarray,
+    y_pred_test: np.ndarray,
+    c_test: np.ndarray,
+    train_indices: np.ndarray,
+    val_indices: np.ndarray,
+    test_indices: np.ndarray,
+    output_dir: Path,
+    forecast_horizon: int,
+) -> dict[str, float]:
+    """Save plots and tables comparing current rain with horizon targets."""
+    diag_dir = output_dir / "forecast_horizon_diagnostics"
+    diag_dir.mkdir(exist_ok=True)
+
+    split_frames = []
+    for split_name, current, target, indices in (
+        ("train", current_train, y_train, train_indices),
+        ("validation", current_val, y_val, val_indices),
+        ("test", current_test, y_test, test_indices),
+    ):
+        split_frames.append(
+            pd.DataFrame(
+                {
+                    "split": split_name,
+                    "window_index": indices,
+                    "current_window_precipitation_mm": current,
+                    "forecast_horizon_precipitation_mm": target,
+                    "horizon_delta_mm": target - current,
+                }
+            )
+        )
+    all_df = pd.concat(split_frames, ignore_index=True)
+    all_df.to_csv(
+        diag_dir / "current_vs_forecast_horizon_precipitation.csv",
+        index=False,
+    )
+
+    test_df = pd.DataFrame(
+        {
+            "window_index": test_indices,
+            "cluster": c_test.astype(int),
+            "current_window_precipitation_mm": current_test,
+            "forecast_horizon_precipitation_mm": y_test,
+            "lstm_prediction_mm": y_pred_test,
+            "horizon_delta_mm": y_test - current_test,
+            "persistence_residual_mm": y_test - current_test,
+            "lstm_residual_mm": y_test - y_pred_test,
+        }
+    ).sort_values("window_index")
+    test_df.to_csv(diag_dir / "test_forecast_horizon_behavior.csv", index=False)
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    split_colors = {"train": "#0072B2", "validation": "#E69F00", "test": "#009E73"}
+    for split_name, split_df in all_df.groupby("split", sort=False):
+        ax.scatter(
+            split_df["current_window_precipitation_mm"],
+            split_df["forecast_horizon_precipitation_mm"],
+            s=24,
+            alpha=0.55,
+            color=split_colors.get(split_name, "#666666"),
+            label=split_name.title(),
+        )
+    max_value = float(
+        np.nanmax(
+            [
+                all_df["current_window_precipitation_mm"].max(),
+                all_df["forecast_horizon_precipitation_mm"].max(),
+                1.0,
+            ]
+        )
+    )
+    ax.plot([0.0, max_value], [0.0, max_value], color="black", linestyle="--")
+    ax.set_xlabel("Current window precipitation (mm)")
+    ax.set_ylabel(f"Forecast horizon +{forecast_horizon} precipitation (mm)")
+    ax.set_title("Current Rain vs Forecast-Horizon Target")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(diag_dir / "09_current_vs_forecast_horizon_by_split.png")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(
+        test_df["window_index"],
+        test_df["current_window_precipitation_mm"],
+        label="Current window precipitation",
+        color="#0072B2",
+        linewidth=1.5,
+    )
+    ax.plot(
+        test_df["window_index"],
+        test_df["forecast_horizon_precipitation_mm"],
+        label=f"Target at horizon +{forecast_horizon}",
+        color="#009E73",
+        linewidth=1.5,
+    )
+    ax.plot(
+        test_df["window_index"],
+        test_df["lstm_prediction_mm"],
+        label="LSTM prediction",
+        color="#D55E00",
+        linewidth=1.5,
+        alpha=0.85,
+    )
+    ax.set_xlabel("Original window index")
+    ax.set_ylabel("Precipitation (mm)")
+    ax.set_title("Test Set: Current Rain, Forecast Target, and LSTM Prediction")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(diag_dir / "10_test_current_target_prediction_timeseries.png")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    cluster_ids = sorted(np.unique(c_test))
+    colors = plt.cm.tab20(np.linspace(0, 1, max(len(cluster_ids), 1)))
+    for color, cluster_id in zip(colors, cluster_ids):
+        mask = c_test == cluster_id
+        ax.scatter(
+            current_test[mask],
+            y_test[mask],
+            s=34,
+            alpha=0.7,
+            color=color,
+            edgecolors="black",
+            linewidths=0.5,
+            label=f"Cluster {int(cluster_id)}",
+        )
+    test_max = float(np.nanmax([current_test.max(), y_test.max(), 1.0]))
+    ax.plot([0.0, test_max], [0.0, test_max], color="black", linestyle="--")
+    ax.set_xlabel("Current window precipitation (mm)")
+    ax.set_ylabel(f"Target at horizon +{forecast_horizon} (mm)")
+    ax.set_title("Test Set: Horizon Target Shift by Cluster")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(diag_dir / "11_test_current_vs_horizon_by_cluster.png")
+    plt.close(fig)
+
+    persistence_metrics = _safe_regression_metrics(y_test, current_test)
+    lstm_metrics = _safe_regression_metrics(y_test, y_pred_test)
+    summary = {
+        "forecast_horizon": float(forecast_horizon),
+        "current_target_correlation_train": _finite_correlation(current_train, y_train),
+        "current_target_correlation_val": _finite_correlation(current_val, y_val),
+        "current_target_correlation_test": _finite_correlation(current_test, y_test),
+        "mean_horizon_delta_test": float(np.nanmean(y_test - current_test)),
+        "median_horizon_delta_test": float(np.nanmedian(y_test - current_test)),
+        "persistence_rmse_test": persistence_metrics["RMSE"],
+        "persistence_mae_test": persistence_metrics["MAE"],
+        "lstm_rmse_test": lstm_metrics["RMSE"],
+        "lstm_mae_test": lstm_metrics["MAE"],
+        "lstm_rmse_improvement_vs_persistence": (
+            persistence_metrics["RMSE"] - lstm_metrics["RMSE"]
+        ),
+        "lstm_mae_improvement_vs_persistence": (
+            persistence_metrics["MAE"] - lstm_metrics["MAE"]
+        ),
+    }
+
+    with open(diag_dir / "forecast_horizon_behavior_report.txt", "w", encoding="utf-8") as f:
+        f.write("FORECAST HORIZON BEHAVIOR REPORT\n")
+        f.write("=" * 72 + "\n\n")
+        f.write(f"Forecast horizon: +{forecast_horizon} day(s)\n")
+        f.write(
+            "Current precipitation is the precipitation observed on the final "
+            "day inside each input window.\n"
+        )
+        f.write(
+            "The forecast target is the precipitation observed the configured "
+            "number of day(s) after that final input day.\n\n"
+        )
+        f.write("Current-vs-target correlation\n")
+        f.write("-" * 72 + "\n")
+        f.write(f"Train:      {summary['current_target_correlation_train']:.4f}\n")
+        f.write(f"Validation: {summary['current_target_correlation_val']:.4f}\n")
+        f.write(f"Test:       {summary['current_target_correlation_test']:.4f}\n\n")
+        f.write("Test-set comparison against current-precipitation persistence\n")
+        f.write("-" * 72 + "\n")
+        f.write(
+            f"Persistence RMSE: {summary['persistence_rmse_test']:.4f}; "
+            f"LSTM RMSE: {summary['lstm_rmse_test']:.4f}; "
+            f"improvement: {summary['lstm_rmse_improvement_vs_persistence']:.4f}\n"
+        )
+        f.write(
+            f"Persistence MAE:  {summary['persistence_mae_test']:.4f}; "
+            f"LSTM MAE:  {summary['lstm_mae_test']:.4f}; "
+            f"improvement: {summary['lstm_mae_improvement_vs_persistence']:.4f}\n"
+        )
+        f.write(
+            f"Mean target-current delta: "
+            f"{summary['mean_horizon_delta_test']:.4f} mm\n"
+        )
+        f.write(
+            f"Median target-current delta: "
+            f"{summary['median_horizon_delta_test']:.4f} mm\n"
+        )
+
+    return summary
 
 
 def save_cluster_prediction_histograms(
@@ -380,7 +631,7 @@ def save_precipitation_by_cluster_plot(
     sns.boxplot(data=plot_df, x="cluster", y="precipitation_mm", ax=ax)
     ax.set_title("Test Set: Precipitation Distribution by Cluster")
     ax.set_xlabel("Cluster")
-    ax.set_ylabel("Next-day precipitation (mm)")
+    ax.set_ylabel("Forecast-target precipitation (mm)")
     fig.tight_layout()
     fig.savefig(plot_dir / "07_precipitation_distribution_by_cluster.png")
     plt.close(fig)
@@ -449,10 +700,11 @@ def save_visualizations(
     y_pred_test: np.ndarray,
     c_test: np.ndarray,
     test_indices: np.ndarray,
-    next_day_precipitation: np.ndarray,
+    forecast_horizon_precipitation: np.ndarray,
     input_cluster_labels: np.ndarray,
     histories_by_cluster: dict[int, object],
     output_dir: Path,
+    forecast_horizon: int,
 ) -> None:
     """Save the diagnostic plots for one configuration."""
     prediction_dir = output_dir / "prediction_overview"
@@ -512,9 +764,10 @@ def save_visualizations(
     save_precipitation_by_cluster_plot(y_test, c_test, output_dir)
     save_cluster_precipitation_histograms(y_test, c_test, output_dir)
     save_input_precipitation_distribution_by_cluster(
-        next_day_precipitation,
+        forecast_horizon_precipitation,
         input_cluster_labels,
         output_dir,
+        forecast_horizon=forecast_horizon,
     )
     save_cluster_prediction_histograms(y_test, y_pred_test, c_test, output_dir)
 
@@ -742,20 +995,27 @@ def save_run_outputs(
     output_dir: Path,
     feature_columns: list[str],
     next_day_precipitation: np.ndarray,
+    current_precipitation: np.ndarray,
     input_cluster_labels: np.ndarray,
     y_train: np.ndarray,
     y_val: np.ndarray,
     y_test: np.ndarray,
+    current_train: np.ndarray,
+    current_val: np.ndarray,
+    current_test: np.ndarray,
     y_pred_train: np.ndarray,
     y_pred_val: np.ndarray,
     y_pred_test: np.ndarray,
     c_test: np.ndarray,
+    train_indices: np.ndarray,
+    val_indices: np.ndarray,
     test_indices: np.ndarray,
     histories_by_cluster: dict[int, object],
     metrics_by_cluster: dict[int, dict[str, float]],
     state: str,
     station_id: str,
     pca_variance_threshold: float,
+    forecast_horizon: int,
     test_model_selection: dict[str, object] | None = None,
 ) -> dict[str, float | int | str | None]:
     """Save all artifacts for one run and return one sweep-level result row."""
@@ -779,14 +1039,19 @@ def save_run_outputs(
     )
     save_input_precipitation_assignments(
         next_day_precipitation,
+        current_precipitation,
         input_cluster_labels,
         output_dir,
+        forecast_horizon=forecast_horizon,
     )
     predictions_df = pd.DataFrame(
         {
             "actual": y_test,
             "predicted": y_pred_test,
             "residual": y_test - y_pred_test,
+            "current_window_precipitation_mm": current_test,
+            "forecast_horizon": forecast_horizon,
+            "target_minus_current_mm": y_test - current_test,
             "cluster": c_test,
             "window_index": test_indices,
         }
@@ -826,6 +1091,22 @@ def save_run_outputs(
                 predictions_df[f"selected_model_cluster_{metric_key}"] = metric_models
     predictions_df = predictions_df.sort_values("window_index")
     predictions_df.to_csv(output_dir / "test_predictions.csv", index=False)
+
+    horizon_summary = save_forecast_horizon_diagnostics(
+        y_train,
+        y_val,
+        y_test,
+        current_train,
+        current_val,
+        current_test,
+        y_pred_test,
+        c_test,
+        train_indices,
+        val_indices,
+        test_indices,
+        output_dir,
+        forecast_horizon=forecast_horizon,
+    )
 
     if test_model_selection is not None:
         save_test_model_selection_report(output_dir, test_model_selection)
@@ -867,6 +1148,7 @@ def save_run_outputs(
         input_cluster_labels,
         histories_by_cluster,
         output_dir,
+        forecast_horizon=forecast_horizon,
     )
 
     result = {
@@ -875,6 +1157,7 @@ def save_run_outputs(
         "n_clusters": config.n_clusters,
         "algorithm": config.algorithm,
         "sigma": config.sigma,
+        "forecast_horizon": forecast_horizon,
         "zero_days_ratio": zero_metrics["zero_days_ratio"],
         "rainy_days_rmse": zero_metrics.get("rainy_days_rmse", np.nan),
         "n_train": len(y_train),
@@ -893,6 +1176,9 @@ def save_run_outputs(
     for cluster_id, metrics in sorted(metrics_by_cluster.items()):
         for metric_name, value in metrics.items():
             result[f"cluster_{cluster_id}_{metric_name.lower()}"] = value
+
+    for key, value in horizon_summary.items():
+        result[f"horizon_{key}"] = value
 
     if test_model_selection is not None:
         selection_summary = dict(test_model_selection.get("summary", {}))

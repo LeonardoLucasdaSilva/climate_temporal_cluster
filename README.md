@@ -303,7 +303,8 @@ For each cluster, the training loop:
 7. Calculates selected-model cluster-level test metrics from those sample-level
    predictions.
 
-The model predicts one value: next-day precipitation in millimeters.
+The model predicts one value: precipitation at the configured forecast horizon,
+in millimeters.
 
 Set `TEST_ALL_MODELS = False` in `run_experiment.py` to keep the original
 behavior where each test sample is predicted only by the LSTM trained on its
@@ -333,6 +334,7 @@ Each configuration folder contains:
 - `test_model_selection.csv`, when `TEST_ALL_MODELS = True`
 - `test_model_metric_summary.csv`, when `TEST_ALL_MODELS = True`
 - `test_model_selection_report.txt`, when `TEST_ALL_MODELS = True`
+- `input_forecast_horizon_precipitation_by_cluster.csv`
 - `input_next_day_precipitation_by_cluster.csv`
 - `test_predictions.csv`
 - `evaluation_report.txt`
@@ -344,8 +346,11 @@ Each configuration folder contains:
   `prediction_timeseries_splits/`, `residual_diagnostics/`,
   `cluster_diagnostics/`, `model_fit/`, `cluster_precipitation_histograms/`,
   and `cluster_prediction_histograms/`
-- input-window next-day precipitation distribution plots by cluster under
+- input-window forecast-horizon precipitation distribution plots by cluster under
   `input_precipitation_distribution_by_cluster/`
+- current-window versus forecast-horizon target diagnostics, persistence
+  baseline metrics, and horizon behavior plots under
+  `forecast_horizon_diagnostics/`
 - per-cluster test performance time series with actual values, predictions,
   residuals, cluster metrics, and compressed large temporal gaps
 
