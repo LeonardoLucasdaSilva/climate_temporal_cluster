@@ -34,6 +34,7 @@ from methods.tools.dimensionality_reduction_tools import (
     flatten_windows,
 )
 from methods.tools.precipitation_utils import (
+    DEFAULT_PRECIPITATION_COLUMN,
     precipitation_targets,
 )
 from methods.tools.sliding_windows import create_windows
@@ -82,6 +83,9 @@ class WindowSplitData:
     y_train: np.ndarray
     y_val: np.ndarray
     y_test: np.ndarray
+    current_train: np.ndarray
+    current_val: np.ndarray
+    current_test: np.ndarray
     c_train: np.ndarray
     c_val: np.ndarray
     c_test: np.ndarray
@@ -89,7 +93,9 @@ class WindowSplitData:
     i_val: np.ndarray
     i_test: np.ndarray
     all_targets: np.ndarray
+    all_current_precipitation: np.ndarray
     all_cluster_labels: np.ndarray
+    test_targets_by_lead_day: np.ndarray
     n_windows: int
 
 
@@ -335,14 +341,45 @@ def _valid_supervised_windows(
     window_size: int,
     horizon: int,
     offset: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     valid_indices, targets = precipitation_targets(
         df,
         window_size,
         len(windows_flat),
         horizon=horizon,
     )
-    return windows_flat[valid_indices], targets, valid_indices + offset
+    current_indices = valid_indices + window_size - 1
+    current_precipitation = pd.to_numeric(
+        df.iloc[current_indices][DEFAULT_PRECIPITATION_COLUMN],
+        errors="coerce",
+    ).to_numpy(dtype=float)
+    return (
+        windows_flat[valid_indices],
+        targets,
+        current_precipitation,
+        valid_indices + offset,
+    )
+
+
+def _lead_day_targets(
+    df: pd.DataFrame,
+    valid_indices: np.ndarray,
+    window_size: int,
+    max_horizon: int,
+) -> np.ndarray:
+    """Return target precipitation for lead days 1..max_horizon."""
+    lead_targets = []
+    for lead_day in range(1, max_horizon + 1):
+        target_indices = valid_indices + window_size - 1 + lead_day
+        lead_targets.append(
+            pd.to_numeric(
+                df.iloc[target_indices][DEFAULT_PRECIPITATION_COLUMN],
+                errors="coerce",
+            ).to_numpy(dtype=float)
+        )
+    if not lead_targets:
+        return np.empty((len(valid_indices), 0), dtype=float)
+    return np.column_stack(lead_targets)
 
 
 def _nearest_centroid_labels(
@@ -380,7 +417,11 @@ def _cluster_window_splits(
             random_state=random_state,
             n_init=KMEANS_N_INIT,
         ).fit(X_train)
-        return model.labels_, model.predict(X_val), model.predict(X_test)
+        return (
+            model.labels_,
+            _nearest_centroid_labels(X_val, model.cluster_centers_),
+            _nearest_centroid_labels(X_test, model.cluster_centers_),
+        )
 
     if config.algorithm == "manual":
         model = ManualRainClustering(
@@ -470,21 +511,21 @@ def create_window_split_data(
         variance_threshold=variance_threshold,
     )
 
-    X_train, y_train, i_train = _valid_supervised_windows(
+    X_train, y_train, current_train, i_train = _valid_supervised_windows(
         splits.train,
         train_flat,
         config.window_size,
         forecast_horizon,
         splits.train_offset,
     )
-    X_val, y_val, i_val = _valid_supervised_windows(
+    X_val, y_val, current_val, i_val = _valid_supervised_windows(
         splits.val,
         val_flat,
         config.window_size,
         forecast_horizon,
         splits.val_offset,
     )
-    X_test, y_test, i_test = _valid_supervised_windows(
+    X_test, y_test, current_test, i_test = _valid_supervised_windows(
         splits.test,
         test_flat,
         config.window_size,
@@ -501,6 +542,12 @@ def create_window_split_data(
         random_state=random_state,
         manual_zero_tolerance=manual_zero_tolerance,
     )
+    test_targets_by_lead_day = _lead_day_targets(
+        splits.test,
+        i_test - splits.test_offset,
+        config.window_size,
+        forecast_horizon,
+    )
 
     return (
         WindowSplitData(
@@ -510,6 +557,9 @@ def create_window_split_data(
             y_train=y_train,
             y_val=y_val,
             y_test=y_test,
+            current_train=current_train,
+            current_val=current_val,
+            current_test=current_test,
             c_train=c_train,
             c_val=c_val,
             c_test=c_test,
@@ -517,7 +567,11 @@ def create_window_split_data(
             i_val=i_val,
             i_test=i_test,
             all_targets=np.concatenate([y_train, y_val, y_test]),
+            all_current_precipitation=np.concatenate(
+                [current_train, current_val, current_test]
+            ),
             all_cluster_labels=np.concatenate([c_train, c_val, c_test]),
+            test_targets_by_lead_day=test_targets_by_lead_day,
             n_windows=len(train_windows) + len(val_windows) + len(test_windows),
         ),
         splits,
@@ -1007,9 +1061,14 @@ def run_configuration(
     y_train = split_data.y_train
     y_val = split_data.y_val
     y_test = split_data.y_test
+    current_train = split_data.current_train
+    current_val = split_data.current_val
+    current_test = split_data.current_test
     c_train = split_data.c_train
     c_val = split_data.c_val
     c_test = split_data.c_test
+    i_train = split_data.i_train
+    i_val = split_data.i_val
     i_test = split_data.i_test
 
     print_info(
@@ -1110,20 +1169,28 @@ def run_configuration(
         output_dir,
         feature_columns,
         split_data.all_targets,
+        split_data.all_current_precipitation,
         split_data.all_cluster_labels,
         y_train,
         y_val,
         y_test,
+        split_data.test_targets_by_lead_day,
+        current_train,
+        current_val,
+        current_test,
         y_pred_train,
         y_pred_val,
         y_pred_test,
         c_test,
+        i_train,
+        i_val,
         i_test,
         histories_by_cluster,
         metrics_by_cluster,
         state=config.state,
         station_id=config.station_id,
         pca_variance_threshold=variance_threshold,
+        forecast_horizon=forecast_horizon,
         test_model_selection=test_model_selection,
     )
     tex_path, pdf_path = generate_config_report(output_dir, report_config)

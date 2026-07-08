@@ -106,7 +106,8 @@ For each configuration, the experiment runs these stages:
    rows/windows only, then transform validation and test with the training
    transforms.
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
-   then assign validation and test windows from the training clusters.
+   calculate training-cluster centroids, then assign validation and test
+   windows to the nearest existing centroid.
 7. Create precipitation targets at the configured forecast horizon inside each
    split.
 8. Train one LSTM model per training cluster.
@@ -351,6 +352,12 @@ Each configuration folder contains:
 - current-window versus forecast-horizon target diagnostics, persistence
   baseline metrics, and horizon behavior plots under
   `forecast_horizon_diagnostics/`
+- lead-day diagnostics under `forecast_horizon_diagnostics/`, including
+  `test_prediction_by_lead_day.csv`,
+  `test_prediction_metrics_by_lead_day.csv`, a lead-day error curve, a
+  true-vs-predicted grid for D+1 through `FORECAST_HORIZON`, and individual
+  true-vs-predicted plots under
+  `forecast_horizon_diagnostics/true_vs_predicted_by_lead_day/`
 - per-cluster test performance time series with actual values, predictions,
   residuals, cluster metrics, and compressed large temporal gaps
 
