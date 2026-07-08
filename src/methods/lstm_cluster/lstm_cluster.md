@@ -46,7 +46,8 @@ Or use the root launcher:
    rows/windows only, then transform validation and test with those training
    transforms.
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
-   then assign validation and test windows from the training clusters.
+   calculate training-cluster centroids, then assign validation and test
+   windows to the nearest existing centroid.
 7. Use precipitation at the configured forecast horizon as the target inside
    each split.
 8. Train one LSTM per training cluster.
@@ -176,6 +177,13 @@ Forecast-horizon diagnostics are saved under
 input-window day with the target at `FORECAST_HORIZON`, include a persistence
 baseline that uses current precipitation as the forecast, and add the same
 section to `experiment_report.tex`.
+
+The same folder also includes lead-day diagnostics for the test split. The
+pipeline compares the model prediction with the real precipitation observed at
+D+1, D+2, ..., D+`FORECAST_HORIZON` for each test window, writes
+`test_prediction_by_lead_day.csv` and
+`test_prediction_metrics_by_lead_day.csv`, and saves both a combined
+true-vs-predicted grid and one true-vs-predicted plot per lead day.
 
 The automatic report includes a `Cluster Prediction Time Series` section with
 one out-of-sample performance figure per cluster. Each figure contains:
