@@ -1,9 +1,10 @@
-pandas
-numpy
-scikit-learn
-matplotlib
-seaborn
-tensorflow>=2.10
-keras>=2.10
--e .
+--extra-index-url https://download.pytorch.org/whl/cu128
 
+pandas>=2.2
+numpy>=2.0
+scikit-learn>=1.5
+matplotlib>=3.9
+seaborn>=0.13
+torch==2.7.0+cu128
+pytest>=8.0
+-e .
