@@ -7,11 +7,14 @@ name = "climate-cluster"
 version = "0.1.0"
 description = "Pipeline scaffold for clustering Brazilian climate stations (INMET)."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.15"
 dependencies = [
-    "pandas>=1.5.0",
-    "numpy>=1.21.0",
-    "scikit-learn>=1.0.0",
+    "pandas>=2.2",
+    "numpy>=2.0",
+    "scikit-learn>=1.5",
+    "matplotlib>=3.9",
+    "seaborn>=0.13",
+    "torch>=2.7,<2.8",
 ]
 
 [project.scripts]
@@ -27,4 +30,5 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "methods.lstm_cluster" = ["*.yaml", "*.md"]
+
 
