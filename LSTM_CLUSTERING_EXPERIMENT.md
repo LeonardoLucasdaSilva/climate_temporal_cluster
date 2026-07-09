@@ -151,12 +151,12 @@ Calculated for each data set (train, val, test):
 
 | Metric | Formula | Interpretation |
 |--------|---------|-----------------|
-| **MSE** | (1/n)Σ(y_true - y_pred)² | Mean squared error - penalizes large errors |
-| **RMSE** | √MSE | Root mean squared error - same units as target |
-| **MAE** | (1/n)Σ\|y_true - y_pred\| | Mean absolute error - robust to outliers |
-| **RMSLE** | √(1/n)Σ(log(y_true+1) - log(y_pred+1))² | Root mean squared log error - for positive values |
-| **R²** | 1 - SS_res/SS_tot | Coefficient of determination (0-1 scale) |
-| **MAPE** | (1/n)Σ\|(y_true - y_pred)/y_true\| × 100 | Mean absolute percentage error |
+| **MSE** | $\dfrac{1}{n}\sum(y_{true} - y_{pred})²$ | Mean squared error - penalizes large errors |
+| **RMSE** | $\sqrt{mse}$ | Root mean squared error - same units as target |
+| **MAE** | $\dfrac{1}{n}\sum\|y_{true} - y_{pred}$\| | Mean absolute error - robust to outliers |
+| **RMSLE** | $\dfrac{\sum(log(y_{true}+1) - log(y_{pred}+1))²}{\sqrt{n}}$ | Root mean squared log error - for positive values |
+| **R²** | 1 - $\dfrac{SS_{res}}{SS_{tot}}$ | Coefficient of determination (0-1 scale) |
+| **MAPE** | $ \dfrac{1}{n} \sum \|\dfrac{y_{true} - y_p{pred}}{y_{true}}\| × 100$ |  Mean absolute percentage error |
 
 ### Precipitation-Specific Metrics
 Account for high frequency of zero-precipitation days:

@@ -4,11 +4,12 @@ This project studies Brazilian INMET daily climate data with a temporal
 clustering workflow and cluster-specific LSTM precipitation models.
 
 The main experiment is configured in `methods.lstm_cluster.run_experiment` and
-executed by `methods.lstm_cluster.pipeline`. It builds sliding windows from
-daily station data, clusters those windows, trains one LSTM model per cluster,
-tests each sample with every trained LSTM before selecting the best test-time
-model per metric, and writes metrics, predictions, plots, and LaTeX-ready
-summary tables.
+executed by `methods.lstm_cluster.pipeline`. It first splits daily station data
+chronologically into train, validation, and test dataframes, builds sliding
+windows inside each split, clusters training windows, trains one LSTM model per
+cluster, tests each sample with every trained LSTM before selecting the best
+test-time model per metric, and writes metrics, predictions, plots, and
+LaTeX-ready summary tables.
 
 ## Quick Start
 
@@ -98,12 +99,17 @@ For each configuration, the experiment runs these stages:
 
 1. Load daily station data.
 2. Select numeric climate features.
-3. Build sliding windows.
-4. Apply PCA dimensionality reduction using a variance threshold.
-5. Cluster windows with K-means, spectral, or manual rain clustering.
-6. Create precipitation targets at the configured forecast horizon.
-7. Split samples into train, validation, and test sets while preserving cluster
-   information when possible.
+3. Split the daily dataframe chronologically into train, validation, and test
+   blocks.
+4. Build sliding windows independently inside each dataframe split.
+5. Fit the selected normalizer (`standard` or `minmax`) and PCA on training
+   rows/windows only, then transform validation and test with the training
+   transforms.
+6. Cluster training windows with K-means, spectral, or manual rain clustering,
+   calculate training-cluster centroids, then assign validation and test
+   windows to the nearest existing centroid.
+7. Create precipitation targets at the configured forecast horizon inside each
+   split.
 8. Train one LSTM model per training cluster.
 9. Predict train and validation precipitation with each sample's own cluster
    model.
@@ -166,9 +172,11 @@ With PCA, `windows` becomes a 2D matrix:
 (n_windows, n_components)
 ```
 
-The LSTM+Cluster experiment uses
-`create_cluster_feature_matrix` to produce both the original window output and a
-2D `windows_flat` matrix for clustering and model input.
+The standalone clustering helpers can use `create_cluster_feature_matrix` to
+produce both the original window output and a 2D `windows_flat` matrix. The
+LSTM+Cluster experiment instead calls `create_window_split_data`, which first
+splits the daily dataframe and then builds split-local windows to avoid sharing
+raw observations across train, validation, and test.
 
 ```python
 from methods.cluster.cluster_pipeline import create_cluster_feature_matrix
@@ -296,7 +304,8 @@ For each cluster, the training loop:
 7. Calculates selected-model cluster-level test metrics from those sample-level
    predictions.
 
-The model predicts one value: next-day precipitation in millimeters.
+The model predicts one value: precipitation at the configured forecast horizon,
+in millimeters.
 
 Set `TEST_ALL_MODELS = False` in `run_experiment.py` to keep the original
 behavior where each test sample is predicted only by the LSTM trained on its
@@ -326,6 +335,7 @@ Each configuration folder contains:
 - `test_model_selection.csv`, when `TEST_ALL_MODELS = True`
 - `test_model_metric_summary.csv`, when `TEST_ALL_MODELS = True`
 - `test_model_selection_report.txt`, when `TEST_ALL_MODELS = True`
+- `input_forecast_horizon_precipitation_by_cluster.csv`
 - `input_next_day_precipitation_by_cluster.csv`
 - `test_predictions.csv`
 - `evaluation_report.txt`
@@ -337,8 +347,17 @@ Each configuration folder contains:
   `prediction_timeseries_splits/`, `residual_diagnostics/`,
   `cluster_diagnostics/`, `model_fit/`, `cluster_precipitation_histograms/`,
   and `cluster_prediction_histograms/`
-- input-window next-day precipitation distribution plots by cluster under
+- input-window forecast-horizon precipitation distribution plots by cluster under
   `input_precipitation_distribution_by_cluster/`
+- current-window versus forecast-horizon target diagnostics, persistence
+  baseline metrics, and horizon behavior plots under
+  `forecast_horizon_diagnostics/`
+- lead-day diagnostics under `forecast_horizon_diagnostics/`, including
+  `test_prediction_by_lead_day.csv`,
+  `test_prediction_metrics_by_lead_day.csv`, a lead-day error curve, a
+  true-vs-predicted grid for D+1 through `FORECAST_HORIZON`, and individual
+  true-vs-predicted plots under
+  `forecast_horizon_diagnostics/true_vs_predicted_by_lead_day/`
 - per-cluster test performance time series with actual values, predictions,
   residuals, cluster metrics, and compressed large temporal gaps
 
@@ -388,11 +407,23 @@ The default sweep can be expensive. To test quickly, edit
 ```python
 WINDOW_SIZES = [8]
 N_CLUSTERS_LIST = [3]
+NORMALIZE = True
+SCALER_TYPE = "standard"  # or "minmax"
+LSTM_LOSS_FUNCTION = "quantile_weighted_mse"
+LOSS_QUANTILES = [0.5, 0.75, 0.9, 0.95]
+LOSS_QUANTILE_WEIGHTS = "auto"
 N_SIGMA_VALUES = 1
 EPOCHS = 2
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True
 ```
+
+Set `LSTM_LOSS_FUNCTION = "mean_squared_error"` to keep the standard MSE
+training objective. Set it to `"quantile_weighted_mse"` to weight each
+cluster-specific LSTM by precipitation quantile bins calculated from that
+cluster's own training rain targets, in millimeters. With
+`LOSS_QUANTILE_WEIGHTS = "auto"`, rarer rain-intensity bins receive larger
+weights automatically.
 
 To silence pipeline progress messages and model-training output, set
 `SHOW_CONSOLE_INFO = False` in `run_experiment.py`. If using the root launcher,

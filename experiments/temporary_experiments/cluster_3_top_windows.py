@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from config import DATA_ROOT, OUTPUTS_DIR
 from data.load_data import load_station_daily_data

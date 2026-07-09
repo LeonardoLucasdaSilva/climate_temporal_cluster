@@ -36,6 +36,17 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
         ),
     ),
     (
+        "Forecast Horizon Diagnostics",
+        (
+            "forecast_horizon_diagnostics/09_current_vs_forecast_horizon_by_split.png",
+            "forecast_horizon_diagnostics/10_test_current_target_prediction_timeseries.png",
+            "forecast_horizon_diagnostics/11_test_current_vs_horizon_by_cluster.png",
+            "forecast_horizon_diagnostics/12_prediction_error_by_lead_day.png",
+            "forecast_horizon_diagnostics/13_true_vs_predicted_by_lead_day.png",
+            "forecast_horizon_diagnostics/14_prediction_vs_actual_timeseries_by_lead_day.png",
+        ),
+    ),
+    (
         "Cluster Histograms",
         (
             "cluster_precipitation_histograms/*.png",
@@ -120,6 +131,7 @@ def render_report(
         r"\section*{Metrics}",
         metrics_table(output_dir / "metrics_summary.csv"),
         cluster_metrics_table(output_dir / "cluster_model_metrics.csv"),
+        forecast_horizon_section(output_dir),
         test_model_selection_section(output_dir),
     ]
 
@@ -225,6 +237,8 @@ def lstm_configs_list(config: object | Mapping[str, object] | None) -> str:
         ("Patience", config_map.get("patience")),
         ("Optimizer", config_map.get("optimizer")),
         ("Loss", config_map.get("loss")),
+        ("Loss quantiles", config_map.get("loss_quantiles")),
+        ("Loss quantile weights", config_map.get("loss_quantile_weights")),
         ("Metrics", config_map.get("metrics")),
     ]
     rows = [
@@ -351,6 +365,30 @@ def test_model_selection_section(output_dir: Path) -> str:
             r"\section*{Test Model Selection}",
             latex_escape(paragraph),
             dataframe_table(pd.DataFrame(rows), "Per-Sample Selection Summary"),
+        ]
+    )
+
+
+def forecast_horizon_section(output_dir: Path) -> str:
+    """Return the generated forecast-horizon behavior report when available."""
+    report_path = (
+        output_dir
+        / "forecast_horizon_diagnostics"
+        / "forecast_horizon_behavior_report.txt"
+    )
+    if not report_path.exists():
+        return ""
+
+    content = report_path.read_text(encoding="utf-8").strip()
+    if not content:
+        return ""
+
+    return "\n".join(
+        [
+            r"\section*{Forecast Horizon Behavior}",
+            r"\begin{verbatim}",
+            content,
+            r"\end{verbatim}",
         ]
     )
 
