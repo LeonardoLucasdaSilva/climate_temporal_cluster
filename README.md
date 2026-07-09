@@ -346,7 +346,7 @@ Each configuration folder contains:
   under folders such as `prediction_overview/`,
   `prediction_timeseries_splits/`, `residual_diagnostics/`,
   `cluster_diagnostics/`, `model_fit/`, `cluster_precipitation_histograms/`,
-  and `cluster_prediction_histograms/`
+  `cluster_prediction_histograms/`, and `cluster_prediction_scatter/`
 - input-window forecast-horizon precipitation distribution plots by cluster under
   `input_precipitation_distribution_by_cluster/`
 - current-window versus forecast-horizon target diagnostics, persistence
@@ -360,6 +360,8 @@ Each configuration folder contains:
   `forecast_horizon_diagnostics/true_vs_predicted_by_lead_day/`
 - per-cluster test performance time series with actual values, predictions,
   residuals, cluster metrics, and compressed large temporal gaps
+- per-cluster test actual-versus-predicted scatter plots with red x markers and
+  plot legends
 
 Metrics include:
 

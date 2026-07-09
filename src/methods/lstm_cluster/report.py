@@ -78,6 +78,12 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
             "cluster_prediction_timeseries/*.png",
         ),
     ),
+    (
+        "Cluster Prediction Scatter",
+        (
+            "cluster_prediction_scatter/*.png",
+        ),
+    ),
 )
 
 

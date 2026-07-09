@@ -681,6 +681,91 @@ def save_cluster_prediction_histograms(
         plt.close(fig)
 
 
+def _prediction_scatter_limits(
+    actual: np.ndarray,
+    predicted: np.ndarray,
+) -> tuple[float, float]:
+    """Return padded equal-axis limits for actual-vs-predicted scatter plots."""
+    values = np.concatenate([actual, predicted])
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return 0.0, 1.0
+
+    min_value = float(values.min())
+    max_value = float(values.max())
+    if np.isclose(min_value, max_value):
+        padding = max(1.0, abs(max_value) * 0.05)
+    else:
+        padding = (max_value - min_value) * 0.05
+    return min_value - padding, max_value + padding
+
+
+def save_cluster_prediction_scatters(
+    y_test: np.ndarray,
+    y_pred_test: np.ndarray,
+    c_test: np.ndarray,
+    output_dir: Path,
+) -> None:
+    """Save test actual-versus-predicted scatter plots for each model cluster."""
+    y_test = np.asarray(y_test, dtype=float)
+    y_pred_test = np.asarray(y_pred_test, dtype=float)
+    c_test = np.asarray(c_test)
+    if len({len(y_test), len(y_pred_test), len(c_test)}) != 1:
+        raise ValueError("Test actual, predicted, and cluster labels must align.")
+
+    plot_dir = output_dir / "cluster_prediction_scatter"
+    plot_dir.mkdir(exist_ok=True)
+    if c_test.size == 0:
+        return
+
+    for cluster_id in sorted(np.unique(c_test)):
+        mask = c_test == cluster_id
+        cluster_actual = y_test[mask]
+        cluster_predicted = y_pred_test[mask]
+        finite_mask = np.isfinite(cluster_actual) & np.isfinite(cluster_predicted)
+        if not np.any(finite_mask):
+            continue
+        cluster_actual = cluster_actual[finite_mask]
+        cluster_predicted = cluster_predicted[finite_mask]
+
+        min_value, max_value = _prediction_scatter_limits(
+            cluster_actual,
+            cluster_predicted,
+        )
+        fig, ax = plt.subplots(figsize=(7.2, 6.2))
+        ax.scatter(
+            cluster_actual,
+            cluster_predicted,
+            s=58,
+            marker="x",
+            color="#D62728",
+            alpha=0.85,
+            linewidths=1.4,
+            label=f"Test (n={len(cluster_actual)})",
+        )
+        ax.plot(
+            [min_value, max_value],
+            [min_value, max_value],
+            color="#666666",
+            linestyle="--",
+            linewidth=1.2,
+            label="Perfect prediction",
+        )
+        ax.set_xlim(min_value, max_value)
+        ax.set_ylim(min_value, max_value)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_title(f"Cluster {int(cluster_id)}: Test Actual vs Predicted")
+        ax.set_xlabel("Actual precipitation (mm)")
+        ax.set_ylabel("Predicted precipitation (mm)")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(
+            plot_dir / f"cluster_{int(cluster_id)}_predicted_vs_actual_scatter.png"
+        )
+        plt.close(fig)
+
+
 def compressed_time_positions(
     original_indices: np.ndarray,
     max_gap: int = 10,
@@ -913,6 +998,7 @@ def save_prediction_timeseries_splits(
         )
         plt.close(fig)
 
+
 def save_visualizations(
     y_test: np.ndarray,
     y_pred_test: np.ndarray,
@@ -988,6 +1074,12 @@ def save_visualizations(
         forecast_horizon=forecast_horizon,
     )
     save_cluster_prediction_histograms(y_test, y_pred_test, c_test, output_dir)
+    save_cluster_prediction_scatters(
+        y_test,
+        y_pred_test,
+        c_test,
+        output_dir,
+    )
 
 
 def metrics_dataframe(
@@ -1249,7 +1341,6 @@ def save_run_outputs(
         "validation": len(y_val),
         "test": len(y_test),
     }
-
     metrics_dataframe(train_metrics, val_metrics, test_metrics).to_csv(
         output_dir / "metrics_summary.csv",
         index=False,

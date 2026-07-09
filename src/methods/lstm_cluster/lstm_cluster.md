@@ -163,7 +163,8 @@ plots go under `prediction_overview/`, split time-series plots under
 `residual_diagnostics/`, cluster diagnostics under `cluster_diagnostics/`, and
 training curves under `model_fit/`. Existing per-cluster collections remain in
 folders such as `cluster_precipitation_histograms/`,
-`cluster_prediction_histograms/`, and `cluster_prediction_timeseries/`.
+`cluster_prediction_histograms/`, `cluster_prediction_timeseries/`, and
+`cluster_prediction_scatter/`.
 
 Each configuration also saves
 `input_forecast_horizon_precipitation_by_cluster.csv`, which assigns the
@@ -197,3 +198,7 @@ Because the test split is sparse along the original timeline, gaps larger than
 ten windows are shortened for readability and marked with vertical dotted
 lines. The original indices remain on the ticks, so this compression does not
 change sample order or metric calculations.
+
+The automatic report also includes a `Cluster Prediction Scatter` section with
+one test actual-versus-predicted scatter plot per cluster. Test samples are red
+x markers and each plot keeps its legend.

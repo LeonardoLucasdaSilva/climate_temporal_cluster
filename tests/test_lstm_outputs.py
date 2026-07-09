@@ -13,6 +13,7 @@ import pandas as pd
 
 from data.lstm_outputs import (
     compressed_time_positions,
+    save_cluster_prediction_scatters,
     save_forecast_horizon_diagnostics,
     save_forecast_lead_day_diagnostics,
 )
@@ -46,7 +47,12 @@ class LstmOutputTests(unittest.TestCase):
         )
         output_dir.mkdir()
 
-        def fake_savefig(_figure: object, path: object, *_args: object, **_kwargs: object) -> None:
+        def fake_savefig(
+            _figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
             Path(path).write_bytes(b"plot")
 
         try:
@@ -91,6 +97,41 @@ class LstmOutputTests(unittest.TestCase):
             self.assertGreater(
                 summary["lstm_rmse_improvement_vs_persistence"],
                 0.0,
+            )
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_cluster_prediction_scatters_write_one_plot_per_cluster(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_prediction_scatter_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+
+        def fake_savefig(
+            _figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            Path(path).write_bytes(b"plot")
+
+        try:
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                save_cluster_prediction_scatters(
+                    y_test=np.array([0.2, 7.0, 5.0]),
+                    y_pred_test=np.array([0.3, 6.6, 5.4]),
+                    c_test=np.array([0, 1, 1]),
+                    output_dir=output_dir,
+                )
+
+            scatter_dir = output_dir / "cluster_prediction_scatter"
+            self.assertTrue(
+                (scatter_dir / "cluster_0_predicted_vs_actual_scatter.png").exists()
+            )
+            self.assertTrue(
+                (scatter_dir / "cluster_1_predicted_vs_actual_scatter.png").exists()
             )
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)

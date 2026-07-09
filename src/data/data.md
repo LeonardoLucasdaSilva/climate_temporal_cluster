@@ -10,13 +10,16 @@ It is separate from the root `data/` directory, which stores raw INMET files.
 - `lstm_outputs.py`: writes experiment metrics, predictions, summaries,
   cross-cluster test model selection reports, and diagnostic plots, including
   chronological actual-versus-predicted and residual plots for each cluster.
+  It also writes per-cluster test actual-versus-predicted scatter plots with
+  legends.
   It also writes forecast-horizon diagnostics that compare the target at the
   configured horizon with the precipitation observed on the final input-window
   day.
   Configuration images are grouped into folders such as `model_fit/`,
   `prediction_overview/`, `prediction_timeseries_splits/`,
   `residual_diagnostics/`, `cluster_diagnostics/`, and
-  `forecast_horizon_diagnostics/`.
+  `forecast_horizon_diagnostics/`, plus per-cluster collections such as
+  `cluster_prediction_scatter/`.
 
 Typical usage:
 
