@@ -42,17 +42,18 @@ Or use the root launcher:
 3. Split the daily dataframe chronologically into train, validation, and test
    blocks.
 4. Build sliding windows independently inside each split.
-5. Fit the selected normalizer (`standard` or `minmax`) and PCA on training
-   rows/windows only, then transform validation and test with those training
-   transforms.
+5. Fit the selected covariate normalizer (`SCALER_TYPE`), precipitation
+   normalizer (`PRECIPITATION_SCALER`), and PCA on training rows/windows only,
+   then transform validation and test with those training transforms.
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
    calculate training-cluster centroids, then assign validation and test
    windows to the nearest existing centroid.
 7. Build one target column for each lead day from D+1 through the configured
    forecast horizon inside each split. The final D+`FORECAST_HORIZON` column is
    still kept as the scalar target for legacy metrics and plots.
-8. Train one LSTM per training cluster with one output unit per lead day, so the
-   loss is optimized across the full D+1..D+`FORECAST_HORIZON` target matrix.
+8. Normalize the LSTM target matrix with `PRECIPITATION_SCALER`, then train one
+   LSTM per training cluster with one output unit per lead day, so the loss is
+   optimized across the full D+1..D+`FORECAST_HORIZON` target matrix.
 9. Keep train and validation predictions tied to each sample's own cluster
    model.
 10. Evaluate test samples with either their own cluster model only or, when
@@ -68,8 +69,9 @@ Change experiment variables in `run_experiment.py`:
 - clustering sweep: `WINDOW_SIZES`, `N_CLUSTERS_LIST`,
   `CLUSTERING_ALGORITHM`, `FORECAST_HORIZON`, `MANUAL_ZERO_TOLERANCE`,
   `SIGMA_MODE`, `N_SIGMA_VALUES`, `MANUAL_SIGMA_VALUES`, `USE_ALL_FEATURES`
-- normalization: `NORMALIZE`, `SCALER_TYPE`; supported scaler values are
-  `"standard"` and `"minmax"`
+- normalization: `NORMALIZE`, `SCALER_TYPE` for covariates and
+  `PRECIPITATION_SCALER` for `PRECIPITACAO_TOTAL` plus the LSTM target;
+  supported scaler values are `"standard"` and `"minmax"`
 - test evaluation mode: `TEST_ALL_MODELS`
 - exported table metrics: `QUANTITATIVE_METRICS`
 - model hyperparameters: `LSTM_UNITS`, `LSTM_UNITS_2`, `DROPOUT_RATE`,
@@ -77,7 +79,7 @@ Change experiment variables in `run_experiment.py`:
 - LSTM loss: `LSTM_LOSS_FUNCTION`, `LOSS_QUANTILES`,
   `LOSS_QUANTILE_WEIGHTS`. Use `"quantile_weighted_mse"` to calculate
   cluster-specific precipitation thresholds from training-target quantiles in
-  millimeters and weight rarer intensity bins automatically.
+  the active target scale and weight rarer intensity bins automatically.
 - training settings: `EPOCHS`, `BATCH_SIZE`, `EARLY_STOPPING`, `PATIENCE`,
   `VERBOSE_TRAINING`, `SHOW_CONSOLE_INFO`
 - data split: `TRAIN_RATIO`, `VAL_RATIO`, `RANDOM_STATE`
@@ -153,19 +155,24 @@ value, they all rank candidate predictions by closeness to the actual value.
 RMSLE can differ because it ranks closeness after applying the logarithmic
 transform.
 
-Each configuration folder also gets `experiment_report.tex`. When all-model
-test selection is enabled, this report includes a compact `Test Model
-Selection` section showing changed sample counts and metric improvements. If a
-local LaTeX compiler is available, the pipeline also writes
-`experiment_report.pdf`; if PDF compilation fails,
-`experiment_report_compile.log` is saved for troubleshooting.
+Each configuration folder also gets `experiment_report.tex`. Its
+`Configuration` section includes the selected covariate scaler, precipitation
+scaler, and target scale for that run. Predictions are inverse-transformed to
+millimeters before metrics and plots. When all-model test selection is enabled,
+this report includes a compact `Test Model Selection` section showing changed
+sample counts and metric improvements. If a local LaTeX compiler is
+available, the pipeline also writes `experiment_report.pdf`; if PDF compilation
+fails, `experiment_report_compile.log` is saved for troubleshooting.
 
 Each configuration also groups generated images by purpose. General prediction
 plots go under `prediction_overview/`, split time-series plots under
 `prediction_timeseries_splits/lead_day_XX/` with four sequential test plots per
 forecast lead day, residual/error plots under `residual_diagnostics/`, cluster
 diagnostics under `cluster_diagnostics/`, and training curves under
-`model_fit/`. Existing per-cluster collections remain in folders such as
+`model_fit/`. The cluster diagnostics include `08_silhouette_analysis.png` and
+`silhouette_scores.csv`, computed from the same split feature matrices and
+cluster labels used by the current pipeline. Existing per-cluster collections
+remain in folders such as
 `cluster_precipitation_histograms/`,
 `cluster_prediction_histograms/`, `cluster_prediction_timeseries/`, and
 `cluster_prediction_scatter/`.

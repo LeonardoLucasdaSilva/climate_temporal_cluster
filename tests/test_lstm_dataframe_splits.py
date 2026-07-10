@@ -74,6 +74,7 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
             normalize=True,
             scaler_type="standard",
+            precipitation_scaler_type="standard",
             variance_threshold=None,
             forecast_horizon=1,
             train_ratio=0.5,
@@ -118,6 +119,7 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN"],
             normalize=True,
             scaler_type="minmax",
+            precipitation_scaler_type="standard",
             variance_threshold=None,
             forecast_horizon=1,
             train_ratio=0.5,
@@ -129,6 +131,53 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         self.assertGreater(float(split_data.X_val.max()), 1.0)
         self.assertGreater(float(split_data.X_test.max()), 1.0)
         self.assertLessEqual(float(split_data.X_train.max()), 1.0)
+
+    def test_precipitation_scaler_is_separate_from_covariate_scaler(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+        split_data, _splits = create_window_split_data(
+            self.df,
+            config,
+            ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
+            normalize=True,
+            scaler_type="standard",
+            precipitation_scaler_type="minmax",
+            variance_threshold=None,
+            forecast_horizon=2,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+        )
+
+        precipitation_positions = np.arange(2, split_data.X_train.shape[1], 3)
+        covariate_positions = np.setdiff1d(
+            np.arange(split_data.X_train.shape[1]),
+            precipitation_positions,
+        )
+        self.assertGreaterEqual(float(split_data.X_train[:, precipitation_positions].min()), 0.0)
+        self.assertLessEqual(float(split_data.X_train[:, precipitation_positions].max()), 1.0)
+        self.assertLess(float(split_data.X_train[:, covariate_positions].min()), 0.0)
+
+        np.testing.assert_allclose(
+            split_data.y_train_by_lead_day_scaled,
+            split_data.y_train_by_lead_day / 4.0,
+        )
+        np.testing.assert_allclose(
+            split_data.y_val_by_lead_day_scaled,
+            split_data.y_val_by_lead_day / 4.0,
+        )
+        np.testing.assert_allclose(
+            split_data.y_train,
+            split_data.y_train_by_lead_day[:, -1],
+        )
+        self.assertIsNotNone(split_data.target_scaler)
 
     def test_forecast_horizon_controls_target_day_inside_each_split(self) -> None:
         config = ExperimentConfig(
@@ -145,6 +194,7 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
             normalize=False,
             scaler_type="standard",
+            precipitation_scaler_type="standard",
             variance_threshold=None,
             forecast_horizon=2,
             train_ratio=0.5,
@@ -228,6 +278,7 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN"],
             normalize=False,
             scaler_type="standard",
+            precipitation_scaler_type="standard",
             variance_threshold=None,
             forecast_horizon=2,
             train_ratio=0.5,

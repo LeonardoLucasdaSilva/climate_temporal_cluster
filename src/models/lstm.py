@@ -27,8 +27,8 @@ def quantile_weighted_mse_loss(
     """Return MSE weighted by target bins separated by precipitation thresholds.
 
     Args:
-        thresholds_mm: Increasing precipitation thresholds in millimeters.
-            With `n` thresholds, the loss has `n + 1` target bins.
+        thresholds_mm: Increasing precipitation thresholds in the same scale as
+            `y_true`. With `n` thresholds, the loss has `n + 1` target bins.
         weights: Positive weight for each target bin. Must contain exactly
             `len(thresholds_mm) + 1` values.
 
@@ -127,8 +127,8 @@ class LSTMPrecipitationPredictor:
             learning_rate: Learning rate for optimizer
             random_state: Random seed for reproducibility
             loss_function: Keras loss name or `quantile_weighted_mse`.
-            loss_quantile_thresholds_mm: Cluster-specific rain thresholds used
-                by `quantile_weighted_mse`.
+            loss_quantile_thresholds_mm: Cluster-specific rain thresholds in the
+                same scale as the training target used by `quantile_weighted_mse`.
             loss_quantile_weights: Target-bin weights used by
                 `quantile_weighted_mse`.
             output_units: Number of precipitation target columns to predict.
