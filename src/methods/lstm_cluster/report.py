@@ -68,6 +68,7 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
     (
         "Prediction Time Series Splits",
         (
+            "prediction_timeseries_splits/lead_day_*/02_predictions_timeseries_split_*_of_04.png",
             "prediction_timeseries_splits/02_predictions_timeseries_split_*_of_04.png",
             "02_predictions_timeseries_split_*_of_04.png",
         ),
@@ -445,6 +446,9 @@ def timeseries_split_figure_blocks(output_dir: Path, figures: Sequence[Path]) ->
     for index, figure_path in enumerate(figures, start=1):
         relative_path = figure_path.relative_to(output_dir).as_posix()
         caption = figure_path.stem.replace("_", " ").replace("-", " ").title()
+        lead_day = figure_path.parent.name.removeprefix("lead_day_")
+        if lead_day != figure_path.parent.name and lead_day.isdigit():
+            caption = f"D+{int(lead_day)} - {caption}"
         lines.extend(
             [
                 r"\begin{figure}[H]",

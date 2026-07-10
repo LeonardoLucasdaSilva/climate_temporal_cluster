@@ -346,7 +346,7 @@ Each configuration folder contains:
 - `experiment_report.pdf`, when a local LaTeX compiler is available
 - grouped prediction, residual, error, cluster-performance, and histogram plots
   under folders such as `prediction_overview/`,
-  `prediction_timeseries_splits/`, `residual_diagnostics/`,
+  `prediction_timeseries_splits/lead_day_XX/`, `residual_diagnostics/`,
   `cluster_diagnostics/`, `model_fit/`, `cluster_precipitation_histograms/`,
   `cluster_prediction_histograms/`, and `cluster_prediction_scatter/`
 - input-window forecast-horizon precipitation distribution plots by cluster under

@@ -262,6 +262,8 @@ def plot_title(relative_path: str) -> str:
     stem = Path(normalized).stem
     cluster_match = re.search(r"cluster[_-](\d+)", stem, flags=re.IGNORECASE)
     cluster_prefix = f"Cluster {cluster_match.group(1)} - " if cluster_match else ""
+    lead_match = re.search(r"lead_day[_-](\d+)", normalized, flags=re.IGNORECASE)
+    lead_prefix = f"D+{int(lead_match.group(1))} - " if lead_match else ""
     lower = normalized.lower()
 
     known_titles = (
@@ -293,8 +295,8 @@ def plot_title(relative_path: str) -> str:
     )
     for token, title in known_titles:
         if token in lower:
-            return f"{cluster_prefix}{title}"
-    return f"{cluster_prefix}{_humanize(stem)}"
+            return f"{cluster_prefix}{lead_prefix}{title}"
+    return f"{cluster_prefix}{lead_prefix}{_humanize(stem)}"
 
 
 def latex_escape(value: object) -> str:

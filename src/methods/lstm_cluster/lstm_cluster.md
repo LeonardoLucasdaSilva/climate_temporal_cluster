@@ -162,10 +162,11 @@ local LaTeX compiler is available, the pipeline also writes
 
 Each configuration also groups generated images by purpose. General prediction
 plots go under `prediction_overview/`, split time-series plots under
-`prediction_timeseries_splits/`, residual/error plots under
-`residual_diagnostics/`, cluster diagnostics under `cluster_diagnostics/`, and
-training curves under `model_fit/`. Existing per-cluster collections remain in
-folders such as `cluster_precipitation_histograms/`,
+`prediction_timeseries_splits/lead_day_XX/` with four sequential test plots per
+forecast lead day, residual/error plots under `residual_diagnostics/`, cluster
+diagnostics under `cluster_diagnostics/`, and training curves under
+`model_fit/`. Existing per-cluster collections remain in folders such as
+`cluster_precipitation_histograms/`,
 `cluster_prediction_histograms/`, `cluster_prediction_timeseries/`, and
 `cluster_prediction_scatter/`.
 

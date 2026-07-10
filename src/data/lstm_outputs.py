@@ -1025,41 +1025,79 @@ def save_prediction_timeseries_splits(
     y_pred_test: np.ndarray,
     output_dir: Path,
     n_splits: int = 4,
+    forecast_horizon: int | None = None,
 ) -> None:
-    """Save the prediction time series in readable sequential splits."""
+    """Save prediction time-series splits for each forecast lead day."""
     plot_dir = output_dir / "prediction_timeseries_splits"
     plot_dir.mkdir(exist_ok=True)
 
-    indices = np.arange(len(y_test))
-    for split_index, split_indices in enumerate(np.array_split(indices, n_splits), start=1):
-        if split_indices.size == 0:
-            continue
+    actual_by_lead_day = np.asarray(y_test, dtype=float)
+    predicted_by_lead_day = np.asarray(y_pred_test, dtype=float)
+    if actual_by_lead_day.ndim == 1:
+        actual_by_lead_day = actual_by_lead_day.reshape(-1, 1)
+    if predicted_by_lead_day.ndim == 1:
+        predicted_by_lead_day = predicted_by_lead_day.reshape(-1, 1)
+    if actual_by_lead_day.ndim != 2 or predicted_by_lead_day.ndim != 2:
+        raise ValueError("Prediction time-series inputs must be one- or two-dimensional.")
+    if actual_by_lead_day.shape != predicted_by_lead_day.shape:
+        raise ValueError("Prediction time-series actual and predicted matrices must match.")
 
-        fig, ax = plt.subplots(figsize=(14, 5.6))
-        ax.plot(
-            split_indices,
-            y_test[split_indices],
-            label="Actual",
-            alpha=0.8,
-            linewidth=1.6,
-        )
-        ax.plot(
-            split_indices,
-            y_pred_test[split_indices],
-            label="Predicted",
-            alpha=0.8,
-            linewidth=1.6,
-        )
-        ax.set_title(f"Predictions vs Actual - Split {split_index} of {n_splits}")
-        ax.set_xlabel("Test Sample Index")
-        ax.set_ylabel("Precipitation (mm)")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(
-            plot_dir / f"02_predictions_timeseries_split_{split_index:02d}_of_{n_splits:02d}.png"
-        )
-        plt.close(fig)
+    n_leads = int(actual_by_lead_day.shape[1])
+    if forecast_horizon is None:
+        forecast_horizon = n_leads
+    if int(forecast_horizon) != n_leads:
+        raise ValueError("forecast_horizon must match the number of lead-day columns.")
+
+    indices = np.arange(len(actual_by_lead_day))
+    for lead_offset in range(n_leads):
+        lead_day = lead_offset + 1
+        lead_dir = plot_dir / f"lead_day_{lead_day:02d}"
+        lead_dir.mkdir(exist_ok=True)
+
+        for split_index, split_indices in enumerate(
+            np.array_split(indices, n_splits),
+            start=1,
+        ):
+            fig, ax = plt.subplots(figsize=(14, 5.6))
+            if split_indices.size > 0:
+                ax.plot(
+                    split_indices,
+                    actual_by_lead_day[split_indices, lead_offset],
+                    label=f"Actual D+{lead_day}",
+                    alpha=0.8,
+                    linewidth=1.6,
+                )
+                ax.plot(
+                    split_indices,
+                    predicted_by_lead_day[split_indices, lead_offset],
+                    label=f"Predicted D+{lead_day}",
+                    alpha=0.8,
+                    linewidth=1.6,
+                )
+            else:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "No samples in this split",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                )
+            ax.set_title(
+                f"D+{lead_day}: Predictions vs Actual - "
+                f"Split {split_index} of {n_splits}"
+            )
+            ax.set_xlabel("Test Sample Index")
+            ax.set_ylabel("Precipitation (mm)")
+            if split_indices.size > 0:
+                ax.legend()
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(
+                lead_dir
+                / f"02_predictions_timeseries_split_{split_index:02d}_of_{n_splits:02d}.png"
+            )
+            plt.close(fig)
 
 
 def save_visualizations(
@@ -1072,6 +1110,8 @@ def save_visualizations(
     histories_by_cluster: dict[int, object],
     output_dir: Path,
     forecast_horizon: int,
+    test_targets_by_lead_day: np.ndarray | None = None,
+    y_pred_test_by_lead_day: np.ndarray | None = None,
 ) -> None:
     """Save the diagnostic plots for one configuration."""
     prediction_dir = output_dir / "prediction_overview"
@@ -1091,7 +1131,17 @@ def save_visualizations(
     )
     fig.savefig(prediction_dir / "02_predictions_vs_actual.png")
     plt.close(fig)
-    save_prediction_timeseries_splits(y_test, y_pred_test, output_dir)
+    save_prediction_timeseries_splits(
+        test_targets_by_lead_day if test_targets_by_lead_day is not None else y_test,
+        y_pred_test_by_lead_day if y_pred_test_by_lead_day is not None else y_pred_test,
+        output_dir,
+        forecast_horizon=(
+            forecast_horizon
+            if test_targets_by_lead_day is not None
+            or y_pred_test_by_lead_day is not None
+            else None
+        ),
+    )
     save_cluster_prediction_timeseries(
         y_test,
         y_pred_test,
@@ -1556,6 +1606,8 @@ def save_run_outputs(
         histories_by_cluster,
         output_dir,
         forecast_horizon=forecast_horizon,
+        test_targets_by_lead_day=test_targets_by_lead_day,
+        y_pred_test_by_lead_day=prediction_by_lead_day,
     )
 
     result = {

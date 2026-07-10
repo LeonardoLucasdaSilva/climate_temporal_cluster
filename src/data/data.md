@@ -23,7 +23,9 @@ It is separate from the root `data/` directory, which stores raw INMET files.
   `prediction_overview/`, `prediction_timeseries_splits/`,
   `residual_diagnostics/`, `cluster_diagnostics/`, and
   `forecast_horizon_diagnostics/`, plus per-cluster collections such as
-  `cluster_prediction_scatter/`.
+  `cluster_prediction_scatter/`. The `prediction_timeseries_splits/` folder
+  contains one `lead_day_XX/` subfolder per forecast lead day, and each lead-day
+  folder contains the sequential actual-versus-predicted test split plots.
 
 Typical usage:
 

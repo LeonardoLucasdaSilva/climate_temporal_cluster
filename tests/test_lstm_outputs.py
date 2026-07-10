@@ -16,6 +16,7 @@ from data.lstm_outputs import (
     save_cluster_prediction_scatters,
     save_forecast_horizon_diagnostics,
     save_forecast_lead_day_diagnostics,
+    save_prediction_timeseries_splits,
 )
 
 
@@ -199,6 +200,55 @@ class LstmOutputTests(unittest.TestCase):
                 (lead_df["window_index"] == 20) & (lead_df["lead_day"] == 2)
             ]["predicted_mm"].iloc[0]
             self.assertAlmostEqual(predicted_day_2, 1.1)
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_prediction_timeseries_splits_writes_one_folder_per_lead_day(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_prediction_timeseries_splits_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+
+        def fake_savefig(_figure: object, path: object, *_args: object, **_kwargs: object) -> None:
+            Path(path).write_bytes(b"plot")
+
+        try:
+            actual_by_lead_day = np.array(
+                [
+                    [0.0, 1.0, 2.0],
+                    [1.0, 2.0, 3.0],
+                    [2.0, 3.0, 4.0],
+                    [3.0, 4.0, 5.0],
+                    [4.0, 5.0, 6.0],
+                    [5.0, 6.0, 7.0],
+                    [6.0, 7.0, 8.0],
+                    [7.0, 8.0, 9.0],
+                ]
+            )
+            predicted_by_lead_day = actual_by_lead_day + 0.25
+
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                save_prediction_timeseries_splits(
+                    actual_by_lead_day,
+                    predicted_by_lead_day,
+                    output_dir,
+                    n_splits=4,
+                    forecast_horizon=3,
+                )
+
+            plot_dir = output_dir / "prediction_timeseries_splits"
+            for lead_day in range(1, 4):
+                lead_dir = plot_dir / f"lead_day_{lead_day:02d}"
+                self.assertTrue(lead_dir.is_dir())
+                for split_index in range(1, 5):
+                    self.assertTrue(
+                        (
+                            lead_dir
+                            / f"02_predictions_timeseries_split_{split_index:02d}_of_04.png"
+                        ).exists()
+                    )
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
 
