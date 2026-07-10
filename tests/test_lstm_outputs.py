@@ -13,6 +13,7 @@ import pandas as pd
 
 from data.lstm_outputs import (
     compressed_time_positions,
+    save_cluster_silhouette_plot,
     save_cluster_prediction_scatters,
     save_forecast_horizon_diagnostics,
     save_forecast_lead_day_diagnostics,
@@ -134,6 +135,58 @@ class LstmOutputTests(unittest.TestCase):
             self.assertTrue(
                 (scatter_dir / "cluster_1_predicted_vs_actual_scatter.png").exists()
             )
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_cluster_silhouette_plot_writes_summary_and_figure(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_silhouette_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+
+        def fake_savefig(
+            _figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            Path(path).write_bytes(b"plot")
+
+        try:
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                summary = save_cluster_silhouette_plot(
+                    {
+                        "Training": (
+                            np.array(
+                                [
+                                    [0.0, 0.0],
+                                    [0.0, 0.2],
+                                    [5.0, 5.0],
+                                    [5.0, 5.2],
+                                ]
+                            ),
+                            np.array([0, 0, 1, 1]),
+                        ),
+                        "Validation": (
+                            np.array([[1.0, 1.0], [1.2, 1.2]]),
+                            np.array([0, 0]),
+                        ),
+                    },
+                    output_dir,
+                )
+
+            diag_dir = output_dir / "cluster_diagnostics"
+            self.assertTrue((diag_dir / "08_silhouette_analysis.png").exists())
+            self.assertTrue((diag_dir / "silhouette_scores.csv").exists())
+            self.assertIn("mean_silhouette", summary.columns)
+            self.assertIn("Training", summary["split"].tolist())
+            self.assertIn("Validation", summary["split"].tolist())
+            training_overall = summary[
+                (summary["split"] == "Training") & (summary["cluster"] == "overall")
+            ]["mean_silhouette"].iloc[0]
+            self.assertGreater(training_overall, 0.0)
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
 

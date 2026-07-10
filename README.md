@@ -103,15 +103,17 @@ For each configuration, the experiment runs these stages:
 3. Split the daily dataframe chronologically into train, validation, and test
    blocks.
 4. Build sliding windows independently inside each dataframe split.
-5. Fit the selected normalizer (`standard` or `minmax`) and PCA on training
-   rows/windows only, then transform validation and test with the training
-   transforms.
+5. Fit the selected covariate normalizer (`SCALER_TYPE`) and precipitation
+   normalizer (`PRECIPITATION_SCALER`) on training rows/windows only, then
+   transform validation and test with the training transforms.
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
    calculate training-cluster centroids, then assign validation and test
    windows to the nearest existing centroid.
 7. Create one precipitation target column per lead day from D+1 through the
    configured forecast horizon inside each split.
-8. Train one LSTM model per training cluster with one output unit per lead day.
+8. Normalize the LSTM target matrix with `PRECIPITATION_SCALER`, train one LSTM
+   model per training cluster with one output unit per lead day, then
+   inverse-transform predictions before metrics and plots.
 9. Predict train and validation precipitation with each sample's own cluster
    model.
 10. Evaluate test samples with either their own cluster model only or, when
@@ -349,6 +351,8 @@ Each configuration folder contains:
   `prediction_timeseries_splits/lead_day_XX/`, `residual_diagnostics/`,
   `cluster_diagnostics/`, `model_fit/`, `cluster_precipitation_histograms/`,
   `cluster_prediction_histograms/`, and `cluster_prediction_scatter/`
+- cluster silhouette diagnostics under `cluster_diagnostics/`, including
+  `08_silhouette_analysis.png` and `silhouette_scores.csv`
 - input-window forecast-horizon precipitation distribution plots by cluster under
   `input_precipitation_distribution_by_cluster/`
 - current-window versus forecast-horizon target diagnostics, persistence
@@ -365,6 +369,11 @@ Each configuration folder contains:
   residuals, cluster metrics, and compressed large temporal gaps
 - per-cluster test actual-versus-predicted scatter plots with red x markers and
   plot legends
+
+The `Configuration` section of `experiment_report.tex` and the compiled PDF
+record the run's selected covariate scaler, precipitation scaler, and LSTM
+target scale. Predictions are inverse-transformed to millimeters before metrics
+and plots.
 
 Metrics include:
 
@@ -433,7 +442,8 @@ The default sweep can be expensive. To test quickly, edit
 WINDOW_SIZES = [8]
 N_CLUSTERS_LIST = [3]
 NORMALIZE = True
-SCALER_TYPE = "standard"  # or "minmax"
+SCALER_TYPE = "standard"  # covariates: "standard" or "minmax"
+PRECIPITATION_SCALER = "standard"  # PRECIPITACAO_TOTAL and LSTM target
 LSTM_LOSS_FUNCTION = "quantile_weighted_mse"
 LOSS_QUANTILES = [0.5, 0.75, 0.9, 0.95]
 LOSS_QUANTILE_WEIGHTS = "auto"
@@ -446,7 +456,8 @@ SHOW_CONSOLE_INFO = True
 Set `LSTM_LOSS_FUNCTION = "mean_squared_error"` to keep the standard MSE
 training objective. Set it to `"quantile_weighted_mse"` to weight each
 cluster-specific LSTM by precipitation quantile bins calculated from that
-cluster's own training rain targets across all lead days, in millimeters. With
+cluster's own training rain targets across all lead days, in the active target
+scale. With
 `LOSS_QUANTILE_WEIGHTS = "auto"`, rarer rain-intensity bins receive larger
 weights automatically.
 

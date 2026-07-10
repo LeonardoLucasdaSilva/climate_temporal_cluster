@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Mapping, Protocol
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from sklearn.metrics import silhouette_samples, silhouette_score
 
 from evaluation import (
     plot_cluster_performance,
@@ -60,7 +61,7 @@ def save_training_history_plots(
             axes[1].plot(hist["val_mae"], label="Validation", linewidth=2)
         axes[1].set_title(f"Cluster {cluster_id}: MAE")
         axes[1].set_xlabel("Epoch")
-        axes[1].set_ylabel("MAE (mm)")
+        axes[1].set_ylabel("MAE")
         axes[1].legend()
 
         fig.tight_layout()
@@ -1020,6 +1021,218 @@ def save_cluster_distribution_plot(c_test: np.ndarray, output_dir: Path) -> None
     plt.close(fig)
 
 
+def _prepare_silhouette_inputs(
+    feature_matrix: np.ndarray,
+    cluster_labels: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, str | None]:
+    """Return finite silhouette inputs or a reason why they are invalid."""
+    features = np.asarray(feature_matrix, dtype=float)
+    labels = np.asarray(cluster_labels)
+    if features.ndim == 1:
+        features = features.reshape(-1, 1)
+    if features.ndim != 2:
+        return features, labels, "feature matrix must be two-dimensional"
+    if labels.ndim != 1:
+        labels = labels.reshape(-1)
+    if len(features) != len(labels):
+        return features, labels, "feature and label counts do not match"
+
+    finite_labels = np.isfinite(labels.astype(float, copy=False))
+    finite_rows = np.all(np.isfinite(features), axis=1) & finite_labels
+    features = features[finite_rows]
+    labels = labels[finite_rows]
+
+    unique_labels = np.unique(labels)
+    if len(features) < 2:
+        return features, labels, "at least two samples are required"
+    if len(unique_labels) < 2:
+        return features, labels, "at least two clusters are required"
+    if len(unique_labels) >= len(features):
+        return features, labels, "clusters must be fewer than samples"
+    return features, labels, None
+
+
+def _silhouette_unavailable_row(
+    split_name: str,
+    features: np.ndarray,
+    labels: np.ndarray,
+    reason: str,
+) -> dict[str, object]:
+    return {
+        "split": split_name,
+        "cluster": "overall",
+        "n_samples": int(len(features)),
+        "n_clusters": int(len(np.unique(labels))) if labels.size else 0,
+        "mean_silhouette": np.nan,
+        "min_silhouette": np.nan,
+        "max_silhouette": np.nan,
+        "status": reason,
+    }
+
+
+def _draw_silhouette_axis(
+    ax: plt.Axes,
+    feature_matrix: np.ndarray,
+    cluster_labels: np.ndarray,
+    split_name: str,
+) -> list[dict[str, object]]:
+    """Draw one silhouette plot panel and return its summary rows."""
+    features, labels, reason = _prepare_silhouette_inputs(
+        feature_matrix,
+        cluster_labels,
+    )
+    if reason is not None:
+        ax.text(
+            0.5,
+            0.5,
+            f"Silhouette unavailable:\n{reason}",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        ax.set_title(split_name)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return [_silhouette_unavailable_row(split_name, features, labels, reason)]
+
+    values = silhouette_samples(features, labels)
+    mean_value = float(silhouette_score(features, labels))
+    unique_labels = sorted(np.unique(labels))
+    colors = sns.color_palette("tab10", n_colors=max(len(unique_labels), 1))
+    x_min = max(-1.0, min(-0.1, float(values.min()) - 0.05))
+    y_lower = 10
+    rows: list[dict[str, object]] = [
+        {
+            "split": split_name,
+            "cluster": "overall",
+            "n_samples": int(len(features)),
+            "n_clusters": int(len(unique_labels)),
+            "mean_silhouette": mean_value,
+            "min_silhouette": float(values.min()),
+            "max_silhouette": float(values.max()),
+            "status": "ok",
+        }
+    ]
+
+    for cluster_index, cluster_id in enumerate(unique_labels):
+        cluster_values = np.sort(values[labels == cluster_id])
+        y_upper = y_lower + len(cluster_values)
+        color = colors[cluster_index % len(colors)]
+        ax.fill_betweenx(
+            np.arange(y_lower, y_upper),
+            0,
+            cluster_values,
+            facecolor=color,
+            edgecolor=color,
+            alpha=0.78,
+        )
+        ax.text(
+            x_min + 0.02,
+            y_lower + 0.5 * len(cluster_values),
+            str(int(cluster_id)),
+            va="center",
+            fontsize=9,
+        )
+        rows.append(
+            {
+                "split": split_name,
+                "cluster": int(cluster_id),
+                "n_samples": int(len(cluster_values)),
+                "n_clusters": int(len(unique_labels)),
+                "mean_silhouette": float(cluster_values.mean()),
+                "min_silhouette": float(cluster_values.min()),
+                "max_silhouette": float(cluster_values.max()),
+                "status": "ok",
+            }
+        )
+        y_lower = y_upper + 10
+
+    ax.axvline(
+        mean_value,
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        label=f"Mean silhouette = {mean_value:.3f}",
+    )
+    ax.set_xlim([x_min, 1.0])
+    ax.set_ylim([0, y_lower])
+    ax.set_title(f"{split_name} | mean={mean_value:.3f}")
+    ax.set_xlabel("Silhouette coefficient")
+    ax.set_ylabel("Cluster")
+    ax.set_yticks([])
+    ax.legend(loc="lower right")
+    ax.grid(True, alpha=0.25, axis="x")
+    return rows
+
+
+def save_cluster_silhouette_plot(
+    cluster_feature_splits: Mapping[str, tuple[np.ndarray, np.ndarray]] | None,
+    output_dir: Path,
+) -> pd.DataFrame:
+    """Save train/validation/test silhouette diagnostics for cluster features."""
+    plot_dir = output_dir / "cluster_diagnostics"
+    plot_dir.mkdir(exist_ok=True)
+    if not cluster_feature_splits:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(
+            0.5,
+            0.5,
+            "Silhouette unavailable:\nno feature splits were provided",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title("Cluster Silhouette Analysis")
+        fig.tight_layout()
+        fig.savefig(plot_dir / "08_silhouette_analysis.png")
+        plt.close(fig)
+        summary = pd.DataFrame(
+            [
+                {
+                    "split": "All",
+                    "cluster": "overall",
+                    "n_samples": 0,
+                    "n_clusters": 0,
+                    "mean_silhouette": np.nan,
+                    "min_silhouette": np.nan,
+                    "max_silhouette": np.nan,
+                    "status": "no feature splits were provided",
+                }
+            ]
+        )
+        summary.to_csv(plot_dir / "silhouette_scores.csv", index=False)
+        return summary
+
+    split_items = list(cluster_feature_splits.items())
+    fig, axes = plt.subplots(
+        1,
+        len(split_items),
+        figsize=(5.6 * len(split_items), 6.2),
+        squeeze=False,
+    )
+    rows: list[dict[str, object]] = []
+    for ax, (split_name, (feature_matrix, labels)) in zip(axes.ravel(), split_items):
+        rows.extend(
+            _draw_silhouette_axis(
+                ax,
+                feature_matrix,
+                labels,
+                split_name,
+            )
+        )
+
+    fig.suptitle("Cluster Silhouette Analysis", y=1.02)
+    fig.tight_layout()
+    fig.savefig(plot_dir / "08_silhouette_analysis.png")
+    plt.close(fig)
+
+    summary = pd.DataFrame(rows)
+    summary.to_csv(plot_dir / "silhouette_scores.csv", index=False)
+    return summary
+
+
 def save_prediction_timeseries_splits(
     y_test: np.ndarray,
     y_pred_test: np.ndarray,
@@ -1112,6 +1325,7 @@ def save_visualizations(
     forecast_horizon: int,
     test_targets_by_lead_day: np.ndarray | None = None,
     y_pred_test_by_lead_day: np.ndarray | None = None,
+    cluster_feature_splits: Mapping[str, tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> None:
     """Save the diagnostic plots for one configuration."""
     prediction_dir = output_dir / "prediction_overview"
@@ -1179,6 +1393,7 @@ def save_visualizations(
 
     save_cluster_distribution_plot(c_test, output_dir)
     save_precipitation_by_cluster_plot(y_test, c_test, output_dir)
+    save_cluster_silhouette_plot(cluster_feature_splits, output_dir)
     save_cluster_precipitation_histograms(y_test, c_test, output_dir)
     save_input_precipitation_distribution_by_cluster(
         forecast_horizon_precipitation,
@@ -1444,6 +1659,7 @@ def save_run_outputs(
     forecast_horizon: int,
     test_model_selection: dict[str, object] | None = None,
     y_pred_test_by_lead_day: np.ndarray | None = None,
+    cluster_feature_splits: Mapping[str, tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> dict[str, float | int | str | None]:
     """Save all artifacts for one run and return one sweep-level result row."""
     train_metrics = calculate_regression_metrics(y_train, y_pred_train)
@@ -1608,6 +1824,7 @@ def save_run_outputs(
         forecast_horizon=forecast_horizon,
         test_targets_by_lead_day=test_targets_by_lead_day,
         y_pred_test_by_lead_day=prediction_by_lead_day,
+        cluster_feature_splits=cluster_feature_splits,
     )
 
     result = {

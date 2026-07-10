@@ -1,0 +1,5 @@
+split,cluster,n_samples,n_clusters,mean_silhouette,min_silhouette,max_silhouette,status
+Training,overall,4,2,0.9717157310150518,0.9714329731836524,0.9719984888464513,ok
+Training,0,2,2,0.9717157310150529,0.9714329731836545,0.9719984888464513,ok
+Training,1,2,2,0.9717157310150508,0.9714329731836524,0.9719984888464492,ok
+Validation,overall,2,1,,,,at least two clusters are required

@@ -22,9 +22,11 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
             "cluster_diagnostics/05_cluster_performance.png",
             "cluster_diagnostics/06_cluster_distribution.png",
             "cluster_diagnostics/07_precipitation_distribution_by_cluster.png",
+            "cluster_diagnostics/08_silhouette_analysis.png",
             "05_cluster_performance.png",
             "06_cluster_distribution.png",
             "07_precipitation_distribution_by_cluster.png",
+            "08_silhouette_analysis.png",
         ),
     ),
     (
@@ -193,22 +195,42 @@ def config_mapping(config: object | Mapping[str, object] | None) -> dict[str, ob
 def config_summary_list(config: object | Mapping[str, object] | None) -> str:
     """Return a minimal configuration summary as bullets."""
     config_map = config_mapping(config)
-    labels = (
+    leading_labels = (
         ("state", "State"),
         ("station_id", "Station ID"),
         ("window_size", "Window Size"),
         ("n_clusters", "Number of Clusters"),
         ("algorithm", "Algorithm"),
         ("sigma", "Sigma"),
+    )
+    trailing_labels = (
         ("forecast_horizon", "Forecast Horizon"),
         ("manual_zero_tolerance", "Manual Zero Tolerance"),
         ("test_all_models", "Test Samples on All Models"),
     )
     rows = [
         (label, config_map.get(key))
-        for key, label in labels
+        for key, label in leading_labels
         if key in config_map
     ]
+    if "normalize" in config_map:
+        rows.append(("Normalize", config_map.get("normalize")))
+    covariate_scaler = configured_scaler_summary(config_map, "scaler_type")
+    if covariate_scaler is not None:
+        rows.append(("Covariate Scaler", covariate_scaler))
+    precipitation_scaler = configured_scaler_summary(
+        config_map,
+        "precipitation_scaler_type",
+    )
+    if precipitation_scaler is not None:
+        rows.append(("Precipitation Scaler", precipitation_scaler))
+    if "target_scale" in config_map:
+        rows.append(("LSTM Target Scale", config_map.get("target_scale")))
+    rows.extend(
+        (label, config_map.get(key))
+        for key, label in trailing_labels
+        if key in config_map
+    )
     if not rows:
         return ""
 
@@ -224,6 +246,23 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
             r"\end{itemize}",
         ]
     )
+
+
+def configured_scaler_summary(
+    config_map: Mapping[str, object],
+    key: str,
+) -> str | None:
+    """Return a configured scaler name, honoring disabled normalization."""
+    if key not in config_map:
+        return None
+
+    if config_map.get("normalize") is False:
+        return "none"
+
+    scaler_type = config_map.get(key)
+    if scaler_type is None or str(scaler_type).strip().lower() in {"", "none"}:
+        return "none"
+    return str(scaler_type)
 
 
 def lstm_configs_list(config: object | Mapping[str, object] | None) -> str:

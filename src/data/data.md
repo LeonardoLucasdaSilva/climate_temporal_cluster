@@ -15,6 +15,8 @@ It is separate from the root `data/` directory, which stores raw INMET files.
   chronological actual-versus-predicted and residual plots for each cluster.
   It also writes per-cluster test actual-versus-predicted scatter plots with
   legends.
+  Cluster diagnostics include silhouette analysis plots and summary scores for
+  the split feature matrices used by the experiment pipeline.
   It also writes forecast-horizon diagnostics that compare the target at the
   configured horizon with the precipitation observed on the final input-window
   day, plus lead-day diagnostics that compare each D+k prediction output with
