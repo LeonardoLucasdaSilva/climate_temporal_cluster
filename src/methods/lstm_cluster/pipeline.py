@@ -83,6 +83,9 @@ class WindowSplitData:
     y_train: np.ndarray
     y_val: np.ndarray
     y_test: np.ndarray
+    y_train_by_lead_day: np.ndarray
+    y_val_by_lead_day: np.ndarray
+    y_test_by_lead_day: np.ndarray
     current_train: np.ndarray
     current_val: np.ndarray
     current_test: np.ndarray
@@ -341,13 +344,23 @@ def _valid_supervised_windows(
     window_size: int,
     horizon: int,
     offset: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    valid_indices, targets = precipitation_targets(
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    valid_indices, _targets = precipitation_targets(
         df,
         window_size,
         len(windows_flat),
         horizon=horizon,
     )
+    targets_by_lead_day = _lead_day_targets(
+        df,
+        valid_indices,
+        window_size,
+        horizon,
+    )
+    finite_lead_days = np.all(np.isfinite(targets_by_lead_day), axis=1)
+    valid_indices = valid_indices[finite_lead_days]
+    targets_by_lead_day = targets_by_lead_day[finite_lead_days]
+    targets = targets_by_lead_day[:, -1]
     current_indices = valid_indices + window_size - 1
     current_precipitation = pd.to_numeric(
         df.iloc[current_indices][DEFAULT_PRECIPITATION_COLUMN],
@@ -356,6 +369,7 @@ def _valid_supervised_windows(
     return (
         windows_flat[valid_indices],
         targets,
+        targets_by_lead_day,
         current_precipitation,
         valid_indices + offset,
     )
@@ -511,21 +525,39 @@ def create_window_split_data(
         variance_threshold=variance_threshold,
     )
 
-    X_train, y_train, current_train, i_train = _valid_supervised_windows(
+    (
+        X_train,
+        y_train,
+        y_train_by_lead_day,
+        current_train,
+        i_train,
+    ) = _valid_supervised_windows(
         splits.train,
         train_flat,
         config.window_size,
         forecast_horizon,
         splits.train_offset,
     )
-    X_val, y_val, current_val, i_val = _valid_supervised_windows(
+    (
+        X_val,
+        y_val,
+        y_val_by_lead_day,
+        current_val,
+        i_val,
+    ) = _valid_supervised_windows(
         splits.val,
         val_flat,
         config.window_size,
         forecast_horizon,
         splits.val_offset,
     )
-    X_test, y_test, current_test, i_test = _valid_supervised_windows(
+    (
+        X_test,
+        y_test,
+        y_test_by_lead_day,
+        current_test,
+        i_test,
+    ) = _valid_supervised_windows(
         splits.test,
         test_flat,
         config.window_size,
@@ -542,13 +574,6 @@ def create_window_split_data(
         random_state=random_state,
         manual_zero_tolerance=manual_zero_tolerance,
     )
-    test_targets_by_lead_day = _lead_day_targets(
-        splits.test,
-        i_test - splits.test_offset,
-        config.window_size,
-        forecast_horizon,
-    )
-
     return (
         WindowSplitData(
             X_train=X_train,
@@ -557,6 +582,9 @@ def create_window_split_data(
             y_train=y_train,
             y_val=y_val,
             y_test=y_test,
+            y_train_by_lead_day=y_train_by_lead_day,
+            y_val_by_lead_day=y_val_by_lead_day,
+            y_test_by_lead_day=y_test_by_lead_day,
             current_train=current_train,
             current_val=current_val,
             current_test=current_test,
@@ -571,7 +599,7 @@ def create_window_split_data(
                 [current_train, current_val, current_test]
             ),
             all_cluster_labels=np.concatenate([c_train, c_val, c_test]),
-            test_targets_by_lead_day=test_targets_by_lead_day,
+            test_targets_by_lead_day=y_test_by_lead_day,
             n_windows=len(train_windows) + len(val_windows) + len(test_windows),
         ),
         splits,
@@ -584,8 +612,23 @@ def to_lstm_shape(X: np.ndarray) -> np.ndarray:
 
 
 def clipped_predictions(model: LSTMPrecipitationPredictor, X: np.ndarray) -> np.ndarray:
-    """Predict precipitation and clip impossible negative values."""
-    return np.maximum(model.predict(X).ravel(), 0.0)
+    """Predict precipitation target columns and clip impossible negatives."""
+    predictions = np.asarray(model.predict(X), dtype=float)
+    if predictions.ndim == 1:
+        predictions = predictions.reshape(-1, 1)
+    return np.maximum(predictions, 0.0)
+
+
+def _lead_day_matrix(values: np.ndarray, name: str) -> np.ndarray:
+    """Return target or prediction values as a two-dimensional lead-day matrix."""
+    matrix = np.asarray(values, dtype=float)
+    if matrix.ndim == 1:
+        matrix = matrix.reshape(-1, 1)
+    if matrix.ndim != 2:
+        raise ValueError(f"{name} must be one- or two-dimensional.")
+    if matrix.shape[1] == 0:
+        raise ValueError(f"{name} must contain at least one lead-day column.")
+    return matrix
 
 
 def bootstrap_mean_ci(
@@ -618,13 +661,26 @@ def evaluate_test_samples_with_all_models(
     c_test: np.ndarray,
     original_y_pred_test: np.ndarray,
     random_state: int,
-) -> tuple[np.ndarray, dict[int, dict[str, float]], dict[str, object]]:
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    dict[int, dict[str, float]],
+    dict[str, object],
+]:
     """Select the best trained LSTM per test sample and metric."""
     model_items = sorted(models_by_cluster.items())
-    model_cluster_ids = np.array([cluster_id for cluster_id, _model in model_items], dtype=int)
-    y_pred_by_model = np.column_stack(
-        [clipped_predictions(model, X_test_lstm) for _cluster_id, model in model_items]
+    model_cluster_ids = np.array(
+        [cluster_id for cluster_id, _model in model_items],
+        dtype=int,
     )
+    y_pred_by_model_by_lead_day = np.stack(
+        [
+            clipped_predictions(model, X_test_lstm)
+            for _cluster_id, model in model_items
+        ],
+        axis=1,
+    )
+    y_pred_by_model = y_pred_by_model_by_lead_day[:, :, -1]
     original_model_by_sample = np.asarray(c_test, dtype=int)
     primary_metric = "RMSE"
 
@@ -652,6 +708,7 @@ def evaluate_test_samples_with_all_models(
     per_metric_errors["MAPE"] = mape_selection_errors
 
     y_pred_selected_by_metric: dict[str, np.ndarray] = {}
+    y_pred_selected_by_lead_day_by_metric: dict[str, np.ndarray] = {}
     selected_model_by_metric: dict[str, np.ndarray] = {}
     for metric_name, errors in per_metric_errors.items():
         comparable_errors = np.where(np.isfinite(errors), errors, np.inf)
@@ -660,9 +717,15 @@ def evaluate_test_samples_with_all_models(
             np.arange(len(y_test)),
             best_offsets,
         ]
+        y_pred_selected_by_lead_day_by_metric[metric_name] = (
+            y_pred_by_model_by_lead_day[np.arange(len(y_test)), best_offsets, :]
+        )
         selected_model_by_metric[metric_name] = model_cluster_ids[best_offsets]
 
     y_pred_selected = y_pred_selected_by_metric[primary_metric]
+    y_pred_selected_by_lead_day = y_pred_selected_by_lead_day_by_metric[
+        primary_metric
+    ]
     selected_model_by_sample = selected_model_by_metric[primary_metric].astype(float)
     comparison_rows: list[dict[str, float | int | bool]] = []
     selection_rows: list[dict[str, float | int | str | bool]] = []
@@ -854,9 +917,18 @@ def evaluate_test_samples_with_all_models(
         "selected_model_by_sample": selected_model_by_sample,
         "original_prediction_by_sample": original_y_pred_test,
         "selected_prediction_by_metric": y_pred_selected_by_metric,
+        "selected_prediction_by_lead_day": y_pred_selected_by_lead_day,
+        "selected_prediction_by_lead_day_by_metric": (
+            y_pred_selected_by_lead_day_by_metric
+        ),
         "selected_model_by_metric": selected_model_by_metric,
     }
-    return y_pred_selected, metrics_by_test_cluster, test_model_selection
+    return (
+        y_pred_selected,
+        y_pred_selected_by_lead_day,
+        metrics_by_test_cluster,
+        test_model_selection,
+    )
 
 
 def train_cluster_models(
@@ -866,6 +938,9 @@ def train_cluster_models(
     y_train: np.ndarray,
     y_val: np.ndarray,
     y_test: np.ndarray,
+    y_train_by_lead_day: np.ndarray,
+    y_val_by_lead_day: np.ndarray,
+    y_test_by_lead_day: np.ndarray,
     c_train: np.ndarray,
     c_val: np.ndarray,
     c_test: np.ndarray,
@@ -888,6 +963,7 @@ def train_cluster_models(
     np.ndarray,
     np.ndarray,
     np.ndarray,
+    np.ndarray,
     dict[int, object],
     dict[int, dict[str, float]],
     dict[str, object] | None,
@@ -896,10 +972,29 @@ def train_cluster_models(
     X_train_lstm = to_lstm_shape(X_train)
     X_val_lstm = to_lstm_shape(X_val)
     X_test_lstm = to_lstm_shape(X_test)
+    y_train_by_lead_day = _lead_day_matrix(
+        y_train_by_lead_day,
+        "y_train_by_lead_day",
+    )
+    y_val_by_lead_day = _lead_day_matrix(y_val_by_lead_day, "y_val_by_lead_day")
+    y_test_by_lead_day = _lead_day_matrix(y_test_by_lead_day, "y_test_by_lead_day")
+    if (
+        len(y_train_by_lead_day) != len(y_train)
+        or len(y_val_by_lead_day) != len(y_val)
+        or len(y_test_by_lead_day) != len(y_test)
+    ):
+        raise ValueError("Lead-day target matrices must match scalar target lengths.")
+    n_outputs = int(y_train_by_lead_day.shape[1])
+    if (
+        y_val_by_lead_day.shape[1] != n_outputs
+        or y_test_by_lead_day.shape[1] != n_outputs
+    ):
+        raise ValueError("Lead-day target matrices must have the same horizon width.")
 
     y_pred_train = np.zeros_like(y_train, dtype=float)
     y_pred_val = np.zeros_like(y_val, dtype=float)
     y_pred_test = np.zeros_like(y_test, dtype=float)
+    y_pred_test_by_lead_day = np.zeros_like(y_test_by_lead_day, dtype=float)
     histories_by_cluster: dict[int, object] = {}
     metrics_by_cluster: dict[int, dict[str, float]] = {}
     models_by_cluster: dict[int, LSTMPrecipitationPredictor] = {}
@@ -921,7 +1016,7 @@ def train_cluster_models(
         loss_weights = None
         if lstm_loss_function == "quantile_weighted_mse":
             loss_thresholds, loss_weights = quantile_weighted_mse_config(
-                y_train[tr_mask],
+                y_train_by_lead_day[tr_mask].ravel(),
                 quantiles=loss_quantiles,
                 weights=loss_quantile_weights,
             )
@@ -941,12 +1036,13 @@ def train_cluster_models(
             loss_function=lstm_loss_function,
             loss_quantile_thresholds_mm=loss_thresholds,
             loss_quantile_weights=loss_weights,
+            output_units=n_outputs,
         )
         history = model.fit(
             X_train_lstm[tr_mask],
-            y_train[tr_mask],
+            y_train_by_lead_day[tr_mask],
             X_val=X_val_lstm[va_mask] if n_va > 0 else None,
-            y_val=y_val[va_mask] if n_va > 0 else None,
+            y_val=y_val_by_lead_day[va_mask] if n_va > 0 else None,
             epochs=epochs,
             batch_size=batch_size,
             verbose=verbose_training if show_console_info else 0,
@@ -954,11 +1050,24 @@ def train_cluster_models(
             patience=patience,
         )
 
-        y_pred_train[tr_mask] = clipped_predictions(model, X_train_lstm[tr_mask])
+        y_pred_train_by_lead_day = clipped_predictions(
+            model,
+            X_train_lstm[tr_mask],
+        )
+        y_pred_train[tr_mask] = y_pred_train_by_lead_day[:, -1]
         if n_va > 0:
-            y_pred_val[va_mask] = clipped_predictions(model, X_val_lstm[va_mask])
+            y_pred_val_by_lead_day = clipped_predictions(
+                model,
+                X_val_lstm[va_mask],
+            )
+            y_pred_val[va_mask] = y_pred_val_by_lead_day[:, -1]
         if n_te > 0:
-            y_pred_test[te_mask] = clipped_predictions(model, X_test_lstm[te_mask])
+            cluster_y_pred_test_by_lead_day = clipped_predictions(
+                model,
+                X_test_lstm[te_mask],
+            )
+            y_pred_test_by_lead_day[te_mask] = cluster_y_pred_test_by_lead_day
+            y_pred_test[te_mask] = cluster_y_pred_test_by_lead_day[:, -1]
             metrics_by_cluster[int(cluster_id)] = calculate_regression_metrics(
                 y_test[te_mask],
                 y_pred_test[te_mask],
@@ -972,20 +1081,24 @@ def train_cluster_models(
             y_pred_train,
             y_pred_val,
             y_pred_test,
+            y_pred_test_by_lead_day,
             histories_by_cluster,
             metrics_by_cluster,
             None,
         )
 
-    y_pred_test_selected, selected_metrics_by_cluster, test_model_selection = (
-        evaluate_test_samples_with_all_models(
-            models_by_cluster,
-            X_test_lstm,
-            y_test,
-            c_test,
-            original_y_pred_test=y_pred_test.copy(),
-            random_state=random_state,
-        )
+    (
+        y_pred_test_selected,
+        y_pred_test_by_lead_day_selected,
+        selected_metrics_by_cluster,
+        test_model_selection,
+    ) = evaluate_test_samples_with_all_models(
+        models_by_cluster,
+        X_test_lstm,
+        y_test,
+        c_test,
+        original_y_pred_test=y_pred_test.copy(),
+        random_state=random_state,
     )
 
     selection_summary = dict(test_model_selection["summary"])
@@ -1001,6 +1114,7 @@ def train_cluster_models(
         y_pred_train,
         y_pred_val,
         y_pred_test_selected,
+        y_pred_test_by_lead_day_selected,
         histories_by_cluster,
         selected_metrics_by_cluster,
         test_model_selection,
@@ -1115,7 +1229,7 @@ def run_configuration(
         "lstm_units": lstm_units,
         "lstm_units_2": lstm_units_2,
         "dense_units": [16, 8],
-        "output_units": 1,
+        "output_units": forecast_horizon,
         "dropout_rate": dropout_rate,
         "learning_rate": learning_rate,
         "epochs": epochs,
@@ -1134,6 +1248,7 @@ def run_configuration(
         y_pred_train,
         y_pred_val,
         y_pred_test,
+        y_pred_test_by_lead_day,
         histories_by_cluster,
         metrics_by_cluster,
         test_model_selection,
@@ -1144,6 +1259,9 @@ def run_configuration(
         y_train,
         y_val,
         y_test,
+        split_data.y_train_by_lead_day,
+        split_data.y_val_by_lead_day,
+        split_data.y_test_by_lead_day,
         c_train,
         c_val,
         c_test,
@@ -1191,6 +1309,7 @@ def run_configuration(
         station_id=config.station_id,
         pca_variance_threshold=variance_threshold,
         forecast_horizon=forecast_horizon,
+        y_pred_test_by_lead_day=y_pred_test_by_lead_day,
         test_model_selection=test_model_selection,
     )
     tex_path, pdf_path = generate_config_report(output_dir, report_config)

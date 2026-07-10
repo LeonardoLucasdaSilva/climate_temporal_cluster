@@ -1,4 +1,4 @@
-"""LSTM model for sequence-to-value precipitation prediction."""
+"""LSTM model for sequence-to-precipitation prediction."""
 
 from __future__ import annotations
 
@@ -92,16 +92,16 @@ def resolve_loss_function(
 
 
 class LSTMPrecipitationPredictor:
-    """LSTM model for predicting next-day precipitation from window features.
+    """LSTM model for predicting precipitation targets from window features.
 
     This model takes cluster-assigned window features as input and predicts
-    the precipitation value for the day following the window.
+    one or more precipitation values after the window.
 
     Architecture:
     - Input: (sequence_length, n_features) - typically flattened window features
     - Two LSTM layers with dropout for regularization
     - Dense layers for feature transformation
-    - Output: Single value (precipitation prediction)
+    - Output: One value per configured forecast lead day
     """
 
     def __init__(
@@ -115,6 +115,7 @@ class LSTMPrecipitationPredictor:
         loss_function: str = "mean_squared_error",
         loss_quantile_thresholds_mm: Sequence[float] | None = None,
         loss_quantile_weights: Sequence[float] | None = None,
+        output_units: int = 1,
     ):
         """Initialize LSTM model.
 
@@ -130,7 +131,10 @@ class LSTMPrecipitationPredictor:
                 by `quantile_weighted_mse`.
             loss_quantile_weights: Target-bin weights used by
                 `quantile_weighted_mse`.
+            output_units: Number of precipitation target columns to predict.
         """
+        if output_units <= 0:
+            raise ValueError("output_units must be positive.")
         self.input_shape = input_shape
         self.lstm_units = lstm_units
         self.lstm_units_2 = lstm_units_2
@@ -140,6 +144,7 @@ class LSTMPrecipitationPredictor:
         self.loss_function = loss_function
         self.loss_quantile_thresholds_mm = loss_quantile_thresholds_mm
         self.loss_quantile_weights = loss_quantile_weights
+        self.output_units = output_units
         self.history = None
         self.model = None
 
@@ -174,8 +179,11 @@ class LSTMPrecipitationPredictor:
             layers.Dropout(self.dropout_rate),
             layers.Dense(8, activation='relu'),
 
-            # Output layer (precipitation value)
-            layers.Dense(1, activation='linear'),  # Linear activation for regression
+            # Output layer (one precipitation value per lead day)
+            layers.Dense(
+                self.output_units,
+                activation='linear',
+            ),
         ])
 
         # Compile model
@@ -209,7 +217,8 @@ class LSTMPrecipitationPredictor:
 
         Args:
             X_train: Training features
-            y_train: Training target values
+            y_train: Training target values, either one column or one column per
+                forecast lead day
             X_val: Validation features (optional)
             y_val: Validation target values (optional)
             epochs: Number of training epochs
@@ -256,7 +265,7 @@ class LSTMPrecipitationPredictor:
             X: Input features
 
         Returns:
-            Predicted precipitation values
+            Predicted precipitation values, one column per configured output
         """
         if self.model is None:
             raise RuntimeError("Model has not been built. Call fit() first.")
@@ -272,7 +281,8 @@ class LSTMPrecipitationPredictor:
 
         Args:
             X_test: Test features
-            y_test: Test target values
+            y_test: Test target values, either one column or one column per
+                forecast lead day
 
         Returns:
             Dictionary with evaluation metrics

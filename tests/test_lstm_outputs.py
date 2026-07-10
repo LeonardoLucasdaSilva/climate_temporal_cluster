@@ -162,9 +162,17 @@ class LstmOutputTests(unittest.TestCase):
                     ),
                     output_dir=output_dir,
                     forecast_horizon=3,
+                    y_pred_test_by_lead_day=np.array(
+                        [
+                            [0.1, 1.1, 2.1],
+                            [1.1, 2.1, 3.1],
+                            [2.1, 3.1, 4.1],
+                        ]
+                    ),
                 )
 
             diag_dir = output_dir / "forecast_horizon_diagnostics"
+            lead_df = pd.read_csv(diag_dir / "test_prediction_by_lead_day.csv")
             self.assertTrue((diag_dir / "test_prediction_by_lead_day.csv").exists())
             self.assertTrue(
                 (diag_dir / "test_prediction_metrics_by_lead_day.csv").exists()
@@ -186,7 +194,11 @@ class LstmOutputTests(unittest.TestCase):
                 ).exists()
             )
             self.assertEqual(metrics_df["lead_day"].tolist(), [1, 2, 3])
-            self.assertTrue(bool(metrics_df.iloc[-1]["is_trained_target_day"]))
+            self.assertTrue(metrics_df["is_trained_target_day"].all())
+            predicted_day_2 = lead_df[
+                (lead_df["window_index"] == 20) & (lead_df["lead_day"] == 2)
+            ]["predicted_mm"].iloc[0]
+            self.assertAlmostEqual(predicted_day_2, 1.1)
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
 

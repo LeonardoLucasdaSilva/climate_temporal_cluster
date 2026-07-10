@@ -48,9 +48,11 @@ Or use the root launcher:
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
    calculate training-cluster centroids, then assign validation and test
    windows to the nearest existing centroid.
-7. Use precipitation at the configured forecast horizon as the target inside
-   each split.
-8. Train one LSTM per training cluster.
+7. Build one target column for each lead day from D+1 through the configured
+   forecast horizon inside each split. The final D+`FORECAST_HORIZON` column is
+   still kept as the scalar target for legacy metrics and plots.
+8. Train one LSTM per training cluster with one output unit per lead day, so the
+   loss is optimized across the full D+1..D+`FORECAST_HORIZON` target matrix.
 9. Keep train and validation predictions tied to each sample's own cluster
    model.
 10. Evaluate test samples with either their own cluster model only or, when
@@ -95,15 +97,16 @@ For spectral clustering, set `SIGMA_MODE = "auto"` to generate
 Set `CLUSTERING_ALGORITHM` to `"kmeans"`, `"spectral"`, or `"manual"`.
 Manual clustering reserves label `0` for known zero-rain targets and splits
 known positive targets into ordered lower-to-heavier rain groups. Set
-`FORECAST_HORIZON = 1` for next-day rain or use a larger positive integer for
-a later horizon. `MANUAL_ZERO_TOLERANCE` controls the maximum precipitation
-treated as zero.
+`FORECAST_HORIZON = 1` for next-day rain or use a larger positive integer to
+train the LSTM on every lead day from D+1 through that horizon.
+`MANUAL_ZERO_TOLERANCE` controls the maximum precipitation treated as zero.
 
 Forecast-horizon precipitation alignment is handled by
-`methods.tools.precipitation_utils`. The LSTM pipeline uses
-`precipitation_targets` separately for the train, validation, and test
-dataframes so the final windows in one split do not use target rows from the
-next split.
+`methods.tools.precipitation_utils`. The LSTM pipeline uses the configured
+horizon separately for the train, validation, and test dataframes, then expands
+the valid windows into lead-day matrices. Windows with any missing target from
+D+1 through D+`FORECAST_HORIZON` are dropped, so the loss never receives a
+partial or NaN target row.
 
 Set `SHOW_CONSOLE_INFO = False` to hide pipeline progress messages and Keras
 training output. The root `run_experiments.py` launcher has the same setting and
@@ -180,8 +183,8 @@ baseline that uses current precipitation as the forecast, and add the same
 section to `experiment_report.tex`.
 
 The same folder also includes lead-day diagnostics for the test split. The
-pipeline compares the model prediction with the real precipitation observed at
-D+1, D+2, ..., D+`FORECAST_HORIZON` for each test window, writes
+pipeline compares each model output D+1, D+2, ..., D+`FORECAST_HORIZON` with
+the matching real precipitation for each test window, writes
 `test_prediction_by_lead_day.csv` and
 `test_prediction_metrics_by_lead_day.csv`, and saves both a combined
 true-vs-predicted grid and one true-vs-predicted plot per lead day.

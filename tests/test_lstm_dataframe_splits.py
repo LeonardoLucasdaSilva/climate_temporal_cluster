@@ -172,6 +172,31 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         np.testing.assert_allclose(split_data.y_val, [0.0])
         np.testing.assert_allclose(split_data.y_test, [1.0, 2.0, 3.0, 4.0])
         np.testing.assert_allclose(
+            split_data.y_train_by_lead_day,
+            [
+                [4.0, 0.0],
+                [0.0, 1.0],
+                [1.0, 2.0],
+                [2.0, 3.0],
+                [3.0, 4.0],
+                [4.0, 0.0],
+                [0.0, 1.0],
+                [1.0, 2.0],
+                [2.0, 3.0],
+                [3.0, 4.0],
+            ],
+        )
+        np.testing.assert_allclose(split_data.y_val_by_lead_day, [[4.0, 0.0]])
+        np.testing.assert_allclose(
+            split_data.y_test_by_lead_day,
+            [
+                [0.0, 1.0],
+                [1.0, 2.0],
+                [2.0, 3.0],
+                [3.0, 4.0],
+            ],
+        )
+        np.testing.assert_allclose(
             split_data.all_current_precipitation,
             [3.0, 4.0, 0.0, 1.0, 2.0, 3.0, 4.0, 0.0, 1.0, 2.0, 3.0, 4.0, 0.0, 1.0, 2.0],
         )
@@ -184,6 +209,35 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
                 [3.0, 4.0],
             ],
         )
+
+    def test_forecast_horizon_drops_windows_with_any_missing_lead_day(self) -> None:
+        df = self.df.copy()
+        df.loc[4, "PRECIPITACAO_TOTAL"] = np.nan
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+
+        split_data, _splits = create_window_split_data(
+            df,
+            config,
+            ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN"],
+            normalize=False,
+            scaler_type="standard",
+            variance_threshold=None,
+            forecast_horizon=2,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+        )
+
+        self.assertEqual(split_data.i_train.tolist(), list(range(1, 10)))
+        self.assertTrue(np.isfinite(split_data.y_train_by_lead_day).all())
 
     def test_held_out_windows_use_nearest_training_centroid(self) -> None:
         config = ExperimentConfig(

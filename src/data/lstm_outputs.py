@@ -222,6 +222,39 @@ def _safe_regression_metrics(
     return calculate_regression_metrics(y_true[mask], y_pred[mask])
 
 
+def _lead_day_prediction_matrix(
+    y_pred_test: np.ndarray,
+    y_pred_test_by_lead_day: np.ndarray | None,
+    n_leads: int,
+    n_rows: int | None = None,
+) -> tuple[np.ndarray, bool]:
+    """Return prediction columns aligned to lead-day targets."""
+    if y_pred_test_by_lead_day is not None:
+        predictions = np.asarray(y_pred_test_by_lead_day, dtype=float)
+        uses_lead_day_outputs = True
+    else:
+        predictions = np.asarray(y_pred_test, dtype=float)
+        uses_lead_day_outputs = (
+            predictions.ndim == 2 and predictions.shape[1] == n_leads
+        )
+
+    if predictions.ndim == 1:
+        predictions = predictions.reshape(-1, 1)
+    if predictions.ndim != 2:
+        raise ValueError("Lead-day predictions must be one- or two-dimensional.")
+
+    if predictions.shape[1] == 1 and n_leads > 1 and not uses_lead_day_outputs:
+        predictions = np.repeat(predictions, n_leads, axis=1)
+    elif predictions.shape[1] != n_leads:
+        raise ValueError(
+            "Lead-day prediction columns must match test target lead-day columns."
+        )
+    if n_rows is not None and len(predictions) != n_rows:
+        raise ValueError("Lead-day predictions must match test target row count.")
+
+    return predictions, uses_lead_day_outputs
+
+
 def save_forecast_horizon_diagnostics(
     y_train: np.ndarray,
     y_val: np.ndarray,
@@ -435,23 +468,31 @@ def save_forecast_lead_day_diagnostics(
     test_targets_by_lead_day: np.ndarray,
     output_dir: Path,
     forecast_horizon: int,
+    y_pred_test_by_lead_day: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """Save metrics and plots comparing one prediction against each lead day."""
+    """Save metrics and plots comparing predictions against each lead day."""
     diag_dir = output_dir / "forecast_horizon_diagnostics"
     diag_dir.mkdir(exist_ok=True)
 
     test_targets_by_lead_day = np.asarray(test_targets_by_lead_day, dtype=float)
     if test_targets_by_lead_day.ndim == 1:
         test_targets_by_lead_day = test_targets_by_lead_day.reshape(-1, 1)
+    y_pred_by_lead_day, uses_lead_day_outputs = _lead_day_prediction_matrix(
+        y_pred_test,
+        y_pred_test_by_lead_day,
+        int(test_targets_by_lead_day.shape[1]),
+        n_rows=len(test_targets_by_lead_day),
+    )
 
     rows = []
     for lead_offset in range(test_targets_by_lead_day.shape[1]):
         lead_day = lead_offset + 1
         actual = test_targets_by_lead_day[:, lead_offset]
+        predicted_values = y_pred_by_lead_day[:, lead_offset]
         for window_index, cluster, predicted, actual_value in zip(
             test_indices,
             c_test,
-            y_pred_test,
+            predicted_values,
             actual,
         ):
             rows.append(
@@ -465,7 +506,9 @@ def save_forecast_lead_day_diagnostics(
                     "residual_mm": float(actual_value - predicted),
                     "absolute_error_mm": float(abs(actual_value - predicted)),
                     "squared_error_mm2": float((actual_value - predicted) ** 2),
-                    "is_trained_target_day": lead_day == forecast_horizon,
+                    "is_trained_target_day": (
+                        uses_lead_day_outputs or lead_day == forecast_horizon
+                    ),
                 }
             )
 
@@ -482,7 +525,9 @@ def save_forecast_lead_day_diagnostics(
             {
                 "lead_day": int(lead_day),
                 "forecast_horizon": forecast_horizon,
-                "is_trained_target_day": int(lead_day) == forecast_horizon,
+                "is_trained_target_day": (
+                    uses_lead_day_outputs or int(lead_day) == forecast_horizon
+                ),
                 "n_test": len(lead_values),
                 **metrics,
             }
@@ -508,16 +553,19 @@ def save_forecast_lead_day_diagnostics(
             label="MAE",
             color="#0072B2",
         )
-        ax.axvline(
-            forecast_horizon,
-            color="black",
-            linestyle="--",
-            linewidth=1.2,
-            label=f"Trained horizon +{forecast_horizon}",
-        )
+        if uses_lead_day_outputs:
+            ax.plot([], [], color="black", label="All lead days trained")
+        else:
+            ax.axvline(
+                forecast_horizon,
+                color="black",
+                linestyle="--",
+                linewidth=1.2,
+                label=f"Trained horizon +{forecast_horizon}",
+            )
         ax.set_xlabel("Lead day after input window")
         ax.set_ylabel("Error (mm)")
-        ax.set_title("Test Error When Comparing the Prediction Against Each Lead Day")
+        ax.set_title("Test Error by Forecast Lead Day")
         ax.set_xticks(metrics_df["lead_day"])
         ax.legend()
         ax.grid(True, alpha=0.3)
@@ -557,7 +605,9 @@ def save_forecast_lead_day_diagnostics(
             )
             ax.plot([0.0, max_value], [0.0, max_value], color="black", linestyle="--")
             metrics = metrics_df.loc[metrics_df["lead_day"] == lead_day].iloc[0]
-            title_suffix = " target" if lead_day == forecast_horizon else ""
+            title_suffix = "" if uses_lead_day_outputs else (
+                " target" if lead_day == forecast_horizon else ""
+            )
             ax.set_title(
                 f"D+{lead_day}{title_suffix}: "
                 f"RMSE={metrics['RMSE']:.3f}, MAE={metrics['MAE']:.3f}"
@@ -566,7 +616,11 @@ def save_forecast_lead_day_diagnostics(
             ax.set_ylabel("Predicted precipitation (mm)")
             ax.grid(True, alpha=0.3)
         fig.suptitle(
-            "True vs Predicted Using Each Real Lead Day as Reference",
+            (
+                "True vs Predicted by Lead-Day Output"
+                if uses_lead_day_outputs
+                else "True vs Predicted Using Each Real Lead Day as Reference"
+            ),
             y=1.0,
         )
         fig.tight_layout()
@@ -594,7 +648,12 @@ def save_forecast_lead_day_diagnostics(
             )
             ax.plot([0.0, max_value], [0.0, max_value], color="black", linestyle="--")
             ax.set_xlabel(f"Actual precipitation at D+{lead_day} (mm)")
-            ax.set_ylabel("LSTM prediction (mm)")
+            prediction_label = (
+                f"LSTM prediction at D+{lead_day} (mm)"
+                if uses_lead_day_outputs
+                else "LSTM prediction (mm)"
+            )
+            ax.set_ylabel(prediction_label)
             ax.set_title(
                 f"True vs Predicted at D+{lead_day}: "
                 f"RMSE={metrics['RMSE']:.3f}, MAE={metrics['MAE']:.3f}"
@@ -628,7 +687,11 @@ def save_forecast_lead_day_diagnostics(
             ax.plot(
                 lead_values["window_index"],
                 lead_values["predicted_mm"],
-                label="Prediction",
+                label=(
+                    f"Prediction D+{lead_day}"
+                    if uses_lead_day_outputs
+                    else "Prediction"
+                ),
                 color="#D55E00",
                 linewidth=1.4,
                 alpha=0.85,
@@ -1330,6 +1393,7 @@ def save_run_outputs(
     pca_variance_threshold: float,
     forecast_horizon: int,
     test_model_selection: dict[str, object] | None = None,
+    y_pred_test_by_lead_day: np.ndarray | None = None,
 ) -> dict[str, float | int | str | None]:
     """Save all artifacts for one run and return one sweep-level result row."""
     train_metrics = calculate_regression_metrics(y_train, y_pred_train)
@@ -1371,9 +1435,23 @@ def save_run_outputs(
     test_targets_by_lead_day = np.asarray(test_targets_by_lead_day, dtype=float)
     if test_targets_by_lead_day.ndim == 1:
         test_targets_by_lead_day = test_targets_by_lead_day.reshape(-1, 1)
+    prediction_by_lead_day, _uses_lead_day_outputs = _lead_day_prediction_matrix(
+        y_pred_test,
+        y_pred_test_by_lead_day,
+        int(test_targets_by_lead_day.shape[1]),
+        n_rows=len(test_targets_by_lead_day),
+    )
     for lead_offset in range(test_targets_by_lead_day.shape[1]):
+        lead_day = lead_offset + 1
         predictions_df[f"actual_lead_day_{lead_offset + 1}"] = (
             test_targets_by_lead_day[:, lead_offset]
+        )
+        predictions_df[f"predicted_lead_day_{lead_day}"] = (
+            prediction_by_lead_day[:, lead_offset]
+        )
+        predictions_df[f"residual_lead_day_{lead_day}"] = (
+            test_targets_by_lead_day[:, lead_offset]
+            - prediction_by_lead_day[:, lead_offset]
         )
     if test_model_selection is not None:
         selected_model_by_sample = np.asarray(
@@ -1433,6 +1511,7 @@ def save_run_outputs(
         test_targets_by_lead_day,
         output_dir,
         forecast_horizon=forecast_horizon,
+        y_pred_test_by_lead_day=prediction_by_lead_day,
     )
 
     if test_model_selection is not None:
