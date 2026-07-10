@@ -41,6 +41,7 @@ Run tests:
 climate_temporal_cluster/
 |-- data/                         # Raw INMET data files
 |-- experiments/
+|   |-- create_beamer_report.py      # Build Beamer decks from saved run plots
 |   |-- temporary_experiments/     # Older scripts kept for review
 |   `-- experiments.md
 |-- outputs/                       # Generated experiment outputs
@@ -108,9 +109,9 @@ For each configuration, the experiment runs these stages:
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
    calculate training-cluster centroids, then assign validation and test
    windows to the nearest existing centroid.
-7. Create precipitation targets at the configured forecast horizon inside each
-   split.
-8. Train one LSTM model per training cluster.
+7. Create one precipitation target column per lead day from D+1 through the
+   configured forecast horizon inside each split.
+8. Train one LSTM model per training cluster with one output unit per lead day.
 9. Predict train and validation precipitation with each sample's own cluster
    model.
 10. Evaluate test samples with either their own cluster model only or, when
@@ -304,8 +305,9 @@ For each cluster, the training loop:
 7. Calculates selected-model cluster-level test metrics from those sample-level
    predictions.
 
-The model predicts one value: precipitation at the configured forecast horizon,
-in millimeters.
+The model predicts one value per lead day from D+1 through the configured
+forecast horizon, in millimeters. The final D+`FORECAST_HORIZON` output remains
+the scalar target used by legacy summary metrics.
 
 Set `TEST_ALL_MODELS = False` in `run_experiment.py` to keep the original
 behavior where each test sample is predicted only by the LSTM trained on its
@@ -352,7 +354,8 @@ Each configuration folder contains:
 - current-window versus forecast-horizon target diagnostics, persistence
   baseline metrics, and horizon behavior plots under
   `forecast_horizon_diagnostics/`
-- lead-day diagnostics under `forecast_horizon_diagnostics/`, including
+- lead-day diagnostics comparing each D+k output with its matching real
+  precipitation under `forecast_horizon_diagnostics/`, including
   `test_prediction_by_lead_day.csv`,
   `test_prediction_metrics_by_lead_day.csv`, a lead-day error curve, a
   true-vs-predicted grid for D+1 through `FORECAST_HORIZON`, and individual
@@ -384,10 +387,30 @@ Because the selection is made on the test set at sample level, the improvement
 is descriptive and useful for diagnosing cross-cluster transfer rather than an
 unbiased generalization estimate.
 
-Since selection is made for one scalar target at a time, MSE, RMSE, MAE, and
-MAPE usually choose the same model: for a fixed observed precipitation value,
-all of them rank candidate predictions by closeness to the actual value. RMSLE
-can differ because it ranks closeness after a logarithmic transform.
+To create a slide deck from selected plots in one saved configuration folder,
+open `experiments/create_beamer_report.py`, edit `RUN_DIR` and
+`SELECTED_PLOTS`, then run:
+
+```powershell
+python experiments\create_beamer_report.py
+```
+
+The runner writes `beamer.tex` and compiles `beamer.pdf` by default. Set
+`COMPILE_PDF = False` in the script if only the TeX source is needed.
+
+The command-line form is still available when needed:
+
+```powershell
+python experiments\create_beamer_report.py outputs\lstm_cluster_sweep_RS_A801_YYYYMMDD_HHMMSS\RS_A801_w15_k03_kmeans_sigma_na --plots prediction_overview\02_predictions_vs_actual.png cluster_prediction_scatter\*.png residual_diagnostics\*.png
+```
+
+Use `--list-plots` on the same run folder to print all selectable plot paths.
+
+Since all-model selection is still made on the final scalar
+D+`FORECAST_HORIZON` output, MSE, RMSE, MAE, and MAPE usually choose the same
+model: for a fixed observed precipitation value, all of them rank candidate
+predictions by closeness to the actual value. RMSLE can differ because it ranks
+closeness after a logarithmic transform.
 
 Plot helpers live in:
 
@@ -423,7 +446,7 @@ SHOW_CONSOLE_INFO = True
 Set `LSTM_LOSS_FUNCTION = "mean_squared_error"` to keep the standard MSE
 training objective. Set it to `"quantile_weighted_mse"` to weight each
 cluster-specific LSTM by precipitation quantile bins calculated from that
-cluster's own training rain targets, in millimeters. With
+cluster's own training rain targets across all lead days, in millimeters. With
 `LOSS_QUANTILE_WEIGHTS = "auto"`, rarer rain-intensity bins receive larger
 weights automatically.
 

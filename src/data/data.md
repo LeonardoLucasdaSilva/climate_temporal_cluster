@@ -7,6 +7,9 @@ It is separate from the root `data/` directory, which stores raw INMET files.
 - `clean_data.py`: reusable dataframe cleaning helpers.
 - `visualize_data.py`: intentionally empty starter module for future data
   visualization code.
+- `beamer_report.py`: reusable helpers for discovering selected run plots,
+  rendering a clickable Beamer presentation from them, and compiling the
+  generated `.tex` into `.pdf`.
 - `lstm_outputs.py`: writes experiment metrics, predictions, summaries,
   cross-cluster test model selection reports, and diagnostic plots, including
   chronological actual-versus-predicted and residual plots for each cluster.
@@ -14,7 +17,8 @@ It is separate from the root `data/` directory, which stores raw INMET files.
   legends.
   It also writes forecast-horizon diagnostics that compare the target at the
   configured horizon with the precipitation observed on the final input-window
-  day.
+  day, plus lead-day diagnostics that compare each D+k prediction output with
+  the matching D+k observed precipitation.
   Configuration images are grouped into folders such as `model_fit/`,
   `prediction_overview/`, `prediction_timeseries_splits/`,
   `residual_diagnostics/`, `cluster_diagnostics/`, and
