@@ -29,6 +29,7 @@ sys.modules["models.lstm"] = stub_lstm
 from methods.lstm_cluster.pipeline import (  # noqa: E402
     ExperimentConfig,
     _cluster_window_splits,
+    _normalize_precipitation_scaler_type,
     create_window_split_data,
     quantile_weighted_mse_config,
     split_daily_dataframe,
@@ -179,6 +180,67 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         )
         self.assertIsNotNone(split_data.target_scaler)
 
+    def test_none_precipitation_scaler_keeps_precipitation_and_targets_in_mm(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+        split_data, _splits = create_window_split_data(
+            self.df,
+            config,
+            ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
+            normalize=True,
+            scaler_type="standard",
+            precipitation_scaler_type=None,
+            variance_threshold=None,
+            forecast_horizon=2,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+        )
+
+        precipitation_positions = np.arange(2, split_data.X_train.shape[1], 3)
+        covariate_positions = np.setdiff1d(
+            np.arange(split_data.X_train.shape[1]),
+            precipitation_positions,
+        )
+        expected_train_precipitation = np.array(
+            [
+                self.df["PRECIPITACAO_TOTAL"]
+                .iloc[int(start) : int(start) + config.window_size]
+                .to_numpy(dtype=float)
+                for start in split_data.i_train
+            ]
+        )
+
+        np.testing.assert_allclose(
+            split_data.X_train[:, precipitation_positions],
+            expected_train_precipitation,
+        )
+        self.assertLess(float(split_data.X_train[:, covariate_positions].min()), 0.0)
+        self.assertIsNone(split_data.target_scaler)
+        np.testing.assert_allclose(
+            split_data.y_train_by_lead_day_scaled,
+            split_data.y_train_by_lead_day,
+        )
+        np.testing.assert_allclose(
+            split_data.y_val_by_lead_day_scaled,
+            split_data.y_val_by_lead_day,
+        )
+
+    def test_precipitation_scaler_type_accepts_disabled_values(self) -> None:
+        self.assertIsNone(_normalize_precipitation_scaler_type(None))
+        self.assertIsNone(_normalize_precipitation_scaler_type("none"))
+        self.assertEqual(_normalize_precipitation_scaler_type("STANDARD"), "standard")
+
+        with self.assertRaisesRegex(ValueError, "Unsupported precipitation_scaler_type"):
+            _normalize_precipitation_scaler_type("robust")
+
     def test_forecast_horizon_controls_target_day_inside_each_split(self) -> None:
         config = ExperimentConfig(
             state="RS",
@@ -245,6 +307,18 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
                 [2.0, 3.0],
                 [3.0, 4.0],
             ],
+        )
+        np.testing.assert_array_equal(
+            split_data.test_target_dates_by_lead_day,
+            np.array(
+                [
+                    ["2025-01-26", "2025-01-27"],
+                    ["2025-01-27", "2025-01-28"],
+                    ["2025-01-28", "2025-01-29"],
+                    ["2025-01-29", "2025-01-30"],
+                ],
+                dtype="datetime64[ns]",
+            ),
         )
         np.testing.assert_allclose(
             split_data.all_current_precipitation,

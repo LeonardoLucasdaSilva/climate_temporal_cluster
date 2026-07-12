@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
+import matplotlib.dates as mdates
 import numpy as np
 import pandas as pd
 
@@ -302,6 +303,72 @@ class LstmOutputTests(unittest.TestCase):
                             / f"02_predictions_timeseries_split_{split_index:02d}_of_04.png"
                         ).exists()
                     )
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_prediction_timeseries_splits_uses_target_dates_for_x_axis(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_prediction_timeseries_splits_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+        captured: dict[str, dict[str, object]] = {}
+
+        def fake_savefig(
+            figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            plot_path = Path(path)
+            ax = figure.axes[0]
+            formatter = ax.xaxis.get_major_formatter()
+            captured[plot_path.parent.name] = {
+                "xlabel": ax.get_xlabel(),
+                "xdata": ax.lines[0].get_xdata(),
+                "formatted": formatter(
+                    mdates.date2num(pd.Timestamp("2025-01-05").to_pydatetime())
+                ),
+            }
+            plot_path.write_bytes(b"plot")
+
+        try:
+            actual_by_lead_day = np.array(
+                [
+                    [0.0, 1.0],
+                    [1.0, 2.0],
+                ]
+            )
+            predicted_by_lead_day = actual_by_lead_day + 0.25
+            target_dates_by_lead_day = np.array(
+                [
+                    ["2025-01-05", "2025-01-06"],
+                    ["2025-01-07", "2025-01-08"],
+                ],
+                dtype="datetime64[ns]",
+            )
+
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                save_prediction_timeseries_splits(
+                    actual_by_lead_day,
+                    predicted_by_lead_day,
+                    output_dir,
+                    n_splits=1,
+                    forecast_horizon=2,
+                    test_dates_by_lead_day=target_dates_by_lead_day,
+                )
+
+            self.assertEqual(captured["lead_day_01"]["xlabel"], "Target Date")
+            self.assertEqual(captured["lead_day_01"]["formatted"], "05/01/2025")
+            self.assertEqual(
+                str(captured["lead_day_01"]["xdata"][0])[:10],
+                "2025-01-05",
+            )
+            self.assertEqual(
+                str(captured["lead_day_02"]["xdata"][0])[:10],
+                "2025-01-06",
+            )
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
 

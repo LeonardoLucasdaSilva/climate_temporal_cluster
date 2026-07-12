@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Protocol
 
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -1239,6 +1240,7 @@ def save_prediction_timeseries_splits(
     output_dir: Path,
     n_splits: int = 4,
     forecast_horizon: int | None = None,
+    test_dates_by_lead_day: np.ndarray | None = None,
 ) -> None:
     """Save prediction time-series splits for each forecast lead day."""
     plot_dir = output_dir / "prediction_timeseries_splits"
@@ -1251,7 +1253,9 @@ def save_prediction_timeseries_splits(
     if predicted_by_lead_day.ndim == 1:
         predicted_by_lead_day = predicted_by_lead_day.reshape(-1, 1)
     if actual_by_lead_day.ndim != 2 or predicted_by_lead_day.ndim != 2:
-        raise ValueError("Prediction time-series inputs must be one- or two-dimensional.")
+        raise ValueError(
+            "Prediction time-series inputs must be one- or two-dimensional."
+        )
     if actual_by_lead_day.shape != predicted_by_lead_day.shape:
         raise ValueError("Prediction time-series actual and predicted matrices must match.")
 
@@ -1261,6 +1265,11 @@ def save_prediction_timeseries_splits(
     if int(forecast_horizon) != n_leads:
         raise ValueError("forecast_horizon must match the number of lead-day columns.")
 
+    date_labels_by_lead_day = _prediction_timeseries_date_labels(
+        test_dates_by_lead_day,
+        n_rows=len(actual_by_lead_day),
+        n_leads=n_leads,
+    )
     indices = np.arange(len(actual_by_lead_day))
     for lead_offset in range(n_leads):
         lead_day = lead_offset + 1
@@ -1273,15 +1282,20 @@ def save_prediction_timeseries_splits(
         ):
             fig, ax = plt.subplots(figsize=(14, 5.6))
             if split_indices.size > 0:
+                x_values = (
+                    date_labels_by_lead_day[split_indices, lead_offset]
+                    if date_labels_by_lead_day is not None
+                    else split_indices
+                )
                 ax.plot(
-                    split_indices,
+                    x_values,
                     actual_by_lead_day[split_indices, lead_offset],
                     label=f"Actual D+{lead_day}",
                     alpha=0.8,
                     linewidth=1.6,
                 )
                 ax.plot(
-                    split_indices,
+                    x_values,
                     predicted_by_lead_day[split_indices, lead_offset],
                     label=f"Predicted D+{lead_day}",
                     alpha=0.8,
@@ -1300,7 +1314,13 @@ def save_prediction_timeseries_splits(
                 f"D+{lead_day}: Predictions vs Actual - "
                 f"Split {split_index} of {n_splits}"
             )
-            ax.set_xlabel("Test Sample Index")
+            if date_labels_by_lead_day is not None:
+                ax.set_xlabel("Target Date")
+                ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m/%Y"))
+                fig.autofmt_xdate(rotation=30, ha="right")
+            else:
+                ax.set_xlabel("Test Sample Index")
             ax.set_ylabel("Precipitation (mm)")
             if split_indices.size > 0:
                 ax.legend()
@@ -1311,6 +1331,35 @@ def save_prediction_timeseries_splits(
                 / f"02_predictions_timeseries_split_{split_index:02d}_of_{n_splits:02d}.png"
             )
             plt.close(fig)
+
+
+def _prediction_timeseries_date_labels(
+    test_dates_by_lead_day: np.ndarray | None,
+    n_rows: int,
+    n_leads: int,
+) -> np.ndarray | None:
+    """Return validated date labels for split prediction time-series plots."""
+    if test_dates_by_lead_day is None:
+        return None
+
+    date_labels = np.asarray(test_dates_by_lead_day)
+    if date_labels.ndim == 1:
+        date_labels = date_labels.reshape(-1, 1)
+    if date_labels.ndim != 2:
+        raise ValueError(
+            "Prediction time-series date labels must be one- or two-dimensional."
+        )
+    if date_labels.shape[0] != n_rows:
+        raise ValueError("Prediction time-series date labels must match row count.")
+    if date_labels.shape[1] == 1 and n_leads > 1:
+        date_labels = np.repeat(date_labels, n_leads, axis=1)
+    elif date_labels.shape[1] != n_leads:
+        raise ValueError("Prediction time-series date columns must match lead days.")
+
+    parsed_dates = pd.to_datetime(date_labels.reshape(-1), errors="coerce")
+    if pd.isna(parsed_dates).any():
+        raise ValueError("Prediction time-series date labels must contain valid dates.")
+    return parsed_dates.to_numpy(dtype="datetime64[ns]").reshape(date_labels.shape)
 
 
 def save_visualizations(
@@ -1325,6 +1374,7 @@ def save_visualizations(
     forecast_horizon: int,
     test_targets_by_lead_day: np.ndarray | None = None,
     y_pred_test_by_lead_day: np.ndarray | None = None,
+    test_target_dates_by_lead_day: np.ndarray | None = None,
     cluster_feature_splits: Mapping[str, tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> None:
     """Save the diagnostic plots for one configuration."""
@@ -1355,6 +1405,7 @@ def save_visualizations(
             or y_pred_test_by_lead_day is not None
             else None
         ),
+        test_dates_by_lead_day=test_target_dates_by_lead_day,
     )
     save_cluster_prediction_timeseries(
         y_test,
@@ -1659,6 +1710,7 @@ def save_run_outputs(
     forecast_horizon: int,
     test_model_selection: dict[str, object] | None = None,
     y_pred_test_by_lead_day: np.ndarray | None = None,
+    test_target_dates_by_lead_day: np.ndarray | None = None,
     cluster_feature_splits: Mapping[str, tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> dict[str, float | int | str | None]:
     """Save all artifacts for one run and return one sweep-level result row."""
@@ -1824,6 +1876,7 @@ def save_run_outputs(
         forecast_horizon=forecast_horizon,
         test_targets_by_lead_day=test_targets_by_lead_day,
         y_pred_test_by_lead_day=prediction_by_lead_day,
+        test_target_dates_by_lead_day=test_target_dates_by_lead_day,
         cluster_feature_splits=cluster_feature_splits,
     )
 
