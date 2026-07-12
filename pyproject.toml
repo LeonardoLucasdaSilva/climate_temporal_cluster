@@ -12,11 +12,13 @@ dependencies = [
     "pandas>=1.5.0",
     "numpy>=1.21.0",
     "scikit-learn>=1.0.0",
+    "statsmodels>=0.14.0",
 ]
 
 [project.scripts]
 climate-cluster = "methods.cluster.cluster_pipeline:main"
 lstm-cluster = "methods.lstm_cluster.run_experiment:main"
+arma-baseline = "methods.arma.run_arma:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -27,4 +29,5 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "methods.lstm_cluster" = ["*.yaml", "*.md"]
+"methods.arma" = ["*.md"]
 
