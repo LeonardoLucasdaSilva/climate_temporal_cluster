@@ -2,6 +2,8 @@
 
 # Relative paths are resolved from the project root.
 output_root: outputs
+group_outputs_by_day: true
+date_folder_format: "%d_%m_%y"
 
 # Leave empty to create a timestamped sweep folder.
 sweep_name:

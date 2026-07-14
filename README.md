@@ -159,7 +159,7 @@ D+`FORECAST_HORIZON` lead-day interpretation.
 ARMA outputs are saved under:
 
 ```text
-outputs/ARMA/arma_sweep_<STATE>_<STATION>_<timestamp>/
+outputs/dd_mm_yy/ARMA/arma_sweep_<STATE>_<STATION>_<timestamp>/
 ```
 
 Each configuration folder includes `metrics_summary.csv`,
@@ -368,11 +368,15 @@ write the extra model-selection reports.
 
 ## Evaluation Outputs
 
-Each run writes into a timestamped folder under `outputs/`, for example:
+Each run writes into a timestamped folder under the current daily output folder,
+for example:
 
 ```text
-outputs/lstm_cluster_sweep_RS_A801_YYYYMMDD_HHMMSS/
+outputs/dd_mm_yy/lstm_cluster_sweep_RS_A801_YYYYMMDD_HHMMSS/
 ```
+
+The daily folder uses the `date_folder_format` setting from
+`src/methods/lstm_cluster/config_output.yaml`; by default it is `"%d_%m_%y"`.
 
 Sweep-level files:
 
@@ -462,7 +466,7 @@ The runner writes `beamer.tex` and compiles `beamer.pdf` by default. Set
 The command-line form is still available when needed:
 
 ```powershell
-python experiments\create_beamer_report.py outputs\lstm_cluster_sweep_RS_A801_YYYYMMDD_HHMMSS\RS_A801_w15_k03_kmeans_sigma_na --plots prediction_overview\02_predictions_vs_actual.png cluster_prediction_scatter\*.png residual_diagnostics\*.png
+python experiments\create_beamer_report.py outputs\dd_mm_yy\lstm_cluster_sweep_RS_A801_YYYYMMDD_HHMMSS\RS_A801_w15_k03_kmeans_sigma_na --plots prediction_overview\02_predictions_vs_actual.png cluster_prediction_scatter\*.png residual_diagnostics\*.png
 ```
 
 Use `--list-plots` on the same run folder to print all selectable plot paths.

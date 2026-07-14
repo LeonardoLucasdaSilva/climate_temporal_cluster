@@ -16,12 +16,12 @@ STATION_ID = "A801"
 
 # Clustering sweep
 
-WINDOW_SIZES = [5,10,15,30,60]
-N_CLUSTERS_LIST = [5]
+WINDOW_SIZES = [25]
+N_CLUSTERS_LIST = [3,5,7]
 PCA_VARIANCE_THRESHOLD = None
 NORMALIZE = True
 SCALER_TYPE = "standard"  # Covariates: "standard" or "minmax"; ignored when NORMALIZE=False
-PRECIPITATION_SCALER = "standard"  # PRECIPITACAO_TOTAL and LSTM target scaler
+PRECIPITATION_SCALER = None  # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
 CLUSTERING_ALGORITHM = "kmeans"  # "kmeans" or "spectral"
 N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"  # "auto" or "manual"
@@ -33,17 +33,17 @@ FORECAST_HORIZON = 5
 QUANTITATIVE_METRICS = ["MSE"]
 
 # Model hyperparameters
-LSTM_UNITS = 64
-LSTM_UNITS_2 = 32
+LSTM_UNITS = 128
+LSTM_UNITS_2 = 64
 DROPOUT_RATE = 0.1
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.01
 LSTM_LOSS_FUNCTION = "quantile_weighted_mse"  # "mean_squared_error", "mae", "huber", or "quantile_weighted_mse"
-LOSS_QUANTILES = [0.95]
+LOSS_QUANTILES = [0.8]
 LOSS_QUANTILE_WEIGHTS = "auto"  # "auto" or one positive weight per quantile bin
 
 # Training settings
 EPOCHS = 250
-BATCH_SIZE = 32
+BATCH_SIZE = 64
 EARLY_STOPPING = True
 PATIENCE = 50
 VERBOSE_TRAINING = 1

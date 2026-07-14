@@ -125,11 +125,15 @@ diagnostics.
 
 ## Outputs
 
-Each run creates a sweep folder under `outputs/`, usually named like:
+Each run creates a sweep folder under the current daily output folder, usually
+named like:
 
 ```text
-outputs/lstm_cluster_sweep_<STATE>_<STATION>_<timestamp>/
+outputs/dd_mm_yy/lstm_cluster_sweep_<STATE>_<STATION>_<timestamp>/
 ```
+
+The daily folder is controlled by `group_outputs_by_day` and
+`date_folder_format` in `config_output.yaml`.
 
 The sweep folder contains summary CSV/text files and LaTeX tables. Each
 configuration subfolder contains run metrics, predictions, reports, and plots.

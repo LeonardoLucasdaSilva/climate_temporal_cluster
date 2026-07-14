@@ -18,7 +18,7 @@ plots and metrics can be compared directly.
 Outputs are written under:
 
 ```text
-outputs/ARMA/arma_sweep_<STATE>_<STATION>_<timestamp>/
+outputs/dd_mm_yy/ARMA/arma_sweep_<STATE>_<STATION>_<timestamp>/
 ```
 
 Each configuration folder includes `metrics_summary.csv`,
