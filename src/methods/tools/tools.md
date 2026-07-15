@@ -5,6 +5,9 @@ and experiments.
 
 - `dimensionality_reduction_tools.py`: helpers for selecting numeric features,
   flattening windows, and fitting PCA by an explained-variance threshold.
+- `feature_scaling.py`: shared covariate and precipitation scaling used by the
+  LSTM+cluster and eigengap pipelines. It keeps precipitation scaling separate
+  so rain can remain in millimeters while other weather features are scaled.
 - `sigma_choosing.py`: helpers for spectral-clustering sigma selection.
   Use `euclidian_distances` to build a pairwise distance matrix and
   `take_sigma` or `calculate_sigma_values` to generate candidate sigma values

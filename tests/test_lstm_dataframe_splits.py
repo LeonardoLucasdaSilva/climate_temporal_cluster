@@ -408,6 +408,80 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         np.testing.assert_array_equal(c_val, nearest_labels(X_val))
         np.testing.assert_array_equal(c_test, nearest_labels(X_test))
 
+    def test_pca_can_be_limited_to_clustering_features(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+
+        split_data, _splits = create_window_split_data(
+            self.df,
+            config,
+            ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
+            normalize=True,
+            scaler_type="standard",
+            precipitation_scaler_type=None,
+            variance_threshold=0.9,
+            forecast_horizon=1,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+            pca_for_clustering_only=True,
+        )
+
+        original_feature_count = config.window_size * 3
+        self.assertEqual(split_data.X_train.shape[1], original_feature_count)
+        self.assertEqual(split_data.X_val.shape[1], original_feature_count)
+        self.assertEqual(split_data.X_test.shape[1], original_feature_count)
+        self.assertLess(
+            split_data.cluster_X_train.shape[1],
+            original_feature_count,
+        )
+        self.assertEqual(
+            split_data.cluster_X_train.shape[1],
+            split_data.cluster_X_val.shape[1],
+        )
+        self.assertEqual(
+            split_data.cluster_X_train.shape[1],
+            split_data.cluster_X_test.shape[1],
+        )
+
+    def test_pca_still_feeds_lstm_when_clustering_only_is_disabled(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+
+        split_data, _splits = create_window_split_data(
+            self.df,
+            config,
+            ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
+            normalize=True,
+            scaler_type="standard",
+            precipitation_scaler_type=None,
+            variance_threshold=0.9,
+            forecast_horizon=1,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+        )
+
+        self.assertEqual(
+            split_data.X_train.shape,
+            split_data.cluster_X_train.shape,
+        )
+        np.testing.assert_allclose(split_data.X_train, split_data.cluster_X_train)
+
     def test_quantile_weighted_mse_config_uses_cluster_rain_values(self) -> None:
         thresholds, weights = quantile_weighted_mse_config(
             np.array([0.0, 0.0, 1.0, 5.0, 20.0, 50.0]),

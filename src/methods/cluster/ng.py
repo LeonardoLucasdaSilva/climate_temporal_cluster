@@ -73,11 +73,16 @@ def affinity_matrix(
     return affinities
 
 
-def normalized_laplacian(affinities: np.ndarray) -> np.ndarray:
+def normalized_laplacian(
+    affinities: np.ndarray,
+    copy: bool = True,
+) -> np.ndarray:
     """Create normalized Laplacian matrix.
 
     Args:
         affinities: Affinity matrix of shape (n_samples, n_samples).
+        copy: Whether to preserve the input matrix. Disable this for large
+            one-use affinity matrices to reduce peak memory usage.
 
     Returns:
         Normalized Laplacian L = D^(-1/2) * A * D^(-1/2)
@@ -92,7 +97,14 @@ def normalized_laplacian(affinities: np.ndarray) -> np.ndarray:
     diag[mask] = degrees[mask] ** (-0.5)
 
     # Normalized Laplacian: L = D^(-1/2) * A * D^(-1/2)
-    laplacian = affinities * diag[:, None] * diag[None, :]
+    if copy:
+        laplacian = np.asarray(affinities, dtype=np.float64).copy()
+    elif np.issubdtype(affinities.dtype, np.floating):
+        laplacian = affinities
+    else:
+        laplacian = affinities.astype(np.float64)
+    laplacian *= diag[:, None]
+    laplacian *= diag[None, :]
 
     return laplacian
 
