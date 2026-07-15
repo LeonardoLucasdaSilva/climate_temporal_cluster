@@ -9,28 +9,26 @@ from typing import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 from scipy.linalg import eigvalsh
 from scipy.sparse.linalg import ArpackError, ArpackNoConvergence, eigsh
 
 from config import DATA_ROOT, OUTPUTS_DIR
 from data.load_data import load_station_daily_data
+from methods.cluster.automatic_sigma import (
+    LOWER_QUANTILE,
+    N_SIGMA_VALUES,
+    UPPER_QUANTILE,
+    generate_sigma_candidates_from_features,
+)
 from methods.cluster.cluster_pipeline import (
-    create_cluster_feature_matrix,
-    numeric_feature_columns,
+    create_pipeline_clustering_features,
 )
 from methods.cluster.ng import affinity_matrix, normalized_laplacian
-from methods.tools.feature_scaling import (
-    FeatureScalingState,
-    normalize_precipitation_scaler_type,
-    scale_weather_features,
-)
 
 
 STATE = "RS"
 STATION_ID = "A801"
 WINDOW_SIZES = [15, 30, 45]
-SIGMA = 1
 MAX_GAPS = 20
 NORMALIZE = True
 SCALER_TYPE = "standard"
@@ -38,6 +36,7 @@ PRECIPITATION_SCALER: str | None = None
 TRAIN_RATIO = 0.6
 PCA_VARIANCE_THRESHOLD: float | None = None
 FEATURE_COLUMNS: list[str] | None = None
+ADDITIONAL_SIGMA_VALUES: list[float] = [10, 20, 30, 40, 50]
 OUTPUT_DIR = OUTPUTS_DIR / "eigengap"
 
 
@@ -46,6 +45,7 @@ class EigengapResult:
     """Eigengap values and the heuristic cluster recommendation."""
 
     window_size: int
+    sigma: float
     cluster_counts: np.ndarray
     gaps: np.ndarray
     eigenvalues: np.ndarray
@@ -54,14 +54,44 @@ class EigengapResult:
     warning: str | None = None
 
 
+def combine_sigma_values(
+    automatic_values: Sequence[float],
+    additional_values: Sequence[float] | None = None,
+) -> np.ndarray:
+    """Return valid automatic and manual sigma values without duplicates."""
+    automatic = np.asarray(automatic_values, dtype=float)
+    additional = np.asarray(
+        [] if additional_values is None else additional_values,
+        dtype=float,
+    )
+    if automatic.ndim != 1 or additional.ndim != 1:
+        raise ValueError("Sigma values must be one-dimensional sequences.")
+
+    combined: list[float] = []
+    for value in np.concatenate([automatic, additional]):
+        sigma = float(value)
+        if not np.isfinite(sigma) or sigma <= 0:
+            raise ValueError(
+                f"Every sigma value must be positive and finite, got {sigma}."
+            )
+        if not any(
+            np.isclose(sigma, existing, rtol=1e-12, atol=0.0)
+            for existing in combined
+        ):
+            combined.append(sigma)
+    return np.asarray(combined, dtype=float)
+
+
 def _degenerate_eigengap_result(
     window_size: int,
+    sigma: float,
     gap_count: int,
     warning: str,
 ) -> EigengapResult:
     """Return an explicit result for an affinity graph with no usable gaps."""
     return EigengapResult(
         window_size=window_size,
+        sigma=sigma,
         cluster_counts=np.arange(1, gap_count + 1, dtype=int),
         gaps=np.zeros(gap_count, dtype=float),
         eigenvalues=np.zeros(gap_count + 1, dtype=float),
@@ -95,6 +125,7 @@ def calculate_eigengaps(
     if not np.any(affinities):
         return _degenerate_eigengap_result(
             window_size,
+            sigma,
             gap_count,
             (
                 f"Affinity matrix is degenerate for window size {window_size} "
@@ -117,6 +148,7 @@ def calculate_eigengaps(
         except (ArpackError, ArpackNoConvergence) as error:
             return _degenerate_eigengap_result(
                 window_size,
+                sigma,
                 gap_count,
                 (
                     f"Affinity matrix is numerically degenerate for window size "
@@ -135,60 +167,13 @@ def calculate_eigengaps(
 
     return EigengapResult(
         window_size=window_size,
+        sigma=sigma,
         cluster_counts=cluster_counts,
         gaps=gaps,
         eigenvalues=eigenvalues,
         best_n_clusters=int(cluster_counts[best_offset]),
         best_gap=float(gaps[best_offset]),
     )
-
-
-def create_pipeline_clustering_features(
-    df: pd.DataFrame,
-    window_size: int,
-    columns: list[str] | None,
-    normalize: bool,
-    scaler_type: str,
-    precipitation_scaler_type: str | None,
-    train_ratio: float,
-    pca_variance_threshold: float | None,
-) -> tuple[np.ndarray, list[str]]:
-    """Build clustering features with the LSTM pipeline's preprocessing."""
-    if not 0 < train_ratio < 1:
-        raise ValueError("train_ratio must be between 0 and 1.")
-
-    train_end = int(np.floor(len(df) * train_ratio))
-    if train_end < window_size:
-        raise ValueError(
-            f"Training split has {train_end} rows, fewer than window size "
-            f"{window_size}."
-        )
-
-    feature_columns = columns if columns is not None else numeric_feature_columns(df)
-    if not feature_columns:
-        raise ValueError("No numeric feature columns are available.")
-
-    precipitation_scaler_type = normalize_precipitation_scaler_type(
-        precipitation_scaler_type
-    )
-    training_df = df.iloc[:train_end].reset_index(drop=True)
-    scaled_features, _ = scale_weather_features(
-        training_df,
-        feature_columns,
-        scalers=FeatureScalingState(),
-        covariate_scaler_type=scaler_type,
-        precipitation_scaler_type=precipitation_scaler_type,
-        fit_scalers=normalize,
-    )
-    _, windows_flat, _, _, _ = create_cluster_feature_matrix(
-        scaled_features,
-        window_size=window_size,
-        columns=feature_columns,
-        normalize=False,
-        variance_threshold=pca_variance_threshold,
-        verbose=False,
-    )
-    return windows_flat, feature_columns
 
 
 def plot_eigengaps(result: EigengapResult, output_path: Path) -> Path:
@@ -240,7 +225,7 @@ def plot_eigengaps(result: EigengapResult, output_path: Path) -> Path:
     ax.set_ylabel(r"Eigengap $\lambda_k - \lambda_{k+1}$")
     ax.set_title(
         f"Spectral Eigengaps - Window Size {result.window_size} "
-        f"(first {len(result.gaps)} gaps)"
+        f"- Sigma {result.sigma:.6g} (first {len(result.gaps)} gaps)"
     )
     ax.grid(axis="y", alpha=0.3)
     if result.best_n_clusters is not None:
@@ -255,7 +240,6 @@ def run_eigengap_analysis(
     state: str,
     station_id: str,
     window_sizes: Sequence[int],
-    sigma: float,
     output_dir: Path,
     data_root: Path = DATA_ROOT,
     columns: list[str] | None = None,
@@ -265,12 +249,22 @@ def run_eigengap_analysis(
     precipitation_scaler_type: str | None = PRECIPITATION_SCALER,
     train_ratio: float = TRAIN_RATIO,
     pca_variance_threshold: float | None = PCA_VARIANCE_THRESHOLD,
+    n_sigma_values: int = N_SIGMA_VALUES,
+    additional_sigma_values: Sequence[float] | None = None,
+    lower_quantile: float = LOWER_QUANTILE,
+    upper_quantile: float = UPPER_QUANTILE,
 ) -> list[EigengapResult]:
-    """Analyze and plot eigengaps for every configured window size."""
+    """Analyze every automatic sigma candidate for every window size."""
     if not window_sizes:
         raise ValueError("window_sizes must contain at least one value.")
     if any(window_size <= 0 for window_size in window_sizes):
         raise ValueError("Every window size must be positive.")
+    if n_sigma_values <= 0:
+        raise ValueError("n_sigma_values must be positive.")
+    validated_additional_sigmas = combine_sigma_values(
+        [],
+        additional_sigma_values,
+    )
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -281,8 +275,20 @@ def run_eigengap_analysis(
     )
 
     print(f"Eigengap analysis for {state}/{station_id}")
-    print(f"Sigma: {sigma:g}")
     print(f"Window sizes: {list(window_sizes)}")
+    print(f"Automatic sigma candidates per window: {n_sigma_values}")
+    print(
+        "Additional sigma values applied to every window: "
+        + (
+            ", ".join(f"{sigma:g}" for sigma in validated_additional_sigmas)
+            if len(validated_additional_sigmas)
+            else "none"
+        )
+    )
+    print(
+        "Sigma distance quantile range: "
+        f"{lower_quantile:.1%} to {upper_quantile:.1%}"
+    )
     print(f"Training ratio: {train_ratio:g}")
     print(
         "Normalization: off"
@@ -312,30 +318,55 @@ def run_eigengap_analysis(
             train_ratio=train_ratio,
             pca_variance_threshold=pca_variance_threshold,
         )
-        result = calculate_eigengaps(
+        automatic_sigma_values = generate_sigma_candidates_from_features(
             windows_flat,
-            sigma=sigma,
-            window_size=window_size,
-            max_gaps=max_gaps,
+            n_values=n_sigma_values,
+            lower_quantile=lower_quantile,
+            upper_quantile=upper_quantile,
         )
-        plot_path = plot_eigengaps(
-            result,
-            output_dir / f"eigengaps_window_{window_size:03d}.png",
+        sigma_values = combine_sigma_values(
+            automatic_sigma_values,
+            validated_additional_sigmas,
         )
-        results.append(result)
-        if result.warning is not None:
-            print(f"  WARNING: {result.warning}")
-            print("  Suggested clusters: N/A")
-        else:
-            print(
-                f"  Largest gap: {result.best_gap:.6g} "
-                f"at k={result.best_n_clusters}"
+        print(
+            "  Automatic sigma candidates: "
+            + ", ".join(f"{sigma:g}" for sigma in automatic_sigma_values)
+        )
+        print(
+            "  All evaluated sigma values: "
+            + ", ".join(f"{sigma:g}" for sigma in sigma_values)
+        )
+        for sigma_index, sigma_value in enumerate(sigma_values, start=1):
+            sigma = float(sigma_value)
+            print(f"  Evaluating sigma {sigma_index}/{len(sigma_values)}: {sigma:g}")
+            result = calculate_eigengaps(
+                windows_flat,
+                sigma=sigma,
+                window_size=window_size,
+                max_gaps=max_gaps,
             )
-        print(f"  Plot: {plot_path}")
+            plot_path = plot_eigengaps(
+                result,
+                output_dir
+                / (
+                    f"eigengaps_window_{window_size:03d}_"
+                    f"sigma_{sigma_index:02d}.png"
+                ),
+            )
+            results.append(result)
+            if result.warning is not None:
+                print(f"    WARNING: {result.warning}")
+                print("    Suggested clusters: N/A")
+            else:
+                print(
+                    f"    Largest gap: {result.best_gap:.6g} "
+                    f"at k={result.best_n_clusters}"
+                )
+            print(f"    Plot: {plot_path}")
 
     print("\nEigengap summary")
-    print("Window size | Suggested clusters | Largest gap")
-    print("------------|--------------------|------------")
+    print("Window size | Sigma        | Suggested clusters | Largest gap")
+    print("------------|--------------|--------------------|------------")
     for result in results:
         suggested_clusters = (
             "N/A" if result.best_n_clusters is None else str(result.best_n_clusters)
@@ -343,6 +374,7 @@ def run_eigengap_analysis(
         largest_gap = "N/A" if result.best_gap is None else f"{result.best_gap:.6g}"
         print(
             f"{result.window_size:11d} | "
+            f"{result.sigma:12.6g} | "
             f"{suggested_clusters:>18} | {largest_gap}"
         )
     return results
@@ -362,7 +394,22 @@ def main() -> None:
         default=WINDOW_SIZES,
         help="Sliding-window sizes to analyze",
     )
-    parser.add_argument("--sigma", type=float, default=SIGMA)
+    parser.add_argument(
+        "--n-sigma-values",
+        type=int,
+        default=N_SIGMA_VALUES,
+        help="Automatic sigma candidates to evaluate per window size",
+    )
+    parser.add_argument(
+        "--additional-sigma-values",
+        "--sigma-values",
+        nargs="+",
+        type=float,
+        default=ADDITIONAL_SIGMA_VALUES,
+        help="Extra sigma values evaluated for every window size",
+    )
+    parser.add_argument("--lower-quantile", type=float, default=LOWER_QUANTILE)
+    parser.add_argument("--upper-quantile", type=float, default=UPPER_QUANTILE)
     parser.add_argument("--max-gaps", type=int, default=MAX_GAPS)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     parser.add_argument("--columns", nargs="+", default=FEATURE_COLUMNS)
@@ -393,7 +440,6 @@ def main() -> None:
         state=args.state,
         station_id=args.station_id,
         window_sizes=args.window_sizes,
-        sigma=args.sigma,
         output_dir=args.output_dir,
         columns=args.columns,
         normalize=not args.no_normalize,
@@ -402,6 +448,10 @@ def main() -> None:
         precipitation_scaler_type=args.precipitation_scaler,
         train_ratio=args.train_ratio,
         pca_variance_threshold=args.pca_variance_threshold,
+        n_sigma_values=args.n_sigma_values,
+        additional_sigma_values=args.additional_sigma_values,
+        lower_quantile=args.lower_quantile,
+        upper_quantile=args.upper_quantile,
     )
 
 

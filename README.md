@@ -65,6 +65,8 @@ climate_temporal_cluster/
 |   |   |   |-- arma.md            # Folder documentation
 |   |   |   `-- pipeline.py        # ARMA fitting and rolling forecasts
 |   |   |-- cluster/
+|   |   |   |-- automatic_sigma.py # Standalone automatic sigma selector
+|   |   |   |-- eigengap.py         # Standalone eigengap analysis
 |   |   |   |-- manual.py          # Horizon-rain-guided clustering
 |   |   |   |-- ng.py              # Spectral clustering implementation
 |   |   |   `-- cluster_pipeline.py
@@ -273,6 +275,29 @@ from methods.tools.sigma_choosing import calculate_sigma_values
 sigmas = calculate_sigma_values(df, n_values=5)
 ```
 
+The same heuristic is available as a standalone command for a chosen station
+and window configuration:
+
+```powershell
+cluster-auto-sigma --state RS --station-id A801 --window-size 15 --n-values 5 --scaler-type standard --precipitation-scaler none --train-ratio 0.6
+```
+
+This command uses the same feature preprocessing as the LSTM+cluster pipeline:
+scalers are fitted only on the chronological training fraction, covariates and
+precipitation use their separately configured scalers, windows are flattened,
+and optional PCA is fitted on the training windows. Match
+`--scaler-type`, `--precipitation-scaler`, `--train-ratio`, and
+`--pca-variance-threshold` to the experiment configuration.
+
+For code that already has its clustering features prepared (for example an
+eigengap analysis), avoid loading and windowing the data again:
+
+```python
+from methods.cluster.automatic_sigma import generate_sigma_candidates_from_features
+
+sigmas = generate_sigma_candidates_from_features(windows_flat, n_values=5)
+```
+
 The sigma logic lives in `src/methods/tools/sigma_choosing.py`.
 It contains:
 
@@ -287,18 +312,22 @@ The standalone eigengap command evaluates multiple sliding-window sizes using
 the same normalized Gaussian affinity graph as spectral clustering:
 
 ```powershell
-cluster-eigengap --state RS --station-id A801 --window-sizes 5 10 15 --sigma 1.0 --scaler-type standard --precipitation-scaler none --train-ratio 0.6
+cluster-eigengap --state RS --station-id A801 --window-sizes 5 10 15 --n-sigma-values 5 --additional-sigma-values 0.5 1.0 2.0 --scaler-type standard --precipitation-scaler none --train-ratio 0.6
 ```
 
-It saves one plot per window size with the first 20 eigengaps, highlights the
-largest gap, and prints the suggested cluster count and gap value for every
-configured window. The heuristic uses
+For each window size, it generates sigma candidates with the automatic
+pairwise-distance heuristic, evaluates every candidate, and saves one plot per
+window/sigma pair with the first 20 eigengaps. It highlights the largest gap
+and prints the suggested cluster count, sigma, and gap value for every result.
+The eigengap heuristic uses
 `gap(k) = lambda_k - lambda_(k+1)` on eigenvalues sorted from largest to
-smallest. Because results depend on the Gaussian bandwidth, configure and
-record `--sigma` for each analysis. More options and assumptions are documented
-in `src/methods/cluster/cluster.md`. A bandwidth that produces a degenerate
+smallest. Configure the sweep with `--n-sigma-values`, `--lower-quantile`, and
+`--upper-quantile`. Additional manually selected values can be applied to every
+window configuration with `--additional-sigma-values` (or its shorter
+`--sigma-values` alias); duplicates are evaluated once. More options and assumptions are documented in
+`src/methods/cluster/cluster.md`. A candidate that produces a degenerate
 affinity matrix is reported explicitly; its recommendation is marked `N/A` and
-the remaining window sizes continue to run.
+the remaining sigma candidates and window sizes continue to run.
 
 Its feature preprocessing matches the LSTM+cluster pipeline: scalers are fitted
 only on the chronological training fraction, covariates and precipitation use
@@ -621,6 +650,7 @@ results = run_clustering_pipeline(
 | Clean/load data internals | `data` |
 | Sliding windows | `methods.tools.sliding_windows` |
 | Sigma selection | `methods.tools.sigma_choosing` |
+| Standalone automatic sigma runner | `methods.cluster.automatic_sigma` |
 | Cluster feature matrix and dispatch | `methods.cluster.cluster_pipeline` |
 | Horizon-rain-guided clustering | `methods.cluster.manual` |
 | Spectral clustering | `methods.cluster.ng` |

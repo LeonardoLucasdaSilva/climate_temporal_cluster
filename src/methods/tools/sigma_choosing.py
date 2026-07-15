@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from scipy.spatial.distance import pdist, squareform
 
 from methods.tools.sliding_windows import create_windows
 
@@ -23,12 +24,12 @@ def euclidian_distances(data: np.ndarray) -> np.ndarray:
         Distance matrix with shape (n_samples, n_samples), where each entry is
         the Euclidean distance between two rows.
     """
-    n_samples = len(data)
-    distances = np.zeros((n_samples, n_samples))
-    for i in range(n_samples):
-        for j in range(n_samples):
-            distances[i, j] = np.linalg.norm(data[i] - data[j])
-    return distances
+    data = np.asarray(data, dtype=np.float64)
+    if data.ndim != 2:
+        raise ValueError(f"data must be a 2D array, got shape {data.shape}")
+    if not np.all(np.isfinite(data)):
+        raise ValueError("data must contain only finite values.")
+    return squareform(pdist(data, metric="euclidean"))
 
 
 def take_sigma(distance_matrix: np.ndarray) -> np.ndarray:
@@ -78,6 +79,11 @@ def sigma_values_from_distance_distribution(
     """
     if n_values <= 0:
         raise ValueError(f"n_values must be positive, got {n_values}")
+    if not 0 <= lower_quantile <= upper_quantile <= 1:
+        raise ValueError(
+            "Quantiles must satisfy 0 <= lower_quantile <= "
+            f"upper_quantile <= 1, got {lower_quantile} and {upper_quantile}."
+        )
     if (
         n_values == 20
         and lower_quantile == SIGMA_LOWER_QUANTILE
@@ -105,6 +111,8 @@ def calculate_sigma_values(
     n_values: int = 20,
     window_size: int = SIGMA_WINDOW_SIZE,
     normalize: bool = True,
+    lower_quantile: float = SIGMA_LOWER_QUANTILE,
+    upper_quantile: float = SIGMA_UPPER_QUANTILE,
 ) -> np.ndarray:
     """Calculate distance-based sigma candidates for spectral clustering.
 
@@ -113,6 +121,8 @@ def calculate_sigma_values(
         n_values: Number of sigma values to generate.
         window_size: Number of days per window before distance calculation.
         normalize: Whether to standardize feature columns before windowing.
+        lower_quantile: Lower distance quantile used as the first sigma.
+        upper_quantile: Upper distance quantile used as the last sigma.
 
     Returns:
         Array of sigma candidates for spectral clustering.
@@ -120,4 +130,9 @@ def calculate_sigma_values(
     windows, _ = create_windows(df, window_size=window_size, normalize=normalize)
     windows_flat = windows.reshape(windows.shape[0], -1)
     distances = euclidian_distances(windows_flat)
-    return sigma_values_from_distance_distribution(distances, n_values=n_values)
+    return sigma_values_from_distance_distribution(
+        distances,
+        n_values=n_values,
+        lower_quantile=lower_quantile,
+        upper_quantile=upper_quantile,
+    )
