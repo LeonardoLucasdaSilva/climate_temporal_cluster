@@ -172,3 +172,4 @@ Thumbs.db
 # Node (if using any JS tools)
 node_modules/
 npm-debug.log
+forecast_horizon_proof.tex
