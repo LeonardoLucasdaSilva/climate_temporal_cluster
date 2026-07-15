@@ -1108,6 +1108,7 @@ def train_cluster_models(
     lstm_units_2: int,
     dropout_rate: float,
     learning_rate: float,
+    weight_decay: float,
     epochs: int,
     batch_size: int,
     early_stopping: bool,
@@ -1205,6 +1206,7 @@ def train_cluster_models(
             lstm_units_2=lstm_units_2,
             dropout_rate=dropout_rate,
             learning_rate=learning_rate,
+            weight_decay=weight_decay,
             random_state=random_state,
             loss_function=lstm_loss_function,
             loss_quantile_thresholds_mm=loss_thresholds,
@@ -1264,9 +1266,9 @@ def train_cluster_models(
         )
 
     (
-        y_pred_test_selected,
-        y_pred_test_by_lead_day_selected,
-        selected_metrics_by_cluster,
+        _y_pred_test_selected,
+        _y_pred_test_by_lead_day_selected,
+        _selected_metrics_by_cluster,
         test_model_selection,
     ) = evaluate_test_samples_with_all_models(
         models_by_cluster,
@@ -1280,7 +1282,7 @@ def train_cluster_models(
 
     selection_summary = dict(test_model_selection["summary"])
     print_info(
-        "  Per-sample test model selection "
+        "  Oracle cross-cluster transfer diagnostic "
         f"({selection_summary['primary_metric']} primary): "
         f"{selection_summary['switched_samples']} of "
         f"{selection_summary['n_test_samples']} samples switched models",
@@ -1290,10 +1292,10 @@ def train_cluster_models(
     return (
         y_pred_train,
         y_pred_val,
-        y_pred_test_selected,
-        y_pred_test_by_lead_day_selected,
+        y_pred_test,
+        y_pred_test_by_lead_day,
         histories_by_cluster,
-        selected_metrics_by_cluster,
+        metrics_by_cluster,
         test_model_selection,
     )
 
@@ -1317,6 +1319,7 @@ def run_configuration(
     lstm_units_2: int,
     dropout_rate: float,
     learning_rate: float,
+    weight_decay: float,
     epochs: int,
     batch_size: int,
     early_stopping: bool,
@@ -1418,11 +1421,12 @@ def run_configuration(
         "output_units": forecast_horizon,
         "dropout_rate": dropout_rate,
         "learning_rate": learning_rate,
+        "weight_decay": weight_decay,
         "epochs": epochs,
         "batch_size": batch_size,
         "early_stopping": early_stopping,
         "patience": patience,
-        "optimizer": "Adam",
+        "optimizer": "AdamW",
         "loss": lstm_loss_function,
         "loss_quantiles": list(loss_quantiles),
         "loss_quantile_weights": loss_quantile_weights,
@@ -1457,6 +1461,7 @@ def run_configuration(
         lstm_units_2=lstm_units_2,
         dropout_rate=dropout_rate,
         learning_rate=learning_rate,
+        weight_decay=weight_decay,
         epochs=epochs,
         batch_size=batch_size,
         early_stopping=early_stopping,
@@ -1506,6 +1511,7 @@ def run_configuration(
             "Validation": (X_val, c_val),
             "Test": (X_test, c_test),
         },
+        batch_size=batch_size,
     )
     tex_path, pdf_path = generate_config_report(output_dir, report_config)
     print_info(f"  Report: {tex_path.name}", show_console_info)
@@ -1558,6 +1564,7 @@ def run_experiment(
     forecast_horizon: int = 1,
     manual_zero_tolerance: float = 0.0,
     test_all_models: bool = True,
+    weight_decay: float = 0.0,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
     clustering_algorithm = clustering_algorithm.lower()
@@ -1581,6 +1588,10 @@ def run_experiment(
         raise ValueError("forecast_horizon must be positive.")
     if manual_zero_tolerance < 0:
         raise ValueError("manual_zero_tolerance cannot be negative.")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive.")
+    if not np.isfinite(weight_decay) or weight_decay < 0:
+        raise ValueError("weight_decay must be a finite non-negative value.")
 
     timestamp = datetime.now().strftime(timestamp_format)
     if sweep_name is None:
@@ -1656,6 +1667,11 @@ def run_experiment(
         show_console_info,
     )
     print_info(f"LSTM loss: {lstm_loss_function}", show_console_info)
+    print_info(
+        f"Optimizer: AdamW (learning_rate={learning_rate:g}, "
+        f"weight_decay={weight_decay:g})",
+        show_console_info,
+    )
     print_info(f"Configurations: {len(configurations)}", show_console_info)
     for config in configurations:
         print_info(f"  - {config.name}: {asdict(config)}", show_console_info)
@@ -1683,6 +1699,7 @@ def run_experiment(
                 lstm_units_2=lstm_units_2,
                 dropout_rate=dropout_rate,
                 learning_rate=learning_rate,
+                weight_decay=weight_decay,
                 epochs=epochs,
                 batch_size=batch_size,
                 early_stopping=early_stopping,

@@ -78,7 +78,8 @@ Change experiment variables in `run_experiment.py`:
 - test evaluation mode: `TEST_ALL_MODELS`
 - exported table metrics: `QUANTITATIVE_METRICS`
 - model hyperparameters: `LSTM_UNITS`, `LSTM_UNITS_2`, `DROPOUT_RATE`,
-  `LEARNING_RATE`
+  `LEARNING_RATE`, `WEIGHT_DECAY`; the optimizer is AdamW and
+  `WEIGHT_DECAY` controls its decoupled parameter decay
 - LSTM loss: `LSTM_LOSS_FUNCTION`, `LOSS_QUANTILES`,
   `LOSS_QUANTILE_WEIGHTS`. Use `"quantile_weighted_mse"` to calculate
   cluster-specific precipitation thresholds from training-target quantiles in
@@ -117,11 +118,11 @@ Set `SHOW_CONSOLE_INFO = False` to hide pipeline progress messages and Keras
 training output. The root `run_experiments.py` launcher has the same setting and
 passes it to this runner through `LSTM_CLUSTER_SHOW_CONSOLE_INFO`.
 
-Set `TEST_ALL_MODELS = False` to use the original test behavior where each
-test sample is predicted only by the LSTM trained on its own cluster. Set
-`TEST_ALL_MODELS = True` to evaluate every test sample with every trained LSTM,
-choose the best model per sample and metric, and save the extra model-selection
-diagnostics.
+Set `TEST_ALL_MODELS = False` to skip the additional transfer analysis. Set
+`TEST_ALL_MODELS = True` to evaluate every test sample with every trained LSTM
+after the ordinary same-cluster prediction. The best model per sample and
+metric is chosen only for the extra oracle diagnostic; it never changes the
+primary test result.
 
 ## Outputs
 
@@ -139,8 +140,32 @@ The sweep folder contains summary CSV/text files and LaTeX tables. Each
 configuration subfolder contains run metrics, predictions, reports, and plots.
 Output writing is handled by `data.lstm_outputs`.
 
-When `TEST_ALL_MODELS = True`, each configuration also includes cross-cluster
-test model selection artifacts:
+When `TEST_ALL_MODELS = True`, each configuration also includes an
+**Análise de transferência entre clusters**. It is explicitly separated from
+the honest same-cluster result:
+
+- `test_predictions.csv` and `test_predictions_same_cluster.csv`: primary
+  same-cluster predictions used by metrics and ordinary plots.
+- `test_predictions_oracle_selection.csv`: post-hoc oracle prediction for
+  comparison only.
+- `oracle_model_selection_matrix.csv`: rows are assigned test clusters and
+  columns are oracle-selected LSTMs.
+- `oracle_cluster_routing_summary.csv`: per assigned test cluster, counts how
+  often the oracle leaves the assigned LSTM and how much MAE/RMSE would improve.
+- `oracle_cluster_pair_summary.csv`: per `assigned cluster -> oracle LSTM`
+  pair, quantifies frequency and average error gain.
+- `oracle_vs_same_cluster_summary.txt`: concise interpretation of the routing
+  diagnostic.
+- `prediction_overview_same_cluster/`: primary prediction plot.
+- `oracle_model_selection_diagnostics/`: explicitly labelled oracle plots,
+  including the transfer matrix, switch-rate plot, same-vs-oracle MAE by
+  assigned cluster, and per-window error-improvement distribution.
+- `oracle_model/`: the same complete plot tree generated for the ordinary
+  result, but using the per-window oracle-selected prediction. This folder is
+  created only when `TEST_ALL_MODELS = True`; its cluster groupings remain the
+  original assignments so they can be compared directly with the main plots.
+
+The existing detailed files remain available:
 
 - `test_model_comparison.csv`: errors for every test-sample/model-cluster
   pairing.
@@ -153,8 +178,8 @@ test model selection artifacts:
   paired bootstrap interval for squared-error improvement.
 
 The model selection is performed on the test split at sample level, so this
-report should be read as an oracle-style diagnostic for cross-cluster transfer
-and not as an unbiased estimate of future performance.
+analysis should be read as an oracle-style diagnostic for cross-cluster
+transfer and not as an unbiased estimate of future performance.
 
 Because the selection unit is one scalar target, MSE, RMSE, MAE, and MAPE
 usually choose the same model for a sample: for a fixed observed precipitation
@@ -166,20 +191,28 @@ Each configuration folder also gets `experiment_report.tex`. Its
 `Configuration` section includes the selected covariate scaler, precipitation
 scaler, and target scale for that run. Predictions are inverse-transformed to
 millimeters before metrics and plots. When all-model test selection is enabled,
-this report includes a compact `Test Model Selection` section showing changed
-sample counts and metric improvements. If a local LaTeX compiler is
-available, the pipeline also writes `experiment_report.pdf`; if PDF compilation
-fails, `experiment_report_compile.log` is saved for troubleshooting.
+this report includes an `Análise de transferência entre clusters` section that
+labels the result as oracle-only and shows the routing matrix. If a local LaTeX
+compiler is available, the pipeline also writes `experiment_report.pdf`; if PDF
+compilation fails, `experiment_report_compile.log` is saved for troubleshooting.
 
-Each configuration also groups generated images by purpose. General prediction
-plots go under `prediction_overview/`, split time-series plots under
+Each configuration also groups generated images by purpose. General
+same-cluster prediction plots go under `prediction_overview_same_cluster/`,
+while oracle-only transfer plots go under
+`oracle_model_selection_diagnostics/`. When enabled, `oracle_model/` mirrors
+the complete normal plot structure with oracle-selected predictions. Split
+time-series plots go under
 `prediction_timeseries_splits/lead_day_XX/` with four sequential test plots per
 forecast lead day and date-formatted x-axis labels from the source dataset,
 residual/error plots under `residual_diagnostics/`, cluster diagnostics under
 `cluster_diagnostics/`, and training curves under
 `model_fit/`. The cluster diagnostics include `08_silhouette_analysis.png` and
 `silhouette_scores.csv`, computed from the same split feature matrices and
-cluster labels used by the current pipeline. Existing per-cluster collections
+cluster labels used by the current pipeline. The
+`06_cluster_distribution.png` diagnostic compares train, validation, and test
+sample counts and displays `n_train` plus `ceil(n_train / batch_size)` for each
+cluster; exact values are also written to
+`cluster_training_batch_statistics.csv`. Existing per-cluster collections
 remain in folders such as
 `cluster_precipitation_histograms/`,
 `cluster_prediction_histograms/`, `cluster_prediction_timeseries/`, and
