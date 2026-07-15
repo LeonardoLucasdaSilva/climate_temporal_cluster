@@ -11,6 +11,10 @@ This folder contains clustering algorithms used by the project.
 - `ng.py`: custom spectral clustering implementation. It builds a
   Gaussian affinity matrix, normalizes it, extracts the largest eigenvectors,
   row-normalizes the embedding, and clusters that embedding.
+- `eigengap.py`: standalone multi-window eigengap analysis. It builds the same
+  normalized Gaussian affinity graph, plots the first 20 leading-eigenvalue
+  gaps for each window size, highlights the largest gap, and reports its
+  heuristic cluster-count recommendation in the console.
 - `manual.py`: horizon-rain-guided clustering. It reserves cluster `0` for
   windows with a known zero-rain horizon, divides known rainy horizons into
   `k - 1` ordered groups from lower to heavier rain, and assigns windows with
@@ -128,3 +132,34 @@ Requirements and behavior:
 The learned `rain_ranges_` maps each label to the minimum and maximum known
 precipitation used for that cluster. `centroids_` stores the corresponding
 feature-space centroids.
+
+## Eigengap analysis
+
+Edit the defaults at the top of `eigengap.py` or pass window sizes directly:
+
+```powershell
+cluster-eigengap --state RS --station-id A801 --window-sizes 5 10 15 --sigma 1.0 --scaler-type standard --precipitation-scaler none --train-ratio 0.6
+```
+
+Eigengap preprocessing mirrors the LSTM+cluster pipeline: it takes the same
+chronological training fraction, fits the selected covariate scaler on those
+training rows, handles `PRECIPITACAO_TOTAL` with its own optional scaler, builds
+flattened windows, and optionally fits PCA on the training windows. Keep
+`SCALER_TYPE`, `PRECIPITATION_SCALER`, `TRAIN_RATIO`, and
+`PCA_VARIANCE_THRESHOLD` aligned between `eigengap.py` and
+`lstm_cluster/run_experiment.py`. The equivalent CLI options are
+`--scaler-type`, `--precipitation-scaler`, `--train-ratio`, and
+`--pca-variance-threshold`.
+
+For every window size, the command saves
+`eigengaps_window_<WINDOW_SIZE>.png` under the configured output directory.
+Gap `k` is defined as `lambda_k - lambda_(k+1)` after sorting the normalized
+affinity eigenvalues from largest to smallest. The largest of the first 20
+gaps is highlighted and `k` is reported as the heuristic number of clusters.
+The result is sensitive to the Gaussian affinity bandwidth, so record and
+compare `--sigma` when interpreting different runs. The affinity matrix is
+dense and requires memory proportional to the square of the number of windows;
+large station histories can therefore require substantial memory. If `sigma`
+is so small that the affinity graph has no usable edges, the runner prints a
+degeneracy warning, marks the recommendation as `N/A`, saves an annotated plot,
+and continues with the remaining window sizes.

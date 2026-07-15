@@ -212,6 +212,31 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
     ]
     if "normalize" in config_map:
         rows.append(("Normalize", config_map.get("normalize")))
+    if (
+        "pca_variance_threshold" in config_map
+        or "pca_for_clustering_only" in config_map
+    ):
+        pca_variance_threshold = config_map.get("pca_variance_threshold")
+        rows.append(
+            (
+                "PCA Variance Threshold",
+                pca_variance_threshold
+                if pca_variance_threshold is not None
+                else "not used",
+            )
+        )
+        rows.append(
+            (
+                "PCA Mode",
+                "disabled"
+                if pca_variance_threshold is None
+                else (
+                    "clustering only"
+                    if config_map.get("pca_for_clustering_only")
+                    else "clustering and LSTM"
+                ),
+            )
+        )
     covariate_scaler = configured_scaler_summary(config_map, "scaler_type")
     if covariate_scaler is not None:
         rows.append(("Covariate Scaler", covariate_scaler))

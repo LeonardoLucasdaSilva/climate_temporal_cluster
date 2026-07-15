@@ -45,7 +45,9 @@ Or use the root launcher:
 5. Fit the selected covariate normalizer (`SCALER_TYPE`), optional
    precipitation normalizer (`PRECIPITATION_SCALER`), and PCA on training
    rows/windows only, then transform validation and test with those training
-   transforms.
+   transforms. With `PCA_FOR_CLUSTERING_ONLY = True`, retain the pre-PCA
+   flattened windows for LSTM inputs and use PCA coordinates only for cluster
+   fitting and held-out cluster assignment.
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
    calculate training-cluster centroids, then assign validation and test
    windows to the nearest existing centroid.
@@ -72,6 +74,9 @@ Change experiment variables in `run_experiment.py`:
 - clustering sweep: `WINDOW_SIZES`, `N_CLUSTERS_LIST`,
   `CLUSTERING_ALGORITHM`, `FORECAST_HORIZON`, `MANUAL_ZERO_TOLERANCE`,
   `SIGMA_MODE`, `N_SIGMA_VALUES`, `MANUAL_SIGMA_VALUES`, `USE_ALL_FEATURES`
+- dimensionality reduction: `PCA_VARIANCE_THRESHOLD` enables PCA and
+  `PCA_FOR_CLUSTERING_ONLY` limits it to clustering while preserving the
+  original flattened-window dimensionality for LSTM inputs
 - normalization: `NORMALIZE`, `SCALER_TYPE` for covariates and
   `PRECIPITATION_SCALER` for `PRECIPITACAO_TOTAL` plus the LSTM target;
   supported values are `"standard"`, `"minmax"`, and `None`
@@ -88,6 +93,39 @@ Change experiment variables in `run_experiment.py`:
 - data split: `TRAIN_RATIO`, `VAL_RATIO`, `RANDOM_STATE`
 - output and plot styling settings: `OUTPUT_CONFIG`, with details in
   `config_output.yaml`
+
+### PCA modes
+
+Configure PCA with `PCA_VARIANCE_THRESHOLD` and
+`PCA_FOR_CLUSTERING_ONLY` in `run_experiment.py`.
+
+To run without PCA, set the variance threshold to `None`. The clustering
+algorithms and LSTM models will both receive the original flattened-window
+features:
+
+```python
+PCA_VARIANCE_THRESHOLD = None
+PCA_FOR_CLUSTERING_ONLY = False  # Ignored while PCA is disabled
+```
+
+To apply PCA only during clustering, provide an explained-variance threshold
+between `0` and `1` and enable clustering-only mode. Clustering uses the PCA
+coordinates, while the LSTM inputs retain the original flattened-window
+dimensionality:
+
+```python
+PCA_VARIANCE_THRESHOLD = 0.90
+PCA_FOR_CLUSTERING_ONLY = True
+```
+
+To apply PCA to both clustering and LSTM inputs, provide an explained-variance
+threshold and disable clustering-only mode. Both stages receive the same
+PCA-transformed features:
+
+```python
+PCA_VARIANCE_THRESHOLD = 0.90
+PCA_FOR_CLUSTERING_ONLY = False
+```
 
 Change output naming and generated figure styling in `config_output.yaml`.
 The `plot_style.seaborn` section controls the Seaborn theme and palette, while
@@ -138,6 +176,8 @@ The daily folder is controlled by `group_outputs_by_day` and
 The sweep folder contains summary CSV/text files and LaTeX tables. Each
 configuration subfolder contains run metrics, predictions, reports, and plots.
 Output writing is handled by `data.lstm_outputs`.
+The sweep-level `sweep_summary.txt` records the PCA variance threshold and PCA
+mode (`disabled`, `clustering only`, or `clustering and LSTM`) for the run.
 
 When `TEST_ALL_MODELS = True`, each configuration also includes cross-cluster
 test model selection artifacts:
@@ -163,13 +203,15 @@ RMSLE can differ because it ranks closeness after applying the logarithmic
 transform.
 
 Each configuration folder also gets `experiment_report.tex`. Its
-`Configuration` section includes the selected covariate scaler, precipitation
-scaler, and target scale for that run. Predictions are inverse-transformed to
-millimeters before metrics and plots. When all-model test selection is enabled,
-this report includes a compact `Test Model Selection` section showing changed
-sample counts and metric improvements. If a local LaTeX compiler is
-available, the pipeline also writes `experiment_report.pdf`; if PDF compilation
-fails, `experiment_report_compile.log` is saved for troubleshooting.
+`Configuration` section includes the PCA variance threshold, PCA mode
+(`disabled`, `clustering only`, or `clustering and LSTM`), selected covariate
+scaler, precipitation scaler, and target scale for that run. Predictions are
+inverse-transformed to millimeters before metrics and plots. When all-model
+test selection is enabled, this report includes a compact `Test Model
+Selection` section showing changed sample counts and metric improvements. If a
+local LaTeX compiler is available, the pipeline also writes
+`experiment_report.pdf`; if PDF compilation fails,
+`experiment_report_compile.log` is saved for troubleshooting.
 
 Each configuration also groups generated images by purpose. General prediction
 plots go under `prediction_overview/`, split time-series plots under

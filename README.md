@@ -101,12 +101,29 @@ STATE = "RS"
 STATION_ID = "A801"
 WINDOW_SIZES = [8, 12, 16, 20, 24, 28]
 N_CLUSTERS_LIST = [3, 4, 5]
+PCA_VARIANCE_THRESHOLD = 0.90  # None disables PCA
+PCA_FOR_CLUSTERING_ONLY = True
 CLUSTERING_ALGORITHM = "spectral"  # "kmeans", "spectral", or "manual"
 FORECAST_HORIZON = 1
 N_SIGMA_VALUES = 5
 TEST_ALL_MODELS = True
 SHOW_CONSOLE_INFO = True
 ```
+
+### PCA configuration modes
+
+Set `PCA_VARIANCE_THRESHOLD` and `PCA_FOR_CLUSTERING_ONLY` in
+`src/methods/lstm_cluster/run_experiment.py` according to the desired pipeline:
+
+| Mode | `PCA_VARIANCE_THRESHOLD` | `PCA_FOR_CLUSTERING_ONLY` | Features used by the LSTM |
+| --- | --- | --- | --- |
+| No PCA | `None` | `False` (ignored) | Original flattened windows |
+| PCA only for clustering | A value between `0` and `1`, such as `0.90` | `True` | Original flattened windows |
+| PCA for clustering and LSTM | A value between `0` and `1`, such as `0.90` | `False` | PCA-transformed windows |
+
+PCA is always fitted on training windows only. Validation and test windows use
+the fitted training transform. See
+`src/methods/lstm_cluster/lstm_cluster.md` for complete configuration examples.
 
 For each configuration, the experiment runs these stages:
 
@@ -121,6 +138,8 @@ For each configuration, the experiment runs these stages:
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
    calculate training-cluster centroids, then assign validation and test
    windows to the nearest existing centroid.
+   With `PCA_FOR_CLUSTERING_ONLY = True`, clustering uses PCA coordinates while
+   each LSTM receives the retained pre-PCA flattened window features.
 7. Create one precipitation target column per lead day from D+1 through the
    configured forecast horizon inside each split.
 8. When `PRECIPITATION_SCALER` is set, normalize the LSTM target matrix, train
@@ -262,6 +281,33 @@ It contains:
 - `sigma_values_from_distance_distribution`
 - `calculate_sigma_values`
 
+## Eigengap Cluster-Count Analysis
+
+The standalone eigengap command evaluates multiple sliding-window sizes using
+the same normalized Gaussian affinity graph as spectral clustering:
+
+```powershell
+cluster-eigengap --state RS --station-id A801 --window-sizes 5 10 15 --sigma 1.0 --scaler-type standard --precipitation-scaler none --train-ratio 0.6
+```
+
+It saves one plot per window size with the first 20 eigengaps, highlights the
+largest gap, and prints the suggested cluster count and gap value for every
+configured window. The heuristic uses
+`gap(k) = lambda_k - lambda_(k+1)` on eigenvalues sorted from largest to
+smallest. Because results depend on the Gaussian bandwidth, configure and
+record `--sigma` for each analysis. More options and assumptions are documented
+in `src/methods/cluster/cluster.md`. A bandwidth that produces a degenerate
+affinity matrix is reported explicitly; its recommendation is marked `N/A` and
+the remaining window sizes continue to run.
+
+Its feature preprocessing matches the LSTM+cluster pipeline: scalers are fitted
+only on the chronological training fraction, covariates and precipitation use
+their separately configured scalers, and PCA is optionally fitted after window
+flattening. Keep the eigengap `SCALER_TYPE`, `PRECIPITATION_SCALER`,
+`TRAIN_RATIO`, and `PCA_VARIANCE_THRESHOLD` values synchronized with
+`src/methods/lstm_cluster/run_experiment.py` when comparing recommendations
+with an experiment.
+
 ## Clustering
 
 Cluster dispatch lives in
@@ -385,6 +431,10 @@ Sweep-level files:
 - `overleaf_table.txt`
 - `overleaf_cluster_metric_tables.txt`
 
+`sweep_summary.txt` records the PCA variance threshold and whether PCA was
+disabled, applied only to clustering, or applied to both clustering and LSTM
+inputs. The best-configuration section also includes these PCA fields.
+
 Each configuration folder contains:
 
 - `metrics_summary.csv`
@@ -427,9 +477,10 @@ Each configuration folder contains:
   plot legends
 
 The `Configuration` section of `experiment_report.tex` and the compiled PDF
-record the run's selected covariate scaler, precipitation scaler, and LSTM
-target scale. Predictions are inverse-transformed to millimeters before metrics
-and plots.
+record the run's PCA variance threshold, PCA mode (`disabled`, `clustering
+only`, or `clustering and LSTM`), selected covariate scaler, precipitation
+scaler, and LSTM target scale. Predictions are inverse-transformed to
+millimeters before metrics and plots.
 
 Metrics include:
 

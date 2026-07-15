@@ -16,9 +16,10 @@ STATION_ID = "A801"
 
 # Clustering sweep
 
-WINDOW_SIZES = [15,25,30]
-N_CLUSTERS_LIST = [5]
-PCA_VARIANCE_THRESHOLD = None
+WINDOW_SIZES = [15]
+N_CLUSTERS_LIST = [3]
+PCA_VARIANCE_THRESHOLD = None  # None disables PCA; otherwise, a float between 0 and 1
+PCA_FOR_CLUSTERING_ONLY = True  # Keep pre-PCA window features as LSTM inputs
 NORMALIZE = True
 SCALER_TYPE = "standard"  # Covariates: "standard" or "minmax"; ignored when NORMALIZE=False
 PRECIPITATION_SCALER = None  # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
@@ -73,6 +74,7 @@ def main() -> None:
         scaler_type=SCALER_TYPE,
         precipitation_scaler_type=PRECIPITATION_SCALER,
         variance_threshold=PCA_VARIANCE_THRESHOLD,
+        pca_for_clustering_only=PCA_FOR_CLUSTERING_ONLY,
         n_clusters_list=N_CLUSTERS_LIST,
         clustering_algorithm=CLUSTERING_ALGORITHM,
         n_sigma_values=N_SIGMA_VALUES,
