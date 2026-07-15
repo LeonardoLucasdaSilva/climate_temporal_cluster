@@ -59,9 +59,10 @@ Or use the root launcher:
    target matrix.
 9. Keep train and validation predictions tied to each sample's own cluster
    model.
-10. Evaluate test samples with either their own cluster model only or, when
-   `TEST_ALL_MODELS = True`, every trained cluster model with per-metric sample
-   selection.
+10. Predict each test sample with the LSTM trained for its assigned cluster.
+   When `TEST_ALL_MODELS = True`, additionally evaluate every trained cluster
+   LSTM as an oracle-only transfer diagnostic; this never replaces the primary
+   predictions, metrics, or plots.
 11. Save metrics, reports, plots, predictions, and LaTeX tables.
 
 ## Configuration

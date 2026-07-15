@@ -16,8 +16,8 @@ STATION_ID = "A801"
 
 # Clustering sweep
 
-WINDOW_SIZES = [15,25,30]
-N_CLUSTERS_LIST = [5]
+WINDOW_SIZES = [20,30,45]
+N_CLUSTERS_LIST = [5,7,9]
 PCA_VARIANCE_THRESHOLD = None
 NORMALIZE = True
 SCALER_TYPE = "standard"  # Covariates: "standard" or "minmax"; ignored when NORMALIZE=False
@@ -32,18 +32,23 @@ FORECAST_HORIZON = 5
 # Metrics exported to compact comparison tables
 QUANTITATIVE_METRICS = ["MSE"]
 
+# Optional oracle diagnostic: evaluates every test window with every cluster LSTM.
+# It never replaces the same-cluster test metrics or the main plots.
+TEST_ALL_MODELS = True
+
 # Model hyperparameters
-LSTM_UNITS = 256
-LSTM_UNITS_2 = 128
-DROPOUT_RATE = 0.0
+LSTM_UNITS = 32
+LSTM_UNITS_2 = 16
+DROPOUT_RATE = 0.1
 LEARNING_RATE = 0.001
+WEIGHT_DECAY = 1e-4  # Decoupled weight decay used by AdamW
 LSTM_LOSS_FUNCTION = "quantile_weighted_mse"  # "mean_squared_error", "mae", "huber", or "quantile_weighted_mse"
-LOSS_QUANTILES = [0.99]
+LOSS_QUANTILES = [0.9]
 LOSS_QUANTILE_WEIGHTS = "auto"  # "auto" or one positive weight per quantile bin
 
 # Training settings
 EPOCHS = 250
-BATCH_SIZE = 8
+BATCH_SIZE = 64
 EARLY_STOPPING = True
 PATIENCE = 50
 VERBOSE_TRAINING = 1
@@ -84,6 +89,8 @@ def main() -> None:
         lstm_units_2=LSTM_UNITS_2,
         dropout_rate=DROPOUT_RATE,
         learning_rate=LEARNING_RATE,
+        test_all_models=TEST_ALL_MODELS,
+        weight_decay=WEIGHT_DECAY,
         epochs=EPOCHS,
         batch_size=BATCH_SIZE,
         early_stopping=EARLY_STOPPING,

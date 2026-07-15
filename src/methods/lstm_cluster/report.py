@@ -54,14 +54,25 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
     ),
     ("Model Fit", ("model_fit/01_training_history_cluster_*.png", "01_training_history_cluster_*.png")),
     (
-        "Predictions",
+        "Predictions (Same-cluster Routing)",
         (
-            "prediction_overview/02_predictions_vs_actual.png",
+            "prediction_overview_same_cluster/02_predictions_vs_actual.png",
             "residual_diagnostics/03_residuals_analysis.png",
             "residual_diagnostics/04_error_by_magnitude.png",
+            "prediction_overview/02_predictions_vs_actual.png",
             "02_predictions_vs_actual.png",
             "03_residuals_analysis.png",
             "04_error_by_magnitude.png",
+        ),
+    ),
+    (
+        "Oracle Transfer Diagnostics",
+        (
+            "oracle_model_selection_diagnostics/01_oracle_predictions_vs_actual.png",
+            "oracle_model_selection_diagnostics/02_oracle_model_transfer_matrix.png",
+            "oracle_model_selection_diagnostics/03_oracle_switch_rate_by_assigned_cluster.png",
+            "oracle_model_selection_diagnostics/04_oracle_mae_by_assigned_cluster.png",
+            "oracle_model_selection_diagnostics/05_oracle_error_improvement_distribution.png",
         ),
     ),
     (
@@ -274,6 +285,7 @@ def lstm_configs_list(config: object | Mapping[str, object] | None) -> str:
     hyperparameter_rows = [
         ("Dropout rate", config_map.get("dropout_rate")),
         ("Learning rate", config_map.get("learning_rate")),
+        ("Weight decay", config_map.get("weight_decay")),
         ("Epochs", config_map.get("epochs")),
         ("Batch size", config_map.get("batch_size")),
         ("Early stopping", config_map.get("early_stopping")),
@@ -363,7 +375,7 @@ def cluster_metrics_table(csv_path: Path) -> str:
 
 
 def test_model_selection_section(output_dir: Path) -> str:
-    """Return a compact section describing optional all-model test selection."""
+    """Return the optional oracle diagnostic for cross-cluster transfer."""
     summary_path = output_dir / "test_model_metric_summary.csv"
     if not summary_path.exists():
         return ""
@@ -394,22 +406,76 @@ def test_model_selection_section(output_dir: Path) -> str:
         )
 
     paragraph = (
-        "Test samples were optionally evaluated by every trained cluster model. "
-        "The table reports how many samples changed model and the metric change "
-        "relative to the original same-cluster test prediction. Positive changes "
-        "mean lower error, except for R2 where positive means higher R2. Because "
-        "selection happens one scalar sample at a time, MSE, RMSE, MAE, and MAPE "
-        "usually select the same model; they are all monotonic with absolute "
-        "prediction error for a fixed target. RMSLE can differ because it ranks "
-        "distance on the log scale."
+        "The main test metrics, predictions, and plots use only the LSTM trained "
+        "for the cluster assigned to each window. Separately, this oracle "
+        "diagnostic evaluates every test window with every trained cluster model "
+        "and selects the winner after observing the true test target. It therefore "
+        "does not estimate future performance, but shows whether strong candidate "
+        "predictions existed and routing between clusters may be the limiting step. "
+        "Positive error changes mean lower error, except for R2 where positive "
+        "means higher R2."
     )
-    return "\n".join(
-        [
-            r"\section*{Test Model Selection}",
-            latex_escape(paragraph),
-            dataframe_table(pd.DataFrame(rows), "Per-Sample Selection Summary"),
+    lines = [
+        r"\section*{Análise de transferência entre clusters}",
+        latex_escape(paragraph),
+        dataframe_table(pd.DataFrame(rows), "Oracle vs. Same-cluster Summary"),
+    ]
+    matrix_path = output_dir / "oracle_model_selection_matrix.csv"
+    if matrix_path.exists():
+        transfer_matrix = pd.read_csv(matrix_path)
+        if not transfer_matrix.empty:
+            lines.append(
+                dataframe_table(
+                    transfer_matrix,
+                    "Oracle Transfer Matrix (rows: assigned cluster; columns: selected LSTM)",
+                )
+            )
+    cluster_summary_path = output_dir / "oracle_cluster_routing_summary.csv"
+    if cluster_summary_path.exists():
+        cluster_summary = pd.read_csv(cluster_summary_path)
+        wanted = [
+            column
+            for column in (
+                "assigned_test_cluster",
+                "n_test",
+                "oracle_switched_percent",
+                "same_cluster_mae",
+                "oracle_mae",
+                "mae_improvement",
+                "rmse_improvement",
+            )
+            if column in cluster_summary.columns
         ]
-    )
+        if wanted and not cluster_summary.empty:
+            lines.append(
+                dataframe_table(
+                    cluster_summary[wanted],
+                    "Oracle Routing Summary by Assigned Cluster",
+                )
+            )
+    pair_summary_path = output_dir / "oracle_cluster_pair_summary.csv"
+    if pair_summary_path.exists():
+        pair_summary = pd.read_csv(pair_summary_path)
+        wanted = [
+            column
+            for column in (
+                "assigned_test_cluster",
+                "oracle_selected_model_cluster",
+                "n_test",
+                "percent_of_assigned_cluster",
+                "mae_improvement",
+                "mean_squared_error_improvement",
+            )
+            if column in pair_summary.columns
+        ]
+        if wanted and not pair_summary.empty:
+            lines.append(
+                dataframe_table(
+                    pair_summary[wanted],
+                    "Oracle Routing Summary by Transfer Pair",
+                )
+            )
+    return "\n".join(lines)
 
 
 def forecast_horizon_section(output_dir: Path) -> str:
