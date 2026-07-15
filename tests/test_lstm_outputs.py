@@ -16,6 +16,7 @@ from data.lstm_outputs import (
     compressed_time_positions,
     save_cluster_silhouette_plot,
     save_cluster_prediction_scatters,
+    save_cluster_prediction_timeseries,
     save_forecast_horizon_diagnostics,
     save_forecast_lead_day_diagnostics,
     save_prediction_timeseries_splits,
@@ -50,43 +51,34 @@ class LstmOutputTests(unittest.TestCase):
         )
         output_dir.mkdir()
 
-        def fake_savefig(
-            _figure: object,
-            path: object,
-            *_args: object,
-            **_kwargs: object,
-        ) -> None:
-            Path(path).write_bytes(b"plot")
-
         try:
-            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
-                summary = save_forecast_horizon_diagnostics(
-                    y_train=np.array([1.0, 3.0]),
-                    y_val=np.array([2.0]),
-                    y_test=np.array([4.0, 0.0, 3.0]),
-                    current_train=np.array([0.0, 2.0]),
-                    current_val=np.array([1.0]),
-                    current_test=np.array([2.0, 1.0, 3.0]),
-                    y_pred_test=np.array([3.5, 0.2, 2.5]),
-                    c_test=np.array([0, 1, 0]),
-                    train_indices=np.array([0, 1]),
-                    val_indices=np.array([10]),
-                    test_indices=np.array([20, 21, 22]),
-                    output_dir=output_dir,
-                    forecast_horizon=2,
-                )
+            summary = save_forecast_horizon_diagnostics(
+                y_train=np.array([1.0, 3.0]),
+                y_val=np.array([2.0]),
+                y_test=np.array([4.0, 0.0, 3.0]),
+                current_train=np.array([0.0, 2.0]),
+                current_val=np.array([1.0]),
+                current_test=np.array([2.0, 1.0, 3.0]),
+                y_pred_test=np.array([3.5, 0.2, 2.5]),
+                c_test=np.array([0, 1, 0]),
+                train_indices=np.array([0, 1]),
+                val_indices=np.array([10]),
+                test_indices=np.array([20, 21, 22]),
+                output_dir=output_dir,
+                forecast_horizon=2,
+            )
 
             diag_dir = output_dir / "forecast_horizon_diagnostics"
             self.assertTrue(
                 (diag_dir / "forecast_horizon_behavior_report.txt").exists()
             )
-            self.assertTrue(
+            self.assertFalse(
                 (diag_dir / "09_current_vs_forecast_horizon_by_split.png").exists()
             )
-            self.assertTrue(
+            self.assertFalse(
                 (diag_dir / "10_test_current_target_prediction_timeseries.png").exists()
             )
-            self.assertTrue(
+            self.assertFalse(
                 (diag_dir / "11_test_current_vs_horizon_by_cluster.png").exists()
             )
 
@@ -369,6 +361,59 @@ class LstmOutputTests(unittest.TestCase):
                 str(captured["lead_day_02"]["xdata"][0])[:10],
                 "2025-01-06",
             )
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_cluster_prediction_timeseries_uses_target_dates_for_x_axis(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_prediction_timeseries_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+        captured: dict[str, object] = {}
+
+        def fake_savefig(
+            figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            plot_path = Path(path)
+            actual_axis, residual_axis = figure.axes
+            formatter = residual_axis.xaxis.get_major_formatter()
+            captured["xlabel"] = residual_axis.get_xlabel()
+            captured["formatted"] = formatter(
+                mdates.date2num(pd.Timestamp("2025-01-05").to_pydatetime())
+            )
+            captured["xdata"] = actual_axis.lines[0].get_xdata()
+            plot_path.write_bytes(b"plot")
+
+        try:
+            target_dates = np.array(
+                ["2025-01-05", "2025-01-12", "2025-01-20"],
+                dtype="datetime64[ns]",
+            )
+
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                save_cluster_prediction_timeseries(
+                    y_test=np.array([1.0, 2.0, 4.0]),
+                    y_pred_test=np.array([0.8, 2.2, 3.7]),
+                    c_test=np.array([0, 0, 0]),
+                    test_indices=np.array([10, 20, 30]),
+                    output_dir=output_dir,
+                    test_dates=target_dates,
+                )
+
+            plot_path = (
+                output_dir
+                / "cluster_prediction_timeseries"
+                / "cluster_0_prediction_timeseries.png"
+            )
+            self.assertTrue(plot_path.exists())
+            self.assertEqual(captured["xlabel"], "Target Date")
+            self.assertEqual(captured["formatted"], "05/01/2025")
+            self.assertEqual(str(captured["xdata"][0])[:10], "2025-01-05")
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
 

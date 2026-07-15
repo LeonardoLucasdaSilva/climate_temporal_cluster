@@ -40,9 +40,6 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
     (
         "Forecast Horizon Diagnostics",
         (
-            "forecast_horizon_diagnostics/09_current_vs_forecast_horizon_by_split.png",
-            "forecast_horizon_diagnostics/10_test_current_target_prediction_timeseries.png",
-            "forecast_horizon_diagnostics/11_test_current_vs_horizon_by_cluster.png",
             "forecast_horizon_diagnostics/12_prediction_error_by_lead_day.png",
             "forecast_horizon_diagnostics/13_true_vs_predicted_by_lead_day.png",
             "forecast_horizon_diagnostics/14_prediction_vs_actual_timeseries_by_lead_day.png",

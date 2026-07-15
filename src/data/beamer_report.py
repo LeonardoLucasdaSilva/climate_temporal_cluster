@@ -274,12 +274,6 @@ def plot_title(relative_path: str) -> str:
         ("06_cluster_distribution", "Cluster Distribution"),
         ("07_precipitation_distribution_by_cluster", "Rainfall Distribution by Cluster"),
         ("08_input_precipitation_distribution_by_cluster", "Input Rainfall by Cluster"),
-        ("09_current_vs_forecast_horizon_by_split", "Current vs Forecast Horizon by Split"),
-        (
-            "10_test_current_target_prediction_timeseries",
-            "Test Current, Target, and Prediction Time Series",
-        ),
-        ("11_test_current_vs_horizon_by_cluster", "Current vs Horizon by Cluster"),
         ("12_prediction_error_by_lead_day", "Prediction Error by Lead Day"),
         ("13_true_vs_predicted_by_lead_day", "True vs Predicted by Lead Day"),
         (

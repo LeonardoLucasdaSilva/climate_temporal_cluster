@@ -26,12 +26,13 @@ from data.beamer_report import (  # noqa: E402
 # EDITE AQUI
 # =============================================================================
 
-# Pasta de uma configuracao ja salva dentro de outputs/.
+# Pasta de uma configuracao ja salva dentro de outputs/<dd_mm_yy>/.
 # Exemplo:
-# RUN_DIR = PROJECT_ROOT / "outputs" / "lstm_cluster_sweep_RS_A801_2026_07_09_12h26" / "RS_A801_w15_k03_kmeans_sigma_na"
+# RUN_DIR = PROJECT_ROOT / "outputs" / "14_07_26" / "lstm_cluster_sweep_RS_A801_2026_07_09_12h26" / "RS_A801_w15_k03_kmeans_sigma_na"
 RUN_DIR = (
     PROJECT_ROOT
     / "outputs"
+    / "14_07_26"
     / "lstm_cluster_sweep_RS_A801_2026_07_09_16h37"
     / "RS_A801_w15_k01_kmeans_sigma_na"
 )

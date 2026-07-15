@@ -7,7 +7,8 @@ single experiment.
   implementation and horizon-rain-guided manual clustering.
 - `arma/`: univariate ARMA precipitation baseline used for comparison with
   LSTM+cluster runs. It keeps chronological split and lead-day target alignment
-  compatible with the main experiment and writes outputs under `outputs/ARMA/`.
+  compatible with the main experiment and writes outputs under
+  `outputs/dd_mm_yy/ARMA/`.
 - `lstm_cluster/`: the active LSTM-by-cluster precipitation experiment. It
   contains the user-facing runner, sweep pipeline, output config, plot/report
   writers, and folder-level documentation.

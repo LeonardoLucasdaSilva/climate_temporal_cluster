@@ -404,16 +404,16 @@ Each configuration folder contains:
   under folders such as `prediction_overview/`,
   `prediction_timeseries_splits/lead_day_XX/`, `residual_diagnostics/`,
   `cluster_diagnostics/`, `model_fit/`, `cluster_precipitation_histograms/`,
-  `cluster_prediction_histograms/`, and `cluster_prediction_scatter/`
+  `cluster_prediction_histograms/`, `cluster_prediction_timeseries/`, and
+  `cluster_prediction_scatter/`
 - split time-series plots in `prediction_timeseries_splits/lead_day_XX/` use
   target dates from the source dataset on the x-axis, formatted as `dd/mm/YYYY`
 - cluster silhouette diagnostics under `cluster_diagnostics/`, including
   `08_silhouette_analysis.png` and `silhouette_scores.csv`
 - input-window forecast-horizon precipitation distribution plots by cluster under
   `input_precipitation_distribution_by_cluster/`
-- current-window versus forecast-horizon target diagnostics, persistence
-  baseline metrics, and horizon behavior plots under
-  `forecast_horizon_diagnostics/`
+- current-window versus forecast-horizon target diagnostics and persistence
+  baseline metrics under `forecast_horizon_diagnostics/`
 - lead-day diagnostics comparing each D+k output with its matching real
   precipitation under `forecast_horizon_diagnostics/`, including
   `test_prediction_by_lead_day.csv`,
@@ -422,7 +422,7 @@ Each configuration folder contains:
   true-vs-predicted plots under
   `forecast_horizon_diagnostics/true_vs_predicted_by_lead_day/`
 - per-cluster test performance time series with actual values, predictions,
-  residuals, cluster metrics, and compressed large temporal gaps
+  residuals, cluster metrics, and target dates formatted as `dd/mm/YYYY`
 - per-cluster test actual-versus-predicted scatter plots with red x markers and
   plot legends
 

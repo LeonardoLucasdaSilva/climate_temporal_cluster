@@ -563,7 +563,7 @@ def run_arma_experiment(
     precipitation_column: str = DEFAULT_PRECIPITATION_COLUMN,
     continue_on_error: bool = True,
 ) -> Path:
-    """Run an ARMA sweep and save comparison artifacts under outputs/ARMA."""
+    """Run an ARMA sweep and save comparison artifacts under the output root."""
     if forecast_horizon <= 0:
         raise ValueError("forecast_horizon must be positive.")
 

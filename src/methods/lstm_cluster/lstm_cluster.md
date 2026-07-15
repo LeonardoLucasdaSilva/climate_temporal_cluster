@@ -183,7 +183,9 @@ cluster labels used by the current pipeline. Existing per-cluster collections
 remain in folders such as
 `cluster_precipitation_histograms/`,
 `cluster_prediction_histograms/`, `cluster_prediction_timeseries/`, and
-`cluster_prediction_scatter/`.
+`cluster_prediction_scatter/`. The `cluster_prediction_timeseries/` plots use
+the final forecast-horizon target date on the x-axis, formatted as
+`dd/mm/YYYY`.
 
 Each configuration also saves
 `input_forecast_horizon_precipitation_by_cluster.csv`, which assigns the
@@ -195,8 +197,8 @@ analysis scripts. Both files include `current_window_precipitation_mm`,
 Forecast-horizon diagnostics are saved under
 `forecast_horizon_diagnostics/`. They compare the precipitation on the final
 input-window day with the target at `FORECAST_HORIZON`, include a persistence
-baseline that uses current precipitation as the forecast, and add the same
-section to `experiment_report.tex`.
+baseline that uses current precipitation as the forecast, write CSV/text
+summaries, and add the same section to `experiment_report.tex`.
 
 The same folder also includes lead-day diagnostics for the test split. The
 pipeline compares each model output D+1, D+2, ..., D+`FORECAST_HORIZON` with

@@ -313,94 +313,6 @@ def save_forecast_horizon_diagnostics(
     ).sort_values("window_index")
     test_df.to_csv(diag_dir / "test_forecast_horizon_behavior.csv", index=False)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    split_colors = {"train": "#0072B2", "validation": "#E69F00", "test": "#009E73"}
-    for split_name, split_df in all_df.groupby("split", sort=False):
-        ax.scatter(
-            split_df["current_window_precipitation_mm"],
-            split_df["forecast_horizon_precipitation_mm"],
-            s=24,
-            alpha=0.55,
-            color=split_colors.get(split_name, "#666666"),
-            label=split_name.title(),
-        )
-    max_value = float(
-        np.nanmax(
-            [
-                all_df["current_window_precipitation_mm"].max(),
-                all_df["forecast_horizon_precipitation_mm"].max(),
-                1.0,
-            ]
-        )
-    )
-    ax.plot([0.0, max_value], [0.0, max_value], color="black", linestyle="--")
-    ax.set_xlabel("Current window precipitation (mm)")
-    ax.set_ylabel(f"Forecast horizon +{forecast_horizon} precipitation (mm)")
-    ax.set_title("Current Rain vs Forecast-Horizon Target")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(diag_dir / "09_current_vs_forecast_horizon_by_split.png")
-    plt.close(fig)
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(
-        test_df["window_index"],
-        test_df["current_window_precipitation_mm"],
-        label="Current window precipitation",
-        color="#0072B2",
-        linewidth=1.5,
-    )
-    ax.plot(
-        test_df["window_index"],
-        test_df["forecast_horizon_precipitation_mm"],
-        label=f"Target at horizon +{forecast_horizon}",
-        color="#009E73",
-        linewidth=1.5,
-    )
-    ax.plot(
-        test_df["window_index"],
-        test_df["lstm_prediction_mm"],
-        label="LSTM prediction",
-        color="#D55E00",
-        linewidth=1.5,
-        alpha=0.85,
-    )
-    ax.set_xlabel("Original window index")
-    ax.set_ylabel("Precipitation (mm)")
-    ax.set_title("Test Set: Current Rain, Forecast Target, and LSTM Prediction")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(diag_dir / "10_test_current_target_prediction_timeseries.png")
-    plt.close(fig)
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    cluster_ids = sorted(np.unique(c_test))
-    colors = plt.cm.tab20(np.linspace(0, 1, max(len(cluster_ids), 1)))
-    for color, cluster_id in zip(colors, cluster_ids):
-        mask = c_test == cluster_id
-        ax.scatter(
-            current_test[mask],
-            y_test[mask],
-            s=34,
-            alpha=0.7,
-            color=color,
-            edgecolors="black",
-            linewidths=0.5,
-            label=f"Cluster {int(cluster_id)}",
-        )
-    test_max = float(np.nanmax([current_test.max(), y_test.max(), 1.0]))
-    ax.plot([0.0, test_max], [0.0, test_max], color="black", linestyle="--")
-    ax.set_xlabel("Current window precipitation (mm)")
-    ax.set_ylabel(f"Target at horizon +{forecast_horizon} (mm)")
-    ax.set_title("Test Set: Horizon Target Shift by Cluster")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(diag_dir / "11_test_current_vs_horizon_by_cluster.png")
-    plt.close(fig)
-
     persistence_metrics = _safe_regression_metrics(y_test, current_test)
     lstm_metrics = _safe_regression_metrics(y_test, y_pred_test)
     summary = {
@@ -859,6 +771,7 @@ def save_cluster_prediction_timeseries(
     c_test: np.ndarray,
     test_indices: np.ndarray,
     output_dir: Path,
+    test_dates: np.ndarray | None = None,
     max_gap: int = 10,
 ) -> None:
     """Save actual, predicted, and residual time series for each test cluster."""
@@ -869,6 +782,13 @@ def save_cluster_prediction_timeseries(
     lengths = {len(y_test), len(y_pred_test), len(c_test), len(test_indices)}
     if len(lengths) != 1:
         raise ValueError("Test values, labels, predictions, and indices must align.")
+    date_labels = _prediction_timeseries_date_labels(
+        test_dates,
+        n_rows=len(y_test),
+        n_leads=1,
+    )
+    if date_labels is not None:
+        date_labels = date_labels.reshape(-1)
 
     plot_dir = output_dir / "cluster_prediction_timeseries"
     plot_dir.mkdir(exist_ok=True)
@@ -881,10 +801,14 @@ def save_cluster_prediction_timeseries(
         actual = y_test[cluster_offsets]
         predicted = y_pred_test[cluster_offsets]
         residuals = actual - predicted
-        positions, compressed_intervals = compressed_time_positions(
-            original_indices,
-            max_gap=max_gap,
-        )
+        if date_labels is not None:
+            x_values = date_labels[cluster_offsets]
+            compressed_intervals = np.array([], dtype=bool)
+        else:
+            x_values, compressed_intervals = compressed_time_positions(
+                original_indices,
+                max_gap=max_gap,
+            )
         metrics = calculate_regression_metrics(actual, predicted)
 
         fig, axes = plt.subplots(
@@ -895,7 +819,7 @@ def save_cluster_prediction_timeseries(
             gridspec_kw={"height_ratios": [2.2, 1.0]},
         )
         axes[0].plot(
-            positions,
+            x_values,
             actual,
             label="Actual",
             color="#4C78A8",
@@ -903,7 +827,7 @@ def save_cluster_prediction_timeseries(
             alpha=0.85,
         )
         axes[0].scatter(
-            positions,
+            x_values,
             actual,
             color="#4C78A8",
             s=10,
@@ -911,7 +835,7 @@ def save_cluster_prediction_timeseries(
             zorder=3,
         )
         axes[0].plot(
-            positions,
+            x_values,
             predicted,
             label="Predicted",
             color="#F58518",
@@ -929,14 +853,14 @@ def save_cluster_prediction_timeseries(
 
         axes[1].axhline(0.0, color="black", linestyle="--", linewidth=1)
         axes[1].plot(
-            positions,
+            x_values,
             residuals,
             color="#54A24B",
             linewidth=1.2,
             alpha=0.85,
         )
         axes[1].fill_between(
-            positions,
+            x_values,
             residuals,
             0.0,
             color="#54A24B",
@@ -945,39 +869,45 @@ def save_cluster_prediction_timeseries(
         axes[1].set_ylabel("Residual (mm)")
         axes[1].grid(True, alpha=0.3)
 
-        for interval_offset in np.flatnonzero(compressed_intervals):
-            gap_marker = (
-                positions[interval_offset] + positions[interval_offset + 1]
-            ) / 2
-            for ax in axes:
-                ax.axvline(
-                    gap_marker,
-                    color="#888888",
-                    linestyle=":",
-                    linewidth=0.8,
-                    alpha=0.55,
-                )
+        if date_labels is not None:
+            axes[1].set_xlabel("Target Date")
+            axes[1].xaxis.set_major_locator(mdates.AutoDateLocator())
+            axes[1].xaxis.set_major_formatter(mdates.DateFormatter("%d/%m/%Y"))
+            fig.autofmt_xdate(rotation=30, ha="right")
+        else:
+            positions = np.asarray(x_values, dtype=float)
+            for interval_offset in np.flatnonzero(compressed_intervals):
+                gap_marker = (
+                    positions[interval_offset] + positions[interval_offset + 1]
+                ) / 2
+                for ax in axes:
+                    ax.axvline(
+                        gap_marker,
+                        color="#888888",
+                        linestyle=":",
+                        linewidth=0.8,
+                        alpha=0.55,
+                    )
 
-        tick_count = min(9, len(positions))
-        tick_offsets = np.unique(
-            np.linspace(0, len(positions) - 1, tick_count, dtype=int)
-        )
-        axes[1].set_xticks(positions[tick_offsets])
-        axes[1].set_xticklabels(original_indices[tick_offsets])
-        axes[1].set_xlabel(
-            "Compressed test timeline (labels show original window index)"
-        )
-
-        compressed_count = int(compressed_intervals.sum())
-        if compressed_count:
-            fig.text(
-                0.5,
-                0.01,
-                f"{compressed_count} gaps larger than {max_gap} windows were "
-                f"displayed as {max_gap} windows.",
-                ha="center",
-                fontsize=9,
+            tick_count = min(9, len(positions))
+            tick_offsets = np.unique(
+                np.linspace(0, len(positions) - 1, tick_count, dtype=int)
             )
+            axes[1].set_xticks(positions[tick_offsets])
+            axes[1].set_xticklabels(original_indices[tick_offsets])
+            axes[1].set_xlabel(
+                "Compressed test timeline (labels show original window index)"
+            )
+            compressed_count = int(compressed_intervals.sum())
+            if compressed_count:
+                fig.text(
+                    0.5,
+                    0.01,
+                    f"{compressed_count} gaps larger than {max_gap} windows were "
+                    f"displayed as {max_gap} windows.",
+                    ha="center",
+                    fontsize=9,
+                )
         fig.tight_layout(rect=(0, 0.03, 1, 1))
         fig.savefig(
             plot_dir / f"cluster_{int(cluster_id)}_prediction_timeseries.png"
@@ -1407,12 +1337,21 @@ def save_visualizations(
         ),
         test_dates_by_lead_day=test_target_dates_by_lead_day,
     )
+    cluster_timeseries_dates = None
+    if test_target_dates_by_lead_day is not None:
+        date_labels_by_lead_day = _prediction_timeseries_date_labels(
+            test_target_dates_by_lead_day,
+            n_rows=len(y_test),
+            n_leads=int(forecast_horizon),
+        )
+        cluster_timeseries_dates = date_labels_by_lead_day[:, -1]
     save_cluster_prediction_timeseries(
         y_test,
         y_pred_test,
         c_test,
         test_indices,
         output_dir,
+        test_dates=cluster_timeseries_dates,
     )
 
     fig, _ = plot_residuals(
