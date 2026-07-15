@@ -4,7 +4,8 @@ This package holds reusable method implementations that are not tied to a
 single experiment.
 
 - `cluster/`: clustering algorithms, including the custom spectral clustering
-  implementation and horizon-rain-guided manual clustering.
+  implementation, standalone eigengap analysis, and horizon-rain-guided manual
+  clustering.
 - `arma/`: univariate ARMA precipitation baseline used for comparison with
   LSTM+cluster runs. It keeps chronological split and lead-day target alignment
   compatible with the main experiment and writes outputs under

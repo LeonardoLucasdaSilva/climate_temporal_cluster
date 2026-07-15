@@ -4,13 +4,22 @@ This folder contains clustering algorithms used by the project.
 
 - `cluster_pipeline.py`: reusable clustering pipeline helpers. It contains
   `numeric_feature_columns`, `create_cluster_feature_matrix`, and
-  `cluster_feature_matrix`, which prepare window features and dispatch
-  K-means, spectral, or manual clustering. It also contains
+  `create_pipeline_clustering_features`, which reproduces the LSTM pipeline's
+  train-only scaling and optional PCA for standalone analyses, plus
+  `cluster_feature_matrix`, which dispatches K-means, spectral, or manual
+  clustering. It also contains
   `run_clustering_pipeline` and `main`, the CLI entrypoint used by the
   `climate-cluster` command.
 - `ng.py`: custom spectral clustering implementation. It builds a
   Gaussian affinity matrix, normalizes it, extracts the largest eigenvectors,
   row-normalizes the embedding, and clusters that embedding.
+- `eigengap.py`: standalone multi-window eigengap analysis. It builds the same
+  normalized Gaussian affinity graph, plots the first 20 leading-eigenvalue
+  gaps for every automatic sigma candidate of each window size, highlights the
+  largest gap, and reports each heuristic cluster-count recommendation.
+- `automatic_sigma.py`: standalone and reusable adapter for the project's
+  pairwise-distance sigma heuristic. It loads a station when run as a command,
+  or accepts a dataframe or prepared feature matrix when imported.
 - `manual.py`: horizon-rain-guided clustering. It reserves cluster `0` for
   windows with a known zero-rain horizon, divides known rainy horizons into
   `k - 1` ordered groups from lower to heavier rain, and assigns windows with
@@ -128,3 +137,71 @@ Requirements and behavior:
 The learned `rain_ranges_` maps each label to the minimum and maximum known
 precipitation used for that cluster. `centroids_` stores the corresponding
 feature-space centroids.
+
+## Eigengap analysis
+
+Edit the defaults at the top of `eigengap.py` or pass window sizes directly:
+
+```powershell
+cluster-eigengap --state RS --station-id A801 --window-sizes 5 10 15 --n-sigma-values 5 --additional-sigma-values 0.5 1.0 2.0 --scaler-type standard --precipitation-scaler none --train-ratio 0.6
+```
+
+Eigengap preprocessing mirrors the LSTM+cluster pipeline: it takes the same
+chronological training fraction, fits the selected covariate scaler on those
+training rows, handles `PRECIPITACAO_TOTAL` with its own optional scaler, builds
+flattened windows, and optionally fits PCA on the training windows. Keep
+`SCALER_TYPE`, `PRECIPITATION_SCALER`, `TRAIN_RATIO`, and
+`PCA_VARIANCE_THRESHOLD` aligned between `eigengap.py` and
+`lstm_cluster/run_experiment.py`. The equivalent CLI options are
+`--scaler-type`, `--precipitation-scaler`, `--train-ratio`, and
+`--pca-variance-threshold`.
+
+For every window size, the command generates sigma candidates from the
+preprocessed window-distance distribution using `automatic_sigma.py`. It then
+evaluates every candidate and saves
+`eigengaps_window_<WINDOW_SIZE>_sigma_<SIGMA_INDEX>.png` under the configured
+output directory. Use `--lower-quantile` and `--upper-quantile` to configure
+the distance range used by the sigma heuristic. Pass manually selected values
+with `--additional-sigma-values`; each is appended to every window size's
+automatic candidates. Duplicate values are evaluated only once. The shorter
+alias `--sigma-values` is also accepted.
+Gap `k` is defined as `lambda_k - lambda_(k+1)` after sorting the normalized
+affinity eigenvalues from largest to smallest. The largest of the first 20
+gaps is highlighted and `k` is reported as the heuristic number of clusters
+for that window/sigma pair. The console summary includes all window sizes,
+sigma candidates, suggested cluster counts, and largest gaps. The affinity
+matrix is dense and requires memory proportional to the square of the number
+of windows;
+large station histories can therefore require substantial memory. If `sigma`
+is so small that the affinity graph has no usable edges, the runner prints a
+degeneracy warning, marks the recommendation as `N/A`, saves an annotated plot,
+and continues with the remaining sigma candidates and window sizes.
+
+## Automatic sigma candidates
+
+Generate sigma candidates for one station with the installed command:
+
+```powershell
+cluster-auto-sigma --state RS --station-id A801 --window-size 15 --n-values 5 --scaler-type standard --precipitation-scaler none --train-ratio 0.6
+```
+
+The default heuristic calculates all pairwise Euclidean distances between
+flattened windows, sorts one distance per sample pair, and returns evenly
+spaced sigma values between positions near the 1st and 20th percentiles. Use
+`--lower-quantile` and `--upper-quantile` to change those bounds, or
+`--no-normalize` to disable normalization. Feature preparation matches the
+LSTM+cluster pipeline: only the chronological training fraction is used,
+covariates and precipitation have separately configured scalers, and optional
+PCA is fitted after window flattening. Keep `--scaler-type`,
+`--precipitation-scaler`, `--train-ratio`, and `--pca-variance-threshold`
+aligned with `lstm_cluster/run_experiment.py`.
+
+Other analyses can reuse the same implementation without loading data again:
+
+```python
+from methods.cluster.automatic_sigma import (
+    generate_sigma_candidates_from_features,
+)
+
+sigmas = generate_sigma_candidates_from_features(windows_flat, n_values=5)
+```

@@ -37,6 +37,8 @@ class LstmReportTests(unittest.TestCase):
                 "target_scale": "normalized",
                 "optimizer": "AdamW",
                 "weight_decay": 1e-4,
+                "pca_variance_threshold": 0.9,
+                "pca_for_clustering_only": True,
             },
         )
 
@@ -46,6 +48,35 @@ class LstmReportTests(unittest.TestCase):
         self.assertIn(r"\item \textbf{LSTM Target Scale:} normalized", tex)
         self.assertIn(r"\item \textbf{Optimizer:} AdamW", tex)
         self.assertIn(r"\item \textbf{Weight decay:} 0.0001", tex)
+        self.assertIn(r"\item \textbf{PCA Variance Threshold:} 0.9", tex)
+        self.assertIn(r"\item \textbf{PCA Mode:} clustering only", tex)
+
+    def test_config_summary_reports_disabled_and_shared_pca_modes(self) -> None:
+        disabled_tex = config_summary_list(
+            {
+                "window_size": 8,
+                "pca_variance_threshold": None,
+                "pca_for_clustering_only": False,
+            }
+        )
+        shared_tex = config_summary_list(
+            {
+                "window_size": 8,
+                "pca_variance_threshold": 0.95,
+                "pca_for_clustering_only": False,
+            }
+        )
+
+        self.assertIn(
+            r"\item \textbf{PCA Variance Threshold:} not used",
+            disabled_tex,
+        )
+        self.assertIn(r"\item \textbf{PCA Mode:} disabled", disabled_tex)
+        self.assertIn(r"\item \textbf{PCA Variance Threshold:} 0.95", shared_tex)
+        self.assertIn(
+            r"\item \textbf{PCA Mode:} clustering and LSTM",
+            shared_tex,
+        )
 
     def test_config_summary_marks_scalers_disabled(self) -> None:
         tex = config_summary_list(
