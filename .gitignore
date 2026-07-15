@@ -138,6 +138,8 @@ dmypy.json
 # Project-specific
 .matplotlib_cache/
 fontlist*.json
+project_audiction/
+src/NEW/
 
 # Data files - keep structure but ignore large CSV files
 data/inmet/**/*.csv

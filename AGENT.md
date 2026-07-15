@@ -9,8 +9,8 @@ and cluster-specific LSTM precipitation models.
   - `config.py`: project paths and lightweight output-config loading helpers.
   - `data/`: data loading, cleaning, and experiment output writers.
   - `methods/`: clustering pipelines, spectral clustering, sliding windows,
-    sigma selection, dimensionality reduction helpers, and the LSTM-cluster
-    runner/pipeline.
+    sigma selection, dimensionality reduction helpers, the LSTM-cluster
+    runner/pipeline, and the ARMA baseline runner/pipeline.
   - `models/`: LSTM model code.
   - `evaluation/`: regression metrics, reports, and diagnostic plotting helpers.
 - `experiments/`: experiment notes and older runnable scripts.
@@ -21,6 +21,7 @@ and cluster-specific LSTM precipitation models.
 - `data/`: local INMET data tree. Treat data files as local-only inputs.
 - `outputs/`: generated experiment artifacts.
 - Root scripts:
+  - `run_arma.py`: ARMA baseline launcher.
   - `run_experiments.py`: interactive launcher.
   - `verify_pipeline.py`: manual component verification script.
 

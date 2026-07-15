@@ -48,6 +48,21 @@ def _cluster_scatter_kwargs(color: str, marker: str) -> dict[str, object]:
     return kwargs
 
 
+def _safe_histogram_bins(values: np.ndarray, bins: int) -> int | np.ndarray:
+    """Return histogram bins that also work for constant finite values."""
+    finite_values = np.asarray(values, dtype=float)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    if finite_values.size == 0:
+        return bins
+    min_value = float(finite_values.min())
+    max_value = float(finite_values.max())
+    if not np.isclose(min_value, max_value, rtol=1e-12, atol=1e-12):
+        return bins
+
+    spread = max(abs(min_value) * 0.05, 0.5)
+    return np.linspace(min_value - spread, max_value + spread, 2)
+
+
 def plot_predictions_vs_actual(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -174,7 +189,12 @@ def plot_residuals(
     ax1.grid(True, alpha=0.3)
 
     ax2 = axes[1]
-    ax2.hist(residuals, bins=50, edgecolor="black", alpha=0.7)
+    ax2.hist(
+        residuals[np.isfinite(residuals)],
+        bins=_safe_histogram_bins(residuals, 50),
+        edgecolor="black",
+        alpha=0.7,
+    )
     ax2.set_xlabel("Residuals (mm)")
     ax2.set_ylabel("Frequency")
     ax2.set_title(f"{title} - Distribution")

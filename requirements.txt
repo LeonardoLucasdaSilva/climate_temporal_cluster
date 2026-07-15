@@ -3,6 +3,7 @@ numpy
 scikit-learn
 matplotlib
 seaborn
+statsmodels>=0.14
 tensorflow>=2.10
 keras>=2.10
 -e .

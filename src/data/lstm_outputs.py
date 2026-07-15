@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Mapping, Protocol
 
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from sklearn.metrics import silhouette_samples, silhouette_score
 
 from evaluation import (
     plot_cluster_performance,
@@ -60,7 +62,7 @@ def save_training_history_plots(
             axes[1].plot(hist["val_mae"], label="Validation", linewidth=2)
         axes[1].set_title(f"Cluster {cluster_id}: MAE")
         axes[1].set_xlabel("Epoch")
-        axes[1].set_ylabel("MAE (mm)")
+        axes[1].set_ylabel("MAE")
         axes[1].legend()
 
         fig.tight_layout()
@@ -222,6 +224,39 @@ def _safe_regression_metrics(
     return calculate_regression_metrics(y_true[mask], y_pred[mask])
 
 
+def _lead_day_prediction_matrix(
+    y_pred_test: np.ndarray,
+    y_pred_test_by_lead_day: np.ndarray | None,
+    n_leads: int,
+    n_rows: int | None = None,
+) -> tuple[np.ndarray, bool]:
+    """Return prediction columns aligned to lead-day targets."""
+    if y_pred_test_by_lead_day is not None:
+        predictions = np.asarray(y_pred_test_by_lead_day, dtype=float)
+        uses_lead_day_outputs = True
+    else:
+        predictions = np.asarray(y_pred_test, dtype=float)
+        uses_lead_day_outputs = (
+            predictions.ndim == 2 and predictions.shape[1] == n_leads
+        )
+
+    if predictions.ndim == 1:
+        predictions = predictions.reshape(-1, 1)
+    if predictions.ndim != 2:
+        raise ValueError("Lead-day predictions must be one- or two-dimensional.")
+
+    if predictions.shape[1] == 1 and n_leads > 1 and not uses_lead_day_outputs:
+        predictions = np.repeat(predictions, n_leads, axis=1)
+    elif predictions.shape[1] != n_leads:
+        raise ValueError(
+            "Lead-day prediction columns must match test target lead-day columns."
+        )
+    if n_rows is not None and len(predictions) != n_rows:
+        raise ValueError("Lead-day predictions must match test target row count.")
+
+    return predictions, uses_lead_day_outputs
+
+
 def save_forecast_horizon_diagnostics(
     y_train: np.ndarray,
     y_val: np.ndarray,
@@ -277,94 +312,6 @@ def save_forecast_horizon_diagnostics(
         }
     ).sort_values("window_index")
     test_df.to_csv(diag_dir / "test_forecast_horizon_behavior.csv", index=False)
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    split_colors = {"train": "#0072B2", "validation": "#E69F00", "test": "#009E73"}
-    for split_name, split_df in all_df.groupby("split", sort=False):
-        ax.scatter(
-            split_df["current_window_precipitation_mm"],
-            split_df["forecast_horizon_precipitation_mm"],
-            s=24,
-            alpha=0.55,
-            color=split_colors.get(split_name, "#666666"),
-            label=split_name.title(),
-        )
-    max_value = float(
-        np.nanmax(
-            [
-                all_df["current_window_precipitation_mm"].max(),
-                all_df["forecast_horizon_precipitation_mm"].max(),
-                1.0,
-            ]
-        )
-    )
-    ax.plot([0.0, max_value], [0.0, max_value], color="black", linestyle="--")
-    ax.set_xlabel("Current window precipitation (mm)")
-    ax.set_ylabel(f"Forecast horizon +{forecast_horizon} precipitation (mm)")
-    ax.set_title("Current Rain vs Forecast-Horizon Target")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(diag_dir / "09_current_vs_forecast_horizon_by_split.png")
-    plt.close(fig)
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(
-        test_df["window_index"],
-        test_df["current_window_precipitation_mm"],
-        label="Current window precipitation",
-        color="#0072B2",
-        linewidth=1.5,
-    )
-    ax.plot(
-        test_df["window_index"],
-        test_df["forecast_horizon_precipitation_mm"],
-        label=f"Target at horizon +{forecast_horizon}",
-        color="#009E73",
-        linewidth=1.5,
-    )
-    ax.plot(
-        test_df["window_index"],
-        test_df["lstm_prediction_mm"],
-        label="LSTM prediction",
-        color="#D55E00",
-        linewidth=1.5,
-        alpha=0.85,
-    )
-    ax.set_xlabel("Original window index")
-    ax.set_ylabel("Precipitation (mm)")
-    ax.set_title("Test Set: Current Rain, Forecast Target, and LSTM Prediction")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(diag_dir / "10_test_current_target_prediction_timeseries.png")
-    plt.close(fig)
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    cluster_ids = sorted(np.unique(c_test))
-    colors = plt.cm.tab20(np.linspace(0, 1, max(len(cluster_ids), 1)))
-    for color, cluster_id in zip(colors, cluster_ids):
-        mask = c_test == cluster_id
-        ax.scatter(
-            current_test[mask],
-            y_test[mask],
-            s=34,
-            alpha=0.7,
-            color=color,
-            edgecolors="black",
-            linewidths=0.5,
-            label=f"Cluster {int(cluster_id)}",
-        )
-    test_max = float(np.nanmax([current_test.max(), y_test.max(), 1.0]))
-    ax.plot([0.0, test_max], [0.0, test_max], color="black", linestyle="--")
-    ax.set_xlabel("Current window precipitation (mm)")
-    ax.set_ylabel(f"Target at horizon +{forecast_horizon} (mm)")
-    ax.set_title("Test Set: Horizon Target Shift by Cluster")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(diag_dir / "11_test_current_vs_horizon_by_cluster.png")
-    plt.close(fig)
 
     persistence_metrics = _safe_regression_metrics(y_test, current_test)
     lstm_metrics = _safe_regression_metrics(y_test, y_pred_test)
@@ -435,23 +382,31 @@ def save_forecast_lead_day_diagnostics(
     test_targets_by_lead_day: np.ndarray,
     output_dir: Path,
     forecast_horizon: int,
+    y_pred_test_by_lead_day: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """Save metrics and plots comparing one prediction against each lead day."""
+    """Save metrics and plots comparing predictions against each lead day."""
     diag_dir = output_dir / "forecast_horizon_diagnostics"
     diag_dir.mkdir(exist_ok=True)
 
     test_targets_by_lead_day = np.asarray(test_targets_by_lead_day, dtype=float)
     if test_targets_by_lead_day.ndim == 1:
         test_targets_by_lead_day = test_targets_by_lead_day.reshape(-1, 1)
+    y_pred_by_lead_day, uses_lead_day_outputs = _lead_day_prediction_matrix(
+        y_pred_test,
+        y_pred_test_by_lead_day,
+        int(test_targets_by_lead_day.shape[1]),
+        n_rows=len(test_targets_by_lead_day),
+    )
 
     rows = []
     for lead_offset in range(test_targets_by_lead_day.shape[1]):
         lead_day = lead_offset + 1
         actual = test_targets_by_lead_day[:, lead_offset]
+        predicted_values = y_pred_by_lead_day[:, lead_offset]
         for window_index, cluster, predicted, actual_value in zip(
             test_indices,
             c_test,
-            y_pred_test,
+            predicted_values,
             actual,
         ):
             rows.append(
@@ -465,7 +420,9 @@ def save_forecast_lead_day_diagnostics(
                     "residual_mm": float(actual_value - predicted),
                     "absolute_error_mm": float(abs(actual_value - predicted)),
                     "squared_error_mm2": float((actual_value - predicted) ** 2),
-                    "is_trained_target_day": lead_day == forecast_horizon,
+                    "is_trained_target_day": (
+                        uses_lead_day_outputs or lead_day == forecast_horizon
+                    ),
                 }
             )
 
@@ -482,7 +439,9 @@ def save_forecast_lead_day_diagnostics(
             {
                 "lead_day": int(lead_day),
                 "forecast_horizon": forecast_horizon,
-                "is_trained_target_day": int(lead_day) == forecast_horizon,
+                "is_trained_target_day": (
+                    uses_lead_day_outputs or int(lead_day) == forecast_horizon
+                ),
                 "n_test": len(lead_values),
                 **metrics,
             }
@@ -508,16 +467,19 @@ def save_forecast_lead_day_diagnostics(
             label="MAE",
             color="#0072B2",
         )
-        ax.axvline(
-            forecast_horizon,
-            color="black",
-            linestyle="--",
-            linewidth=1.2,
-            label=f"Trained horizon +{forecast_horizon}",
-        )
+        if uses_lead_day_outputs:
+            ax.plot([], [], color="black", label="All lead days trained")
+        else:
+            ax.axvline(
+                forecast_horizon,
+                color="black",
+                linestyle="--",
+                linewidth=1.2,
+                label=f"Trained horizon +{forecast_horizon}",
+            )
         ax.set_xlabel("Lead day after input window")
         ax.set_ylabel("Error (mm)")
-        ax.set_title("Test Error When Comparing the Prediction Against Each Lead Day")
+        ax.set_title("Test Error by Forecast Lead Day")
         ax.set_xticks(metrics_df["lead_day"])
         ax.legend()
         ax.grid(True, alpha=0.3)
@@ -557,7 +519,9 @@ def save_forecast_lead_day_diagnostics(
             )
             ax.plot([0.0, max_value], [0.0, max_value], color="black", linestyle="--")
             metrics = metrics_df.loc[metrics_df["lead_day"] == lead_day].iloc[0]
-            title_suffix = " target" if lead_day == forecast_horizon else ""
+            title_suffix = "" if uses_lead_day_outputs else (
+                " target" if lead_day == forecast_horizon else ""
+            )
             ax.set_title(
                 f"D+{lead_day}{title_suffix}: "
                 f"RMSE={metrics['RMSE']:.3f}, MAE={metrics['MAE']:.3f}"
@@ -566,7 +530,11 @@ def save_forecast_lead_day_diagnostics(
             ax.set_ylabel("Predicted precipitation (mm)")
             ax.grid(True, alpha=0.3)
         fig.suptitle(
-            "True vs Predicted Using Each Real Lead Day as Reference",
+            (
+                "True vs Predicted by Lead-Day Output"
+                if uses_lead_day_outputs
+                else "True vs Predicted Using Each Real Lead Day as Reference"
+            ),
             y=1.0,
         )
         fig.tight_layout()
@@ -594,7 +562,12 @@ def save_forecast_lead_day_diagnostics(
             )
             ax.plot([0.0, max_value], [0.0, max_value], color="black", linestyle="--")
             ax.set_xlabel(f"Actual precipitation at D+{lead_day} (mm)")
-            ax.set_ylabel("LSTM prediction (mm)")
+            prediction_label = (
+                f"LSTM prediction at D+{lead_day} (mm)"
+                if uses_lead_day_outputs
+                else "LSTM prediction (mm)"
+            )
+            ax.set_ylabel(prediction_label)
             ax.set_title(
                 f"True vs Predicted at D+{lead_day}: "
                 f"RMSE={metrics['RMSE']:.3f}, MAE={metrics['MAE']:.3f}"
@@ -628,7 +601,11 @@ def save_forecast_lead_day_diagnostics(
             ax.plot(
                 lead_values["window_index"],
                 lead_values["predicted_mm"],
-                label="Prediction",
+                label=(
+                    f"Prediction D+{lead_day}"
+                    if uses_lead_day_outputs
+                    else "Prediction"
+                ),
                 color="#D55E00",
                 linewidth=1.4,
                 alpha=0.85,
@@ -681,6 +658,91 @@ def save_cluster_prediction_histograms(
         plt.close(fig)
 
 
+def _prediction_scatter_limits(
+    actual: np.ndarray,
+    predicted: np.ndarray,
+) -> tuple[float, float]:
+    """Return padded equal-axis limits for actual-vs-predicted scatter plots."""
+    values = np.concatenate([actual, predicted])
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return 0.0, 1.0
+
+    min_value = float(values.min())
+    max_value = float(values.max())
+    if np.isclose(min_value, max_value):
+        padding = max(1.0, abs(max_value) * 0.05)
+    else:
+        padding = (max_value - min_value) * 0.05
+    return min_value - padding, max_value + padding
+
+
+def save_cluster_prediction_scatters(
+    y_test: np.ndarray,
+    y_pred_test: np.ndarray,
+    c_test: np.ndarray,
+    output_dir: Path,
+) -> None:
+    """Save test actual-versus-predicted scatter plots for each model cluster."""
+    y_test = np.asarray(y_test, dtype=float)
+    y_pred_test = np.asarray(y_pred_test, dtype=float)
+    c_test = np.asarray(c_test)
+    if len({len(y_test), len(y_pred_test), len(c_test)}) != 1:
+        raise ValueError("Test actual, predicted, and cluster labels must align.")
+
+    plot_dir = output_dir / "cluster_prediction_scatter"
+    plot_dir.mkdir(exist_ok=True)
+    if c_test.size == 0:
+        return
+
+    for cluster_id in sorted(np.unique(c_test)):
+        mask = c_test == cluster_id
+        cluster_actual = y_test[mask]
+        cluster_predicted = y_pred_test[mask]
+        finite_mask = np.isfinite(cluster_actual) & np.isfinite(cluster_predicted)
+        if not np.any(finite_mask):
+            continue
+        cluster_actual = cluster_actual[finite_mask]
+        cluster_predicted = cluster_predicted[finite_mask]
+
+        min_value, max_value = _prediction_scatter_limits(
+            cluster_actual,
+            cluster_predicted,
+        )
+        fig, ax = plt.subplots(figsize=(7.2, 6.2))
+        ax.scatter(
+            cluster_actual,
+            cluster_predicted,
+            s=58,
+            marker="x",
+            color="#D62728",
+            alpha=0.85,
+            linewidths=1.4,
+            label=f"Test (n={len(cluster_actual)})",
+        )
+        ax.plot(
+            [min_value, max_value],
+            [min_value, max_value],
+            color="#666666",
+            linestyle="--",
+            linewidth=1.2,
+            label="Perfect prediction",
+        )
+        ax.set_xlim(min_value, max_value)
+        ax.set_ylim(min_value, max_value)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_title(f"Cluster {int(cluster_id)}: Test Actual vs Predicted")
+        ax.set_xlabel("Actual precipitation (mm)")
+        ax.set_ylabel("Predicted precipitation (mm)")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(
+            plot_dir / f"cluster_{int(cluster_id)}_predicted_vs_actual_scatter.png"
+        )
+        plt.close(fig)
+
+
 def compressed_time_positions(
     original_indices: np.ndarray,
     max_gap: int = 10,
@@ -709,6 +771,7 @@ def save_cluster_prediction_timeseries(
     c_test: np.ndarray,
     test_indices: np.ndarray,
     output_dir: Path,
+    test_dates: np.ndarray | None = None,
     max_gap: int = 10,
 ) -> None:
     """Save actual, predicted, and residual time series for each test cluster."""
@@ -719,6 +782,13 @@ def save_cluster_prediction_timeseries(
     lengths = {len(y_test), len(y_pred_test), len(c_test), len(test_indices)}
     if len(lengths) != 1:
         raise ValueError("Test values, labels, predictions, and indices must align.")
+    date_labels = _prediction_timeseries_date_labels(
+        test_dates,
+        n_rows=len(y_test),
+        n_leads=1,
+    )
+    if date_labels is not None:
+        date_labels = date_labels.reshape(-1)
 
     plot_dir = output_dir / "cluster_prediction_timeseries"
     plot_dir.mkdir(exist_ok=True)
@@ -731,10 +801,14 @@ def save_cluster_prediction_timeseries(
         actual = y_test[cluster_offsets]
         predicted = y_pred_test[cluster_offsets]
         residuals = actual - predicted
-        positions, compressed_intervals = compressed_time_positions(
-            original_indices,
-            max_gap=max_gap,
-        )
+        if date_labels is not None:
+            x_values = date_labels[cluster_offsets]
+            compressed_intervals = np.array([], dtype=bool)
+        else:
+            x_values, compressed_intervals = compressed_time_positions(
+                original_indices,
+                max_gap=max_gap,
+            )
         metrics = calculate_regression_metrics(actual, predicted)
 
         fig, axes = plt.subplots(
@@ -745,7 +819,7 @@ def save_cluster_prediction_timeseries(
             gridspec_kw={"height_ratios": [2.2, 1.0]},
         )
         axes[0].plot(
-            positions,
+            x_values,
             actual,
             label="Actual",
             color="#4C78A8",
@@ -753,7 +827,7 @@ def save_cluster_prediction_timeseries(
             alpha=0.85,
         )
         axes[0].scatter(
-            positions,
+            x_values,
             actual,
             color="#4C78A8",
             s=10,
@@ -761,7 +835,7 @@ def save_cluster_prediction_timeseries(
             zorder=3,
         )
         axes[0].plot(
-            positions,
+            x_values,
             predicted,
             label="Predicted",
             color="#F58518",
@@ -779,14 +853,14 @@ def save_cluster_prediction_timeseries(
 
         axes[1].axhline(0.0, color="black", linestyle="--", linewidth=1)
         axes[1].plot(
-            positions,
+            x_values,
             residuals,
             color="#54A24B",
             linewidth=1.2,
             alpha=0.85,
         )
         axes[1].fill_between(
-            positions,
+            x_values,
             residuals,
             0.0,
             color="#54A24B",
@@ -795,39 +869,45 @@ def save_cluster_prediction_timeseries(
         axes[1].set_ylabel("Residual (mm)")
         axes[1].grid(True, alpha=0.3)
 
-        for interval_offset in np.flatnonzero(compressed_intervals):
-            gap_marker = (
-                positions[interval_offset] + positions[interval_offset + 1]
-            ) / 2
-            for ax in axes:
-                ax.axvline(
-                    gap_marker,
-                    color="#888888",
-                    linestyle=":",
-                    linewidth=0.8,
-                    alpha=0.55,
-                )
+        if date_labels is not None:
+            axes[1].set_xlabel("Target Date")
+            axes[1].xaxis.set_major_locator(mdates.AutoDateLocator())
+            axes[1].xaxis.set_major_formatter(mdates.DateFormatter("%d/%m/%Y"))
+            fig.autofmt_xdate(rotation=30, ha="right")
+        else:
+            positions = np.asarray(x_values, dtype=float)
+            for interval_offset in np.flatnonzero(compressed_intervals):
+                gap_marker = (
+                    positions[interval_offset] + positions[interval_offset + 1]
+                ) / 2
+                for ax in axes:
+                    ax.axvline(
+                        gap_marker,
+                        color="#888888",
+                        linestyle=":",
+                        linewidth=0.8,
+                        alpha=0.55,
+                    )
 
-        tick_count = min(9, len(positions))
-        tick_offsets = np.unique(
-            np.linspace(0, len(positions) - 1, tick_count, dtype=int)
-        )
-        axes[1].set_xticks(positions[tick_offsets])
-        axes[1].set_xticklabels(original_indices[tick_offsets])
-        axes[1].set_xlabel(
-            "Compressed test timeline (labels show original window index)"
-        )
-
-        compressed_count = int(compressed_intervals.sum())
-        if compressed_count:
-            fig.text(
-                0.5,
-                0.01,
-                f"{compressed_count} gaps larger than {max_gap} windows were "
-                f"displayed as {max_gap} windows.",
-                ha="center",
-                fontsize=9,
+            tick_count = min(9, len(positions))
+            tick_offsets = np.unique(
+                np.linspace(0, len(positions) - 1, tick_count, dtype=int)
             )
+            axes[1].set_xticks(positions[tick_offsets])
+            axes[1].set_xticklabels(original_indices[tick_offsets])
+            axes[1].set_xlabel(
+                "Compressed test timeline (labels show original window index)"
+            )
+            compressed_count = int(compressed_intervals.sum())
+            if compressed_count:
+                fig.text(
+                    0.5,
+                    0.01,
+                    f"{compressed_count} gaps larger than {max_gap} windows were "
+                    f"displayed as {max_gap} windows.",
+                    ha="center",
+                    fontsize=9,
+                )
         fig.tight_layout(rect=(0, 0.03, 1, 1))
         fig.savefig(
             plot_dir / f"cluster_{int(cluster_id)}_prediction_timeseries.png"
@@ -872,46 +952,345 @@ def save_cluster_distribution_plot(c_test: np.ndarray, output_dir: Path) -> None
     plt.close(fig)
 
 
+def _prepare_silhouette_inputs(
+    feature_matrix: np.ndarray,
+    cluster_labels: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, str | None]:
+    """Return finite silhouette inputs or a reason why they are invalid."""
+    features = np.asarray(feature_matrix, dtype=float)
+    labels = np.asarray(cluster_labels)
+    if features.ndim == 1:
+        features = features.reshape(-1, 1)
+    if features.ndim != 2:
+        return features, labels, "feature matrix must be two-dimensional"
+    if labels.ndim != 1:
+        labels = labels.reshape(-1)
+    if len(features) != len(labels):
+        return features, labels, "feature and label counts do not match"
+
+    finite_labels = np.isfinite(labels.astype(float, copy=False))
+    finite_rows = np.all(np.isfinite(features), axis=1) & finite_labels
+    features = features[finite_rows]
+    labels = labels[finite_rows]
+
+    unique_labels = np.unique(labels)
+    if len(features) < 2:
+        return features, labels, "at least two samples are required"
+    if len(unique_labels) < 2:
+        return features, labels, "at least two clusters are required"
+    if len(unique_labels) >= len(features):
+        return features, labels, "clusters must be fewer than samples"
+    return features, labels, None
+
+
+def _silhouette_unavailable_row(
+    split_name: str,
+    features: np.ndarray,
+    labels: np.ndarray,
+    reason: str,
+) -> dict[str, object]:
+    return {
+        "split": split_name,
+        "cluster": "overall",
+        "n_samples": int(len(features)),
+        "n_clusters": int(len(np.unique(labels))) if labels.size else 0,
+        "mean_silhouette": np.nan,
+        "min_silhouette": np.nan,
+        "max_silhouette": np.nan,
+        "status": reason,
+    }
+
+
+def _draw_silhouette_axis(
+    ax: plt.Axes,
+    feature_matrix: np.ndarray,
+    cluster_labels: np.ndarray,
+    split_name: str,
+) -> list[dict[str, object]]:
+    """Draw one silhouette plot panel and return its summary rows."""
+    features, labels, reason = _prepare_silhouette_inputs(
+        feature_matrix,
+        cluster_labels,
+    )
+    if reason is not None:
+        ax.text(
+            0.5,
+            0.5,
+            f"Silhouette unavailable:\n{reason}",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        ax.set_title(split_name)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return [_silhouette_unavailable_row(split_name, features, labels, reason)]
+
+    values = silhouette_samples(features, labels)
+    mean_value = float(silhouette_score(features, labels))
+    unique_labels = sorted(np.unique(labels))
+    colors = sns.color_palette("tab10", n_colors=max(len(unique_labels), 1))
+    x_min = max(-1.0, min(-0.1, float(values.min()) - 0.05))
+    y_lower = 10
+    rows: list[dict[str, object]] = [
+        {
+            "split": split_name,
+            "cluster": "overall",
+            "n_samples": int(len(features)),
+            "n_clusters": int(len(unique_labels)),
+            "mean_silhouette": mean_value,
+            "min_silhouette": float(values.min()),
+            "max_silhouette": float(values.max()),
+            "status": "ok",
+        }
+    ]
+
+    for cluster_index, cluster_id in enumerate(unique_labels):
+        cluster_values = np.sort(values[labels == cluster_id])
+        y_upper = y_lower + len(cluster_values)
+        color = colors[cluster_index % len(colors)]
+        ax.fill_betweenx(
+            np.arange(y_lower, y_upper),
+            0,
+            cluster_values,
+            facecolor=color,
+            edgecolor=color,
+            alpha=0.78,
+        )
+        ax.text(
+            x_min + 0.02,
+            y_lower + 0.5 * len(cluster_values),
+            str(int(cluster_id)),
+            va="center",
+            fontsize=9,
+        )
+        rows.append(
+            {
+                "split": split_name,
+                "cluster": int(cluster_id),
+                "n_samples": int(len(cluster_values)),
+                "n_clusters": int(len(unique_labels)),
+                "mean_silhouette": float(cluster_values.mean()),
+                "min_silhouette": float(cluster_values.min()),
+                "max_silhouette": float(cluster_values.max()),
+                "status": "ok",
+            }
+        )
+        y_lower = y_upper + 10
+
+    ax.axvline(
+        mean_value,
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        label=f"Mean silhouette = {mean_value:.3f}",
+    )
+    ax.set_xlim([x_min, 1.0])
+    ax.set_ylim([0, y_lower])
+    ax.set_title(f"{split_name} | mean={mean_value:.3f}")
+    ax.set_xlabel("Silhouette coefficient")
+    ax.set_ylabel("Cluster")
+    ax.set_yticks([])
+    ax.legend(loc="lower right")
+    ax.grid(True, alpha=0.25, axis="x")
+    return rows
+
+
+def save_cluster_silhouette_plot(
+    cluster_feature_splits: Mapping[str, tuple[np.ndarray, np.ndarray]] | None,
+    output_dir: Path,
+) -> pd.DataFrame:
+    """Save train/validation/test silhouette diagnostics for cluster features."""
+    plot_dir = output_dir / "cluster_diagnostics"
+    plot_dir.mkdir(exist_ok=True)
+    if not cluster_feature_splits:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(
+            0.5,
+            0.5,
+            "Silhouette unavailable:\nno feature splits were provided",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title("Cluster Silhouette Analysis")
+        fig.tight_layout()
+        fig.savefig(plot_dir / "08_silhouette_analysis.png")
+        plt.close(fig)
+        summary = pd.DataFrame(
+            [
+                {
+                    "split": "All",
+                    "cluster": "overall",
+                    "n_samples": 0,
+                    "n_clusters": 0,
+                    "mean_silhouette": np.nan,
+                    "min_silhouette": np.nan,
+                    "max_silhouette": np.nan,
+                    "status": "no feature splits were provided",
+                }
+            ]
+        )
+        summary.to_csv(plot_dir / "silhouette_scores.csv", index=False)
+        return summary
+
+    split_items = list(cluster_feature_splits.items())
+    fig, axes = plt.subplots(
+        1,
+        len(split_items),
+        figsize=(5.6 * len(split_items), 6.2),
+        squeeze=False,
+    )
+    rows: list[dict[str, object]] = []
+    for ax, (split_name, (feature_matrix, labels)) in zip(axes.ravel(), split_items):
+        rows.extend(
+            _draw_silhouette_axis(
+                ax,
+                feature_matrix,
+                labels,
+                split_name,
+            )
+        )
+
+    fig.suptitle("Cluster Silhouette Analysis", y=1.02)
+    fig.tight_layout()
+    fig.savefig(plot_dir / "08_silhouette_analysis.png")
+    plt.close(fig)
+
+    summary = pd.DataFrame(rows)
+    summary.to_csv(plot_dir / "silhouette_scores.csv", index=False)
+    return summary
+
+
 def save_prediction_timeseries_splits(
     y_test: np.ndarray,
     y_pred_test: np.ndarray,
     output_dir: Path,
     n_splits: int = 4,
+    forecast_horizon: int | None = None,
+    test_dates_by_lead_day: np.ndarray | None = None,
 ) -> None:
-    """Save the prediction time series in readable sequential splits."""
+    """Save prediction time-series splits for each forecast lead day."""
     plot_dir = output_dir / "prediction_timeseries_splits"
     plot_dir.mkdir(exist_ok=True)
 
-    indices = np.arange(len(y_test))
-    for split_index, split_indices in enumerate(np.array_split(indices, n_splits), start=1):
-        if split_indices.size == 0:
-            continue
+    actual_by_lead_day = np.asarray(y_test, dtype=float)
+    predicted_by_lead_day = np.asarray(y_pred_test, dtype=float)
+    if actual_by_lead_day.ndim == 1:
+        actual_by_lead_day = actual_by_lead_day.reshape(-1, 1)
+    if predicted_by_lead_day.ndim == 1:
+        predicted_by_lead_day = predicted_by_lead_day.reshape(-1, 1)
+    if actual_by_lead_day.ndim != 2 or predicted_by_lead_day.ndim != 2:
+        raise ValueError(
+            "Prediction time-series inputs must be one- or two-dimensional."
+        )
+    if actual_by_lead_day.shape != predicted_by_lead_day.shape:
+        raise ValueError("Prediction time-series actual and predicted matrices must match.")
 
-        fig, ax = plt.subplots(figsize=(14, 5.6))
-        ax.plot(
-            split_indices,
-            y_test[split_indices],
-            label="Actual",
-            alpha=0.8,
-            linewidth=1.6,
+    n_leads = int(actual_by_lead_day.shape[1])
+    if forecast_horizon is None:
+        forecast_horizon = n_leads
+    if int(forecast_horizon) != n_leads:
+        raise ValueError("forecast_horizon must match the number of lead-day columns.")
+
+    date_labels_by_lead_day = _prediction_timeseries_date_labels(
+        test_dates_by_lead_day,
+        n_rows=len(actual_by_lead_day),
+        n_leads=n_leads,
+    )
+    indices = np.arange(len(actual_by_lead_day))
+    for lead_offset in range(n_leads):
+        lead_day = lead_offset + 1
+        lead_dir = plot_dir / f"lead_day_{lead_day:02d}"
+        lead_dir.mkdir(exist_ok=True)
+
+        for split_index, split_indices in enumerate(
+            np.array_split(indices, n_splits),
+            start=1,
+        ):
+            fig, ax = plt.subplots(figsize=(14, 5.6))
+            if split_indices.size > 0:
+                x_values = (
+                    date_labels_by_lead_day[split_indices, lead_offset]
+                    if date_labels_by_lead_day is not None
+                    else split_indices
+                )
+                ax.plot(
+                    x_values,
+                    actual_by_lead_day[split_indices, lead_offset],
+                    label=f"Actual D+{lead_day}",
+                    alpha=0.8,
+                    linewidth=1.6,
+                )
+                ax.plot(
+                    x_values,
+                    predicted_by_lead_day[split_indices, lead_offset],
+                    label=f"Predicted D+{lead_day}",
+                    alpha=0.8,
+                    linewidth=1.6,
+                )
+            else:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "No samples in this split",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                )
+            ax.set_title(
+                f"D+{lead_day}: Predictions vs Actual - "
+                f"Split {split_index} of {n_splits}"
+            )
+            if date_labels_by_lead_day is not None:
+                ax.set_xlabel("Target Date")
+                ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m/%Y"))
+                fig.autofmt_xdate(rotation=30, ha="right")
+            else:
+                ax.set_xlabel("Test Sample Index")
+            ax.set_ylabel("Precipitation (mm)")
+            if split_indices.size > 0:
+                ax.legend()
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(
+                lead_dir
+                / f"02_predictions_timeseries_split_{split_index:02d}_of_{n_splits:02d}.png"
+            )
+            plt.close(fig)
+
+
+def _prediction_timeseries_date_labels(
+    test_dates_by_lead_day: np.ndarray | None,
+    n_rows: int,
+    n_leads: int,
+) -> np.ndarray | None:
+    """Return validated date labels for split prediction time-series plots."""
+    if test_dates_by_lead_day is None:
+        return None
+
+    date_labels = np.asarray(test_dates_by_lead_day)
+    if date_labels.ndim == 1:
+        date_labels = date_labels.reshape(-1, 1)
+    if date_labels.ndim != 2:
+        raise ValueError(
+            "Prediction time-series date labels must be one- or two-dimensional."
         )
-        ax.plot(
-            split_indices,
-            y_pred_test[split_indices],
-            label="Predicted",
-            alpha=0.8,
-            linewidth=1.6,
-        )
-        ax.set_title(f"Predictions vs Actual - Split {split_index} of {n_splits}")
-        ax.set_xlabel("Test Sample Index")
-        ax.set_ylabel("Precipitation (mm)")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(
-            plot_dir / f"02_predictions_timeseries_split_{split_index:02d}_of_{n_splits:02d}.png"
-        )
-        plt.close(fig)
+    if date_labels.shape[0] != n_rows:
+        raise ValueError("Prediction time-series date labels must match row count.")
+    if date_labels.shape[1] == 1 and n_leads > 1:
+        date_labels = np.repeat(date_labels, n_leads, axis=1)
+    elif date_labels.shape[1] != n_leads:
+        raise ValueError("Prediction time-series date columns must match lead days.")
+
+    parsed_dates = pd.to_datetime(date_labels.reshape(-1), errors="coerce")
+    if pd.isna(parsed_dates).any():
+        raise ValueError("Prediction time-series date labels must contain valid dates.")
+    return parsed_dates.to_numpy(dtype="datetime64[ns]").reshape(date_labels.shape)
+
 
 def save_visualizations(
     y_test: np.ndarray,
@@ -923,6 +1302,10 @@ def save_visualizations(
     histories_by_cluster: dict[int, object],
     output_dir: Path,
     forecast_horizon: int,
+    test_targets_by_lead_day: np.ndarray | None = None,
+    y_pred_test_by_lead_day: np.ndarray | None = None,
+    test_target_dates_by_lead_day: np.ndarray | None = None,
+    cluster_feature_splits: Mapping[str, tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> None:
     """Save the diagnostic plots for one configuration."""
     prediction_dir = output_dir / "prediction_overview"
@@ -942,13 +1325,33 @@ def save_visualizations(
     )
     fig.savefig(prediction_dir / "02_predictions_vs_actual.png")
     plt.close(fig)
-    save_prediction_timeseries_splits(y_test, y_pred_test, output_dir)
+    save_prediction_timeseries_splits(
+        test_targets_by_lead_day if test_targets_by_lead_day is not None else y_test,
+        y_pred_test_by_lead_day if y_pred_test_by_lead_day is not None else y_pred_test,
+        output_dir,
+        forecast_horizon=(
+            forecast_horizon
+            if test_targets_by_lead_day is not None
+            or y_pred_test_by_lead_day is not None
+            else None
+        ),
+        test_dates_by_lead_day=test_target_dates_by_lead_day,
+    )
+    cluster_timeseries_dates = None
+    if test_target_dates_by_lead_day is not None:
+        date_labels_by_lead_day = _prediction_timeseries_date_labels(
+            test_target_dates_by_lead_day,
+            n_rows=len(y_test),
+            n_leads=int(forecast_horizon),
+        )
+        cluster_timeseries_dates = date_labels_by_lead_day[:, -1]
     save_cluster_prediction_timeseries(
         y_test,
         y_pred_test,
         c_test,
         test_indices,
         output_dir,
+        test_dates=cluster_timeseries_dates,
     )
 
     fig, _ = plot_residuals(
@@ -980,6 +1383,7 @@ def save_visualizations(
 
     save_cluster_distribution_plot(c_test, output_dir)
     save_precipitation_by_cluster_plot(y_test, c_test, output_dir)
+    save_cluster_silhouette_plot(cluster_feature_splits, output_dir)
     save_cluster_precipitation_histograms(y_test, c_test, output_dir)
     save_input_precipitation_distribution_by_cluster(
         forecast_horizon_precipitation,
@@ -988,6 +1392,12 @@ def save_visualizations(
         forecast_horizon=forecast_horizon,
     )
     save_cluster_prediction_histograms(y_test, y_pred_test, c_test, output_dir)
+    save_cluster_prediction_scatters(
+        y_test,
+        y_pred_test,
+        c_test,
+        output_dir,
+    )
 
 
 def metrics_dataframe(
@@ -1238,6 +1648,9 @@ def save_run_outputs(
     pca_variance_threshold: float,
     forecast_horizon: int,
     test_model_selection: dict[str, object] | None = None,
+    y_pred_test_by_lead_day: np.ndarray | None = None,
+    test_target_dates_by_lead_day: np.ndarray | None = None,
+    cluster_feature_splits: Mapping[str, tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> dict[str, float | int | str | None]:
     """Save all artifacts for one run and return one sweep-level result row."""
     train_metrics = calculate_regression_metrics(y_train, y_pred_train)
@@ -1249,7 +1662,6 @@ def save_run_outputs(
         "validation": len(y_val),
         "test": len(y_test),
     }
-
     metrics_dataframe(train_metrics, val_metrics, test_metrics).to_csv(
         output_dir / "metrics_summary.csv",
         index=False,
@@ -1280,9 +1692,23 @@ def save_run_outputs(
     test_targets_by_lead_day = np.asarray(test_targets_by_lead_day, dtype=float)
     if test_targets_by_lead_day.ndim == 1:
         test_targets_by_lead_day = test_targets_by_lead_day.reshape(-1, 1)
+    prediction_by_lead_day, _uses_lead_day_outputs = _lead_day_prediction_matrix(
+        y_pred_test,
+        y_pred_test_by_lead_day,
+        int(test_targets_by_lead_day.shape[1]),
+        n_rows=len(test_targets_by_lead_day),
+    )
     for lead_offset in range(test_targets_by_lead_day.shape[1]):
+        lead_day = lead_offset + 1
         predictions_df[f"actual_lead_day_{lead_offset + 1}"] = (
             test_targets_by_lead_day[:, lead_offset]
+        )
+        predictions_df[f"predicted_lead_day_{lead_day}"] = (
+            prediction_by_lead_day[:, lead_offset]
+        )
+        predictions_df[f"residual_lead_day_{lead_day}"] = (
+            test_targets_by_lead_day[:, lead_offset]
+            - prediction_by_lead_day[:, lead_offset]
         )
     if test_model_selection is not None:
         selected_model_by_sample = np.asarray(
@@ -1342,6 +1768,7 @@ def save_run_outputs(
         test_targets_by_lead_day,
         output_dir,
         forecast_horizon=forecast_horizon,
+        y_pred_test_by_lead_day=prediction_by_lead_day,
     )
 
     if test_model_selection is not None:
@@ -1386,6 +1813,10 @@ def save_run_outputs(
         histories_by_cluster,
         output_dir,
         forecast_horizon=forecast_horizon,
+        test_targets_by_lead_day=test_targets_by_lead_day,
+        y_pred_test_by_lead_day=prediction_by_lead_day,
+        test_target_dates_by_lead_day=test_target_dates_by_lead_day,
+        cluster_feature_splits=cluster_feature_splits,
     )
 
     result = {

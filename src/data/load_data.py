@@ -54,7 +54,7 @@ def load_station_daily_data(
     Raises:
         FileNotFoundError: If station file not found.
     """
-    file_path = data_root / state / station_id / f"{station_id}_2000_2025_daily.csv"
+    file_path = data_root / state / station_id / f"{station_id}_2000_2026_daily.csv"
 
     if not file_path.exists():
         raise FileNotFoundError(f"Station file not found: {file_path}")

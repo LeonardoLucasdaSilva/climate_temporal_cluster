@@ -42,15 +42,21 @@ Or use the root launcher:
 3. Split the daily dataframe chronologically into train, validation, and test
    blocks.
 4. Build sliding windows independently inside each split.
-5. Fit the selected normalizer (`standard` or `minmax`) and PCA on training
+5. Fit the selected covariate normalizer (`SCALER_TYPE`), optional
+   precipitation normalizer (`PRECIPITATION_SCALER`), and PCA on training
    rows/windows only, then transform validation and test with those training
    transforms.
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
    calculate training-cluster centroids, then assign validation and test
    windows to the nearest existing centroid.
-7. Use precipitation at the configured forecast horizon as the target inside
-   each split.
-8. Train one LSTM per training cluster.
+7. Build one target column for each lead day from D+1 through the configured
+   forecast horizon inside each split. The final D+`FORECAST_HORIZON` column is
+   still kept as the scalar target for legacy metrics and plots.
+8. When `PRECIPITATION_SCALER` is set, normalize the LSTM target matrix before
+   training. With `PRECIPITATION_SCALER = None`, precipitation features and
+   targets stay in millimeters. Each LSTM still has one output unit per lead
+   day, so the loss is optimized across the full D+1..D+`FORECAST_HORIZON`
+   target matrix.
 9. Keep train and validation predictions tied to each sample's own cluster
    model.
 10. Evaluate test samples with either their own cluster model only or, when
@@ -66,8 +72,9 @@ Change experiment variables in `run_experiment.py`:
 - clustering sweep: `WINDOW_SIZES`, `N_CLUSTERS_LIST`,
   `CLUSTERING_ALGORITHM`, `FORECAST_HORIZON`, `MANUAL_ZERO_TOLERANCE`,
   `SIGMA_MODE`, `N_SIGMA_VALUES`, `MANUAL_SIGMA_VALUES`, `USE_ALL_FEATURES`
-- normalization: `NORMALIZE`, `SCALER_TYPE`; supported scaler values are
-  `"standard"` and `"minmax"`
+- normalization: `NORMALIZE`, `SCALER_TYPE` for covariates and
+  `PRECIPITATION_SCALER` for `PRECIPITACAO_TOTAL` plus the LSTM target;
+  supported values are `"standard"`, `"minmax"`, and `None`
 - test evaluation mode: `TEST_ALL_MODELS`
 - exported table metrics: `QUANTITATIVE_METRICS`
 - model hyperparameters: `LSTM_UNITS`, `LSTM_UNITS_2`, `DROPOUT_RATE`,
@@ -75,7 +82,7 @@ Change experiment variables in `run_experiment.py`:
 - LSTM loss: `LSTM_LOSS_FUNCTION`, `LOSS_QUANTILES`,
   `LOSS_QUANTILE_WEIGHTS`. Use `"quantile_weighted_mse"` to calculate
   cluster-specific precipitation thresholds from training-target quantiles in
-  millimeters and weight rarer intensity bins automatically.
+  the active target scale and weight rarer intensity bins automatically.
 - training settings: `EPOCHS`, `BATCH_SIZE`, `EARLY_STOPPING`, `PATIENCE`,
   `VERBOSE_TRAINING`, `SHOW_CONSOLE_INFO`
 - data split: `TRAIN_RATIO`, `VAL_RATIO`, `RANDOM_STATE`
@@ -95,15 +102,16 @@ For spectral clustering, set `SIGMA_MODE = "auto"` to generate
 Set `CLUSTERING_ALGORITHM` to `"kmeans"`, `"spectral"`, or `"manual"`.
 Manual clustering reserves label `0` for known zero-rain targets and splits
 known positive targets into ordered lower-to-heavier rain groups. Set
-`FORECAST_HORIZON = 1` for next-day rain or use a larger positive integer for
-a later horizon. `MANUAL_ZERO_TOLERANCE` controls the maximum precipitation
-treated as zero.
+`FORECAST_HORIZON = 1` for next-day rain or use a larger positive integer to
+train the LSTM on every lead day from D+1 through that horizon.
+`MANUAL_ZERO_TOLERANCE` controls the maximum precipitation treated as zero.
 
 Forecast-horizon precipitation alignment is handled by
-`methods.tools.precipitation_utils`. The LSTM pipeline uses
-`precipitation_targets` separately for the train, validation, and test
-dataframes so the final windows in one split do not use target rows from the
-next split.
+`methods.tools.precipitation_utils`. The LSTM pipeline uses the configured
+horizon separately for the train, validation, and test dataframes, then expands
+the valid windows into lead-day matrices. Windows with any missing target from
+D+1 through D+`FORECAST_HORIZON` are dropped, so the loss never receives a
+partial or NaN target row.
 
 Set `SHOW_CONSOLE_INFO = False` to hide pipeline progress messages and Keras
 training output. The root `run_experiments.py` launcher has the same setting and
@@ -117,11 +125,15 @@ diagnostics.
 
 ## Outputs
 
-Each run creates a sweep folder under `outputs/`, usually named like:
+Each run creates a sweep folder under the current daily output folder, usually
+named like:
 
 ```text
-outputs/lstm_cluster_sweep_<STATE>_<STATION>_<timestamp>/
+outputs/dd_mm_yy/lstm_cluster_sweep_<STATE>_<STATION>_<timestamp>/
 ```
+
+The daily folder is controlled by `group_outputs_by_day` and
+`date_folder_format` in `config_output.yaml`.
 
 The sweep folder contains summary CSV/text files and LaTeX tables. Each
 configuration subfolder contains run metrics, predictions, reports, and plots.
@@ -150,20 +162,30 @@ value, they all rank candidate predictions by closeness to the actual value.
 RMSLE can differ because it ranks closeness after applying the logarithmic
 transform.
 
-Each configuration folder also gets `experiment_report.tex`. When all-model
-test selection is enabled, this report includes a compact `Test Model
-Selection` section showing changed sample counts and metric improvements. If a
-local LaTeX compiler is available, the pipeline also writes
-`experiment_report.pdf`; if PDF compilation fails,
-`experiment_report_compile.log` is saved for troubleshooting.
+Each configuration folder also gets `experiment_report.tex`. Its
+`Configuration` section includes the selected covariate scaler, precipitation
+scaler, and target scale for that run. Predictions are inverse-transformed to
+millimeters before metrics and plots. When all-model test selection is enabled,
+this report includes a compact `Test Model Selection` section showing changed
+sample counts and metric improvements. If a local LaTeX compiler is
+available, the pipeline also writes `experiment_report.pdf`; if PDF compilation
+fails, `experiment_report_compile.log` is saved for troubleshooting.
 
 Each configuration also groups generated images by purpose. General prediction
 plots go under `prediction_overview/`, split time-series plots under
-`prediction_timeseries_splits/`, residual/error plots under
-`residual_diagnostics/`, cluster diagnostics under `cluster_diagnostics/`, and
-training curves under `model_fit/`. Existing per-cluster collections remain in
-folders such as `cluster_precipitation_histograms/`,
-`cluster_prediction_histograms/`, and `cluster_prediction_timeseries/`.
+`prediction_timeseries_splits/lead_day_XX/` with four sequential test plots per
+forecast lead day and date-formatted x-axis labels from the source dataset,
+residual/error plots under `residual_diagnostics/`, cluster diagnostics under
+`cluster_diagnostics/`, and training curves under
+`model_fit/`. The cluster diagnostics include `08_silhouette_analysis.png` and
+`silhouette_scores.csv`, computed from the same split feature matrices and
+cluster labels used by the current pipeline. Existing per-cluster collections
+remain in folders such as
+`cluster_precipitation_histograms/`,
+`cluster_prediction_histograms/`, `cluster_prediction_timeseries/`, and
+`cluster_prediction_scatter/`. The `cluster_prediction_timeseries/` plots use
+the final forecast-horizon target date on the x-axis, formatted as
+`dd/mm/YYYY`.
 
 Each configuration also saves
 `input_forecast_horizon_precipitation_by_cluster.csv`, which assigns the
@@ -175,12 +197,12 @@ analysis scripts. Both files include `current_window_precipitation_mm`,
 Forecast-horizon diagnostics are saved under
 `forecast_horizon_diagnostics/`. They compare the precipitation on the final
 input-window day with the target at `FORECAST_HORIZON`, include a persistence
-baseline that uses current precipitation as the forecast, and add the same
-section to `experiment_report.tex`.
+baseline that uses current precipitation as the forecast, write CSV/text
+summaries, and add the same section to `experiment_report.tex`.
 
 The same folder also includes lead-day diagnostics for the test split. The
-pipeline compares the model prediction with the real precipitation observed at
-D+1, D+2, ..., D+`FORECAST_HORIZON` for each test window, writes
+pipeline compares each model output D+1, D+2, ..., D+`FORECAST_HORIZON` with
+the matching real precipitation for each test window, writes
 `test_prediction_by_lead_day.csv` and
 `test_prediction_metrics_by_lead_day.csv`, and saves both a combined
 true-vs-predicted grid and one true-vs-predicted plot per lead day.
@@ -197,3 +219,7 @@ Because the test split is sparse along the original timeline, gaps larger than
 ten windows are shortened for readability and marked with vertical dotted
 lines. The original indices remain on the ticks, so this compression does not
 change sample order or metric calculations.
+
+The automatic report also includes a `Cluster Prediction Scatter` section with
+one test actual-versus-predicted scatter plot per cluster. Test samples are red
+x markers and each plot keeps its legend.

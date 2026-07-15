@@ -29,6 +29,12 @@ Run the main experiment from the project root:
 lstm-cluster
 ```
 
+Run the ARMA baseline from the project root:
+
+```powershell
+python run_arma.py
+```
+
 Run tests:
 
 ```powershell
@@ -41,16 +47,23 @@ Run tests:
 climate_temporal_cluster/
 |-- data/                         # Raw INMET data files
 |-- experiments/
+|   |-- create_beamer_report.py      # Build Beamer decks from saved run plots
 |   |-- temporary_experiments/     # Older scripts kept for review
 |   `-- experiments.md
 |-- outputs/                       # Generated experiment outputs
+|-- run_arma.py                    # Root launcher for the ARMA baseline
 |-- src/
 |   |-- config.py                  # Project paths and output config helpers
 |   |-- data/
 |   |   |-- load_data.py           # INMET CSV loading
 |   |   |-- clean_data.py          # Data cleaning helpers
+|   |   |-- arma_outputs.py        # ARMA baseline output writers
 |   |   `-- visualize_data.py      # Starter visualization module
 |   |-- methods/
+|   |   |-- arma/
+|   |   |   |-- run_arma.py        # ARMA baseline runner
+|   |   |   |-- arma.md            # Folder documentation
+|   |   |   `-- pipeline.py        # ARMA fitting and rolling forecasts
 |   |   |-- cluster/
 |   |   |   |-- manual.py          # Horizon-rain-guided clustering
 |   |   |   |-- ng.py              # Spectral clustering implementation
@@ -102,21 +115,61 @@ For each configuration, the experiment runs these stages:
 3. Split the daily dataframe chronologically into train, validation, and test
    blocks.
 4. Build sliding windows independently inside each dataframe split.
-5. Fit the selected normalizer (`standard` or `minmax`) and PCA on training
-   rows/windows only, then transform validation and test with the training
-   transforms.
+5. Fit the selected covariate normalizer (`SCALER_TYPE`) and, when enabled, the
+   precipitation normalizer (`PRECIPITATION_SCALER`) on training rows/windows
+   only, then transform validation and test with the training transforms.
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
    calculate training-cluster centroids, then assign validation and test
    windows to the nearest existing centroid.
-7. Create precipitation targets at the configured forecast horizon inside each
-   split.
-8. Train one LSTM model per training cluster.
+7. Create one precipitation target column per lead day from D+1 through the
+   configured forecast horizon inside each split.
+8. When `PRECIPITATION_SCALER` is set, normalize the LSTM target matrix, train
+   one LSTM model per training cluster with one output unit per lead day, then
+   inverse-transform predictions before metrics and plots. With
+   `PRECIPITATION_SCALER = None`, precipitation features and targets stay in
+   millimeters.
 9. Predict train and validation precipitation with each sample's own cluster
    model.
 10. Evaluate test samples with either their own cluster model only or, when
    `TEST_ALL_MODELS = True`, every trained cluster model with per-metric sample
    selection.
 11. Save metrics, reports, predictions, plots, and LaTeX tables.
+
+## ARMA Baseline
+
+The ARMA baseline is configured at the top of
+`src/methods/arma/run_arma.py` and can be launched with either
+`python run_arma.py` or the installed `arma-baseline` command.
+
+```python
+STATE = "RS"
+STATION_ID = "A801"
+WINDOW_SIZES = [5, 10, 15]
+FORECAST_HORIZON = 5
+ARMA_ORDERS = [(1, 0), (2, 1), (5, 1)]
+```
+
+Each ARMA model is fit as `ARIMA(order=(p, 0, q))` with `statsmodels` on the
+training precipitation series only. Validation and test forecasts keep those
+parameters fixed and condition each prediction on observations available up to
+the forecast origin. `WINDOW_SIZES` is used for target alignment with the LSTM
+sliding-window convention, so the ARMA plots use the same D+1 through
+D+`FORECAST_HORIZON` lead-day interpretation.
+
+ARMA outputs are saved under:
+
+```text
+outputs/dd_mm_yy/ARMA/arma_sweep_<STATE>_<STATION>_<timestamp>/
+```
+
+Each configuration folder includes `metrics_summary.csv`,
+`test_predictions.csv`, `summary.txt`, `evaluation_report.txt`,
+`arma_model_summary.txt`, `prediction_overview/`,
+`prediction_timeseries_splits/lead_day_XX/`, `residual_diagnostics/`,
+`model_fit/`, and `forecast_horizon_diagnostics/` with
+`test_prediction_by_lead_day.csv`,
+`test_prediction_metrics_by_lead_day.csv`, lead-day error curves, and
+true-vs-predicted plots.
 
 ## Data Loading
 
@@ -304,8 +357,9 @@ For each cluster, the training loop:
 7. Calculates selected-model cluster-level test metrics from those sample-level
    predictions.
 
-The model predicts one value: precipitation at the configured forecast horizon,
-in millimeters.
+The model predicts one value per lead day from D+1 through the configured
+forecast horizon, in millimeters. The final D+`FORECAST_HORIZON` output remains
+the scalar target used by legacy summary metrics.
 
 Set `TEST_ALL_MODELS = False` in `run_experiment.py` to keep the original
 behavior where each test sample is predicted only by the LSTM trained on its
@@ -314,11 +368,15 @@ write the extra model-selection reports.
 
 ## Evaluation Outputs
 
-Each run writes into a timestamped folder under `outputs/`, for example:
+Each run writes into a timestamped folder under the current daily output folder,
+for example:
 
 ```text
-outputs/lstm_cluster_sweep_RS_A801_YYYYMMDD_HHMMSS/
+outputs/dd_mm_yy/lstm_cluster_sweep_RS_A801_YYYYMMDD_HHMMSS/
 ```
+
+The daily folder uses the `date_folder_format` setting from
+`src/methods/lstm_cluster/config_output.yaml`; by default it is `"%d_%m_%y"`.
 
 Sweep-level files:
 
@@ -344,22 +402,34 @@ Each configuration folder contains:
 - `experiment_report.pdf`, when a local LaTeX compiler is available
 - grouped prediction, residual, error, cluster-performance, and histogram plots
   under folders such as `prediction_overview/`,
-  `prediction_timeseries_splits/`, `residual_diagnostics/`,
+  `prediction_timeseries_splits/lead_day_XX/`, `residual_diagnostics/`,
   `cluster_diagnostics/`, `model_fit/`, `cluster_precipitation_histograms/`,
-  and `cluster_prediction_histograms/`
+  `cluster_prediction_histograms/`, `cluster_prediction_timeseries/`, and
+  `cluster_prediction_scatter/`
+- split time-series plots in `prediction_timeseries_splits/lead_day_XX/` use
+  target dates from the source dataset on the x-axis, formatted as `dd/mm/YYYY`
+- cluster silhouette diagnostics under `cluster_diagnostics/`, including
+  `08_silhouette_analysis.png` and `silhouette_scores.csv`
 - input-window forecast-horizon precipitation distribution plots by cluster under
   `input_precipitation_distribution_by_cluster/`
-- current-window versus forecast-horizon target diagnostics, persistence
-  baseline metrics, and horizon behavior plots under
-  `forecast_horizon_diagnostics/`
-- lead-day diagnostics under `forecast_horizon_diagnostics/`, including
+- current-window versus forecast-horizon target diagnostics and persistence
+  baseline metrics under `forecast_horizon_diagnostics/`
+- lead-day diagnostics comparing each D+k output with its matching real
+  precipitation under `forecast_horizon_diagnostics/`, including
   `test_prediction_by_lead_day.csv`,
   `test_prediction_metrics_by_lead_day.csv`, a lead-day error curve, a
   true-vs-predicted grid for D+1 through `FORECAST_HORIZON`, and individual
   true-vs-predicted plots under
   `forecast_horizon_diagnostics/true_vs_predicted_by_lead_day/`
 - per-cluster test performance time series with actual values, predictions,
-  residuals, cluster metrics, and compressed large temporal gaps
+  residuals, cluster metrics, and target dates formatted as `dd/mm/YYYY`
+- per-cluster test actual-versus-predicted scatter plots with red x markers and
+  plot legends
+
+The `Configuration` section of `experiment_report.tex` and the compiled PDF
+record the run's selected covariate scaler, precipitation scaler, and LSTM
+target scale. Predictions are inverse-transformed to millimeters before metrics
+and plots.
 
 Metrics include:
 
@@ -382,10 +452,30 @@ Because the selection is made on the test set at sample level, the improvement
 is descriptive and useful for diagnosing cross-cluster transfer rather than an
 unbiased generalization estimate.
 
-Since selection is made for one scalar target at a time, MSE, RMSE, MAE, and
-MAPE usually choose the same model: for a fixed observed precipitation value,
-all of them rank candidate predictions by closeness to the actual value. RMSLE
-can differ because it ranks closeness after a logarithmic transform.
+To create a slide deck from selected plots in one saved configuration folder,
+open `experiments/create_beamer_report.py`, edit `RUN_DIR` and
+`SELECTED_PLOTS`, then run:
+
+```powershell
+python experiments\create_beamer_report.py
+```
+
+The runner writes `beamer.tex` and compiles `beamer.pdf` by default. Set
+`COMPILE_PDF = False` in the script if only the TeX source is needed.
+
+The command-line form is still available when needed:
+
+```powershell
+python experiments\create_beamer_report.py outputs\dd_mm_yy\lstm_cluster_sweep_RS_A801_YYYYMMDD_HHMMSS\RS_A801_w15_k03_kmeans_sigma_na --plots prediction_overview\02_predictions_vs_actual.png cluster_prediction_scatter\*.png residual_diagnostics\*.png
+```
+
+Use `--list-plots` on the same run folder to print all selectable plot paths.
+
+Since all-model selection is still made on the final scalar
+D+`FORECAST_HORIZON` output, MSE, RMSE, MAE, and MAPE usually choose the same
+model: for a fixed observed precipitation value, all of them rank candidate
+predictions by closeness to the actual value. RMSLE can differ because it ranks
+closeness after a logarithmic transform.
 
 Plot helpers live in:
 
@@ -408,7 +498,8 @@ The default sweep can be expensive. To test quickly, edit
 WINDOW_SIZES = [8]
 N_CLUSTERS_LIST = [3]
 NORMALIZE = True
-SCALER_TYPE = "standard"  # or "minmax"
+SCALER_TYPE = "standard"  # covariates: "standard" or "minmax"
+PRECIPITATION_SCALER = None  # None keeps PRECIPITACAO_TOTAL and targets in mm
 LSTM_LOSS_FUNCTION = "quantile_weighted_mse"
 LOSS_QUANTILES = [0.5, 0.75, 0.9, 0.95]
 LOSS_QUANTILE_WEIGHTS = "auto"
@@ -421,7 +512,8 @@ SHOW_CONSOLE_INFO = True
 Set `LSTM_LOSS_FUNCTION = "mean_squared_error"` to keep the standard MSE
 training objective. Set it to `"quantile_weighted_mse"` to weight each
 cluster-specific LSTM by precipitation quantile bins calculated from that
-cluster's own training rain targets, in millimeters. With
+cluster's own training rain targets across all lead days, in the active target
+scale. With
 `LOSS_QUANTILE_WEIGHTS = "auto"`, rarer rain-intensity bins receive larger
 weights automatically.
 

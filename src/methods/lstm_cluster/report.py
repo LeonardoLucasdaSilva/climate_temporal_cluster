@@ -22,9 +22,11 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
             "cluster_diagnostics/05_cluster_performance.png",
             "cluster_diagnostics/06_cluster_distribution.png",
             "cluster_diagnostics/07_precipitation_distribution_by_cluster.png",
+            "cluster_diagnostics/08_silhouette_analysis.png",
             "05_cluster_performance.png",
             "06_cluster_distribution.png",
             "07_precipitation_distribution_by_cluster.png",
+            "08_silhouette_analysis.png",
         ),
     ),
     (
@@ -38,9 +40,6 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
     (
         "Forecast Horizon Diagnostics",
         (
-            "forecast_horizon_diagnostics/09_current_vs_forecast_horizon_by_split.png",
-            "forecast_horizon_diagnostics/10_test_current_target_prediction_timeseries.png",
-            "forecast_horizon_diagnostics/11_test_current_vs_horizon_by_cluster.png",
             "forecast_horizon_diagnostics/12_prediction_error_by_lead_day.png",
             "forecast_horizon_diagnostics/13_true_vs_predicted_by_lead_day.png",
             "forecast_horizon_diagnostics/14_prediction_vs_actual_timeseries_by_lead_day.png",
@@ -68,6 +67,7 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
     (
         "Prediction Time Series Splits",
         (
+            "prediction_timeseries_splits/lead_day_*/02_predictions_timeseries_split_*_of_04.png",
             "prediction_timeseries_splits/02_predictions_timeseries_split_*_of_04.png",
             "02_predictions_timeseries_split_*_of_04.png",
         ),
@@ -76,6 +76,12 @@ FIGURE_SECTIONS: tuple[tuple[str, Sequence[str]], ...] = (
         "Cluster Prediction Time Series",
         (
             "cluster_prediction_timeseries/*.png",
+        ),
+    ),
+    (
+        "Cluster Prediction Scatter",
+        (
+            "cluster_prediction_scatter/*.png",
         ),
     ),
 )
@@ -186,22 +192,42 @@ def config_mapping(config: object | Mapping[str, object] | None) -> dict[str, ob
 def config_summary_list(config: object | Mapping[str, object] | None) -> str:
     """Return a minimal configuration summary as bullets."""
     config_map = config_mapping(config)
-    labels = (
+    leading_labels = (
         ("state", "State"),
         ("station_id", "Station ID"),
         ("window_size", "Window Size"),
         ("n_clusters", "Number of Clusters"),
         ("algorithm", "Algorithm"),
         ("sigma", "Sigma"),
+    )
+    trailing_labels = (
         ("forecast_horizon", "Forecast Horizon"),
         ("manual_zero_tolerance", "Manual Zero Tolerance"),
         ("test_all_models", "Test Samples on All Models"),
     )
     rows = [
         (label, config_map.get(key))
-        for key, label in labels
+        for key, label in leading_labels
         if key in config_map
     ]
+    if "normalize" in config_map:
+        rows.append(("Normalize", config_map.get("normalize")))
+    covariate_scaler = configured_scaler_summary(config_map, "scaler_type")
+    if covariate_scaler is not None:
+        rows.append(("Covariate Scaler", covariate_scaler))
+    precipitation_scaler = configured_scaler_summary(
+        config_map,
+        "precipitation_scaler_type",
+    )
+    if precipitation_scaler is not None:
+        rows.append(("Precipitation Scaler", precipitation_scaler))
+    if "target_scale" in config_map:
+        rows.append(("LSTM Target Scale", config_map.get("target_scale")))
+    rows.extend(
+        (label, config_map.get(key))
+        for key, label in trailing_labels
+        if key in config_map
+    )
     if not rows:
         return ""
 
@@ -217,6 +243,23 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
             r"\end{itemize}",
         ]
     )
+
+
+def configured_scaler_summary(
+    config_map: Mapping[str, object],
+    key: str,
+) -> str | None:
+    """Return a configured scaler name, honoring disabled normalization."""
+    if key not in config_map:
+        return None
+
+    if config_map.get("normalize") is False:
+        return "none"
+
+    scaler_type = config_map.get(key)
+    if scaler_type is None or str(scaler_type).strip().lower() in {"", "none"}:
+        return "none"
+    return str(scaler_type)
 
 
 def lstm_configs_list(config: object | Mapping[str, object] | None) -> str:
@@ -439,6 +482,9 @@ def timeseries_split_figure_blocks(output_dir: Path, figures: Sequence[Path]) ->
     for index, figure_path in enumerate(figures, start=1):
         relative_path = figure_path.relative_to(output_dir).as_posix()
         caption = figure_path.stem.replace("_", " ").replace("-", " ").title()
+        lead_day = figure_path.parent.name.removeprefix("lead_day_")
+        if lead_day != figure_path.parent.name and lead_day.isdigit():
+            caption = f"D+{int(lead_day)} - {caption}"
         lines.extend(
             [
                 r"\begin{figure}[H]",

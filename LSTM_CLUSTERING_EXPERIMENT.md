@@ -278,7 +278,7 @@ Output folder naming and shared plotting defaults are configured in
 ## Output Directory Structure
 
 ```
-outputs/lstm_cluster_sweep_RS_A801_<timestamp>/
+outputs/dd_mm_yy/lstm_cluster_sweep_RS_A801_<timestamp>/
 |-- sweep_results.csv
 |-- sweep_summary.txt
 |-- overleaf_table.txt
@@ -329,8 +329,9 @@ lstm-cluster
 
 ### Output
 - Console output with step-by-step progress
-- All results saved to a timestamped sweep folder under `outputs/`, with one
-  configuration subfolder per window, cluster count, algorithm, and sigma.
+- All results saved to a timestamped sweep folder under the current
+  `outputs/dd_mm_yy/` daily folder, with one configuration subfolder per
+  window, cluster count, algorithm, and sigma.
 
 ---
 
