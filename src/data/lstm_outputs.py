@@ -935,10 +935,140 @@ def save_precipitation_by_cluster_plot(
     plt.close(fig)
 
 
-def save_cluster_distribution_plot(c_test: np.ndarray, output_dir: Path) -> None:
-    """Save cluster sample counts for the test set."""
+def cluster_batch_statistics(
+    c_train: np.ndarray,
+    c_val: np.ndarray,
+    c_test: np.ndarray,
+    batch_size: int,
+) -> pd.DataFrame:
+    """Return split counts and optimizer steps per epoch for each cluster."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive.")
+
+    labels_by_split = {
+        "n_train": np.asarray(c_train).reshape(-1),
+        "n_validation": np.asarray(c_val).reshape(-1),
+        "n_test": np.asarray(c_test).reshape(-1),
+    }
+    nonempty_labels = [labels for labels in labels_by_split.values() if labels.size]
+    if not nonempty_labels:
+        return pd.DataFrame(
+            columns=[
+                "cluster",
+                "n_train",
+                "n_validation",
+                "n_test",
+                "batch_size",
+                "optimizer_steps_per_epoch",
+            ]
+        )
+
+    cluster_ids = np.unique(np.concatenate(nonempty_labels))
+    rows = []
+    for cluster_id in cluster_ids:
+        counts = {
+            name: int(np.count_nonzero(labels == cluster_id))
+            for name, labels in labels_by_split.items()
+        }
+        rows.append(
+            {
+                "cluster": int(cluster_id),
+                **counts,
+                "batch_size": int(batch_size),
+                "optimizer_steps_per_epoch": int(
+                    np.ceil(counts["n_train"] / batch_size)
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def save_cluster_distribution_plot(
+    c_test: np.ndarray,
+    output_dir: Path,
+    *,
+    c_train: np.ndarray | None = None,
+    c_val: np.ndarray | None = None,
+    batch_size: int | None = None,
+) -> pd.DataFrame | None:
+    """Save cluster counts and, when available, per-cluster training workload."""
     plot_dir = output_dir / "cluster_diagnostics"
     plot_dir.mkdir(exist_ok=True)
+
+    if c_train is not None and batch_size is not None:
+        statistics = cluster_batch_statistics(
+            c_train,
+            np.asarray([]) if c_val is None else c_val,
+            c_test,
+            batch_size,
+        )
+        statistics.to_csv(
+            plot_dir / "cluster_training_batch_statistics.csv",
+            index=False,
+        )
+
+        figure_height = max(5.0, 2.4 + 0.32 * len(statistics))
+        fig, (ax, table_ax) = plt.subplots(
+            1,
+            2,
+            figsize=(16, figure_height),
+            gridspec_kw={"width_ratios": [1.55, 1.0]},
+        )
+        cluster_positions = np.arange(len(statistics), dtype=float)
+        bar_width = 0.25
+        split_columns = (
+            ("n_train", "Training", "#4C78A8"),
+            ("n_validation", "Validation", "#F58518"),
+            ("n_test", "Test", "#54A24B"),
+        )
+        for offset, (column, label, color) in zip(
+            (-bar_width, 0.0, bar_width),
+            split_columns,
+        ):
+            bars = ax.bar(
+                cluster_positions + offset,
+                statistics[column],
+                width=bar_width,
+                label=label,
+                color=color,
+                alpha=0.85,
+            )
+            ax.bar_label(bars, padding=2, fontsize=8)
+
+        ax.set_title("Cluster Distribution by Split")
+        ax.set_xlabel("Cluster")
+        ax.set_ylabel("Samples")
+        ax.set_xticks(cluster_positions)
+        ax.set_xticklabels(statistics["cluster"].astype(str))
+        ax.legend()
+        ax.grid(True, axis="y", alpha=0.25)
+
+        table_ax.axis("off")
+        table_ax.set_title(
+            f"Training Workload (batch_size={batch_size})",
+            pad=12,
+        )
+        table = table_ax.table(
+            cellText=[
+                [
+                    int(row.cluster),
+                    int(row.n_train),
+                    int(row.optimizer_steps_per_epoch),
+                ]
+                for row in statistics.itertuples(index=False)
+            ],
+            colLabels=["Cluster", "n_train", "ceil(n_train / batch)"],
+            cellLoc="center",
+            colLoc="center",
+            loc="center",
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(9)
+        table.scale(1.0, 1.25)
+        fig.tight_layout()
+        fig.savefig(plot_dir / "06_cluster_distribution.png")
+        plt.close(fig)
+        return statistics
 
     unique_clusters, counts = np.unique(c_test, return_counts=True)
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -950,6 +1080,7 @@ def save_cluster_distribution_plot(c_test: np.ndarray, output_dir: Path) -> None
     fig.tight_layout()
     fig.savefig(plot_dir / "06_cluster_distribution.png")
     plt.close(fig)
+    return None
 
 
 def _prepare_silhouette_inputs(
@@ -1302,13 +1433,14 @@ def save_visualizations(
     histories_by_cluster: dict[int, object],
     output_dir: Path,
     forecast_horizon: int,
+    batch_size: int | None = None,
     test_targets_by_lead_day: np.ndarray | None = None,
     y_pred_test_by_lead_day: np.ndarray | None = None,
     test_target_dates_by_lead_day: np.ndarray | None = None,
     cluster_feature_splits: Mapping[str, tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> None:
     """Save the diagnostic plots for one configuration."""
-    prediction_dir = output_dir / "prediction_overview"
+    prediction_dir = output_dir / "prediction_overview_same_cluster"
     residual_dir = output_dir / "residual_diagnostics"
     cluster_dir = output_dir / "cluster_diagnostics"
     prediction_dir.mkdir(exist_ok=True)
@@ -1381,7 +1513,22 @@ def save_visualizations(
     fig.savefig(cluster_dir / "05_cluster_performance.png")
     plt.close(fig)
 
-    save_cluster_distribution_plot(c_test, output_dir)
+    training_cluster_labels = None
+    validation_cluster_labels = None
+    if cluster_feature_splits is not None:
+        training_split = cluster_feature_splits.get("Training")
+        validation_split = cluster_feature_splits.get("Validation")
+        if training_split is not None:
+            training_cluster_labels = training_split[1]
+        if validation_split is not None:
+            validation_cluster_labels = validation_split[1]
+    save_cluster_distribution_plot(
+        c_test,
+        output_dir,
+        c_train=training_cluster_labels,
+        c_val=validation_cluster_labels,
+        batch_size=batch_size,
+    )
     save_precipitation_by_cluster_plot(y_test, c_test, output_dir)
     save_cluster_silhouette_plot(cluster_feature_splits, output_dir)
     save_cluster_precipitation_histograms(y_test, c_test, output_dir)
@@ -1398,6 +1545,64 @@ def save_visualizations(
         c_test,
         output_dir,
     )
+
+
+def save_oracle_model_visualizations(
+    test_model_selection: dict[str, object],
+    y_test: np.ndarray,
+    c_test: np.ndarray,
+    test_indices: np.ndarray,
+    forecast_horizon_precipitation: np.ndarray,
+    input_cluster_labels: np.ndarray,
+    histories_by_cluster: dict[int, object],
+    output_dir: Path,
+    *,
+    forecast_horizon: int,
+    batch_size: int | None,
+    test_targets_by_lead_day: np.ndarray,
+    regular_prediction_by_lead_day: np.ndarray,
+    test_target_dates_by_lead_day: np.ndarray | None,
+    cluster_feature_splits: Mapping[str, tuple[np.ndarray, np.ndarray]] | None,
+) -> bool:
+    """Mirror normal plots using only the post-hoc oracle prediction."""
+    selection_summary = dict(test_model_selection.get("summary", {}))
+    primary_metric = str(selection_summary.get("primary_metric", "RMSE"))
+    oracle_predictions = np.asarray(
+        dict(test_model_selection.get("selected_prediction_by_metric", {})).get(
+            primary_metric,
+            [],
+        ),
+        dtype=float,
+    )
+    oracle_predictions_by_lead_day = np.asarray(
+        test_model_selection.get("selected_prediction_by_lead_day", []),
+        dtype=float,
+    )
+    if (
+        len(oracle_predictions) != len(y_test)
+        or oracle_predictions_by_lead_day.shape != regular_prediction_by_lead_day.shape
+    ):
+        return False
+
+    oracle_model_dir = output_dir / "oracle_model"
+    oracle_model_dir.mkdir(exist_ok=True)
+    save_visualizations(
+        y_test,
+        oracle_predictions,
+        c_test,
+        test_indices,
+        forecast_horizon_precipitation,
+        input_cluster_labels,
+        histories_by_cluster,
+        oracle_model_dir,
+        forecast_horizon=forecast_horizon,
+        batch_size=batch_size,
+        test_targets_by_lead_day=test_targets_by_lead_day,
+        y_pred_test_by_lead_day=oracle_predictions_by_lead_day,
+        test_target_dates_by_lead_day=test_target_dates_by_lead_day,
+        cluster_feature_splits=cluster_feature_splits,
+    )
+    return True
 
 
 def metrics_dataframe(
@@ -1428,6 +1633,314 @@ def cluster_metrics_dataframe(metrics_by_cluster: dict[int, dict[str, float]]) -
     return pd.DataFrame(rows)
 
 
+def oracle_transfer_matrix(
+    selection_df: pd.DataFrame,
+    primary_metric: str,
+) -> pd.DataFrame:
+    """Count oracle-selected LSTMs for windows assigned to each test cluster."""
+    required_columns = {
+        "test_cluster",
+        "metric",
+        "selected_model_cluster",
+    }
+    if selection_df.empty or not required_columns.issubset(selection_df.columns):
+        return pd.DataFrame()
+
+    primary_rows = selection_df.loc[
+        selection_df["metric"].astype(str).str.upper()
+        == str(primary_metric).upper()
+    ]
+    if primary_rows.empty:
+        return pd.DataFrame()
+
+    matrix = pd.crosstab(
+        primary_rows["test_cluster"].astype(int),
+        primary_rows["selected_model_cluster"].astype(int),
+    ).sort_index(axis=0).sort_index(axis=1)
+    matrix.index.name = "assigned_test_cluster"
+    matrix.columns = [f"LSTM_{int(cluster_id)}" for cluster_id in matrix.columns]
+    return matrix
+
+
+def oracle_routing_diagnostic_tables(
+    selection_df: pd.DataFrame,
+    primary_metric: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Summarize oracle routing gains by assigned cluster and transfer pair."""
+    required_columns = {
+        "test_cluster",
+        "metric",
+        "selected_model_cluster",
+        "selected_is_same_cluster",
+        "actual",
+        "selected_absolute_error",
+        "same_cluster_absolute_error",
+    }
+    if selection_df.empty or not required_columns.issubset(selection_df.columns):
+        return pd.DataFrame(), pd.DataFrame()
+
+    primary_rows = selection_df.loc[
+        selection_df["metric"].astype(str).str.upper()
+        == str(primary_metric).upper()
+    ].copy()
+    if primary_rows.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    primary_rows["test_cluster"] = primary_rows["test_cluster"].astype(int)
+    primary_rows["selected_model_cluster"] = primary_rows[
+        "selected_model_cluster"
+    ].astype(int)
+    primary_rows["switched_model"] = ~primary_rows[
+        "selected_is_same_cluster"
+    ].astype(bool)
+    primary_rows["absolute_error_improvement"] = (
+        primary_rows["same_cluster_absolute_error"].astype(float)
+        - primary_rows["selected_absolute_error"].astype(float)
+    )
+    primary_rows["same_cluster_squared_error"] = (
+        primary_rows["same_cluster_absolute_error"].astype(float) ** 2
+    )
+    primary_rows["selected_squared_error"] = (
+        primary_rows["selected_absolute_error"].astype(float) ** 2
+    )
+    primary_rows["squared_error_improvement"] = (
+        primary_rows["same_cluster_squared_error"]
+        - primary_rows["selected_squared_error"]
+    )
+
+    cluster_rows: list[dict[str, float | int]] = []
+    for assigned_cluster, values in primary_rows.groupby("test_cluster", sort=True):
+        n_samples = int(len(values))
+        switched = int(values["switched_model"].sum())
+        same_rmse = float(np.sqrt(values["same_cluster_squared_error"].mean()))
+        oracle_rmse = float(np.sqrt(values["selected_squared_error"].mean()))
+        cluster_rows.append(
+            {
+                "assigned_test_cluster": int(assigned_cluster),
+                "n_test": n_samples,
+                "oracle_switched_samples": switched,
+                "oracle_switched_percent": (
+                    switched / n_samples * 100.0 if n_samples else np.nan
+                ),
+                "same_cluster_rmse": same_rmse,
+                "oracle_rmse": oracle_rmse,
+                "rmse_improvement": same_rmse - oracle_rmse,
+                "same_cluster_mae": float(
+                    values["same_cluster_absolute_error"].mean()
+                ),
+                "oracle_mae": float(values["selected_absolute_error"].mean()),
+                "mae_improvement": float(
+                    values["absolute_error_improvement"].mean()
+                ),
+                "mean_squared_error_improvement": float(
+                    values["squared_error_improvement"].mean()
+                ),
+                "median_absolute_error_improvement": float(
+                    values["absolute_error_improvement"].median()
+                ),
+                "mean_actual_precipitation_mm": float(values["actual"].mean()),
+            }
+        )
+
+    pair_rows: list[dict[str, float | int]] = []
+    assigned_sizes = primary_rows.groupby("test_cluster").size()
+    for (assigned_cluster, oracle_cluster), values in primary_rows.groupby(
+        ["test_cluster", "selected_model_cluster"],
+        sort=True,
+    ):
+        n_samples = int(len(values))
+        assigned_total = int(assigned_sizes.loc[assigned_cluster])
+        pair_rows.append(
+            {
+                "assigned_test_cluster": int(assigned_cluster),
+                "oracle_selected_model_cluster": int(oracle_cluster),
+                "n_test": n_samples,
+                "percent_of_assigned_cluster": (
+                    n_samples / assigned_total * 100.0
+                    if assigned_total
+                    else np.nan
+                ),
+                "mean_actual_precipitation_mm": float(values["actual"].mean()),
+                "same_cluster_mae": float(
+                    values["same_cluster_absolute_error"].mean()
+                ),
+                "oracle_mae": float(values["selected_absolute_error"].mean()),
+                "mae_improvement": float(
+                    values["absolute_error_improvement"].mean()
+                ),
+                "mean_squared_error_improvement": float(
+                    values["squared_error_improvement"].mean()
+                ),
+            }
+        )
+
+    return pd.DataFrame(cluster_rows), pd.DataFrame(pair_rows)
+
+
+def save_oracle_transfer_diagnostics(
+    y_test: np.ndarray,
+    test_model_selection: dict[str, object],
+    output_dir: Path,
+) -> None:
+    """Save clearly labelled oracle-only plots for cross-cluster transfer."""
+    summary = dict(test_model_selection.get("summary", {}))
+    primary_metric = str(summary.get("primary_metric", "RMSE"))
+    selected_predictions = np.asarray(
+        dict(test_model_selection.get("selected_prediction_by_metric", {})).get(
+            primary_metric,
+            [],
+        ),
+        dtype=float,
+    )
+    selected_models = np.asarray(
+        dict(test_model_selection.get("selected_model_by_metric", {})).get(
+            primary_metric,
+            [],
+        ),
+        dtype=float,
+    )
+    if len(selected_predictions) != len(y_test) or len(selected_models) != len(y_test):
+        return
+
+    diagnostics_dir = output_dir / "oracle_model_selection_diagnostics"
+    diagnostics_dir.mkdir(exist_ok=True)
+    fig, _ = plot_predictions_vs_actual(
+        y_test,
+        selected_predictions,
+        cluster_labels=selected_models.astype(int),
+        title=(
+            "Oracle Diagnostic: Predictions by Post-hoc Selected Cluster LSTM"
+        ),
+    )
+    fig.savefig(diagnostics_dir / "01_oracle_predictions_vs_actual.png")
+    plt.close(fig)
+
+    selection_df = pd.DataFrame(test_model_selection.get("selection_rows", []))
+    transfer_matrix = oracle_transfer_matrix(selection_df, primary_metric)
+    cluster_summary, pair_summary = oracle_routing_diagnostic_tables(
+        selection_df,
+        primary_metric,
+    )
+    if not cluster_summary.empty:
+        cluster_summary.to_csv(
+            output_dir / "oracle_cluster_routing_summary.csv",
+            index=False,
+        )
+    if not pair_summary.empty:
+        pair_summary.to_csv(
+            output_dir / "oracle_cluster_pair_summary.csv",
+            index=False,
+        )
+    if transfer_matrix.empty:
+        return
+
+    figure_height = max(4.0, 2.5 + 0.55 * len(transfer_matrix.index))
+    figure_width = max(6.0, 3.5 + 0.95 * len(transfer_matrix.columns))
+    fig, ax = plt.subplots(figsize=(figure_width, figure_height))
+    sns.heatmap(
+        transfer_matrix,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        cbar_kws={"label": "Test windows"},
+        ax=ax,
+    )
+    ax.set_title(
+        "Oracle Cross-cluster Transfer Matrix\n"
+        "Rows: assigned cluster; columns: LSTM selected after observing test target"
+    )
+    ax.set_xlabel("Oracle-selected model")
+    ax.set_ylabel("Assigned test cluster")
+    fig.tight_layout()
+    fig.savefig(diagnostics_dir / "02_oracle_model_transfer_matrix.png")
+    plt.close(fig)
+
+    if cluster_summary.empty:
+        return
+
+    cluster_plot_df = cluster_summary.sort_values("assigned_test_cluster").copy()
+    cluster_plot_df["assigned_test_cluster"] = cluster_plot_df[
+        "assigned_test_cluster"
+    ].astype(str)
+    fig, ax = plt.subplots(figsize=(9, 5))
+    sns.barplot(
+        data=cluster_plot_df,
+        x="assigned_test_cluster",
+        y="oracle_switched_percent",
+        color="#4C78A8",
+        ax=ax,
+    )
+    ax.set_title("Oracle Model Switch Rate by Assigned Test Cluster")
+    ax.set_xlabel("Assigned test cluster")
+    ax.set_ylabel("Windows where oracle selected another LSTM (%)")
+    ax.set_ylim(0, max(100.0, float(cluster_plot_df["oracle_switched_percent"].max()) * 1.1))
+    ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    fig.savefig(diagnostics_dir / "03_oracle_switch_rate_by_assigned_cluster.png")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    melted_errors = cluster_plot_df.melt(
+        id_vars="assigned_test_cluster",
+        value_vars=["same_cluster_mae", "oracle_mae"],
+        var_name="routing",
+        value_name="MAE",
+    )
+    melted_errors["routing"] = melted_errors["routing"].map(
+        {
+            "same_cluster_mae": "Assigned-cluster LSTM",
+            "oracle_mae": "Oracle-selected LSTM",
+        }
+    )
+    sns.barplot(
+        data=melted_errors,
+        x="assigned_test_cluster",
+        y="MAE",
+        hue="routing",
+        ax=ax,
+    )
+    ax.set_title("Same-cluster vs Oracle Error by Assigned Test Cluster")
+    ax.set_xlabel("Assigned test cluster")
+    ax.set_ylabel("Mean absolute error (mm)")
+    ax.grid(True, alpha=0.3, axis="y")
+    ax.legend(title="")
+    fig.tight_layout()
+    fig.savefig(diagnostics_dir / "04_oracle_mae_by_assigned_cluster.png")
+    plt.close(fig)
+
+    primary_rows = selection_df.loc[
+        selection_df["metric"].astype(str).str.upper()
+        == str(primary_metric).upper()
+    ].copy()
+    primary_rows["assigned_test_cluster"] = primary_rows["test_cluster"].astype(str)
+    primary_rows["absolute_error_improvement"] = (
+        primary_rows["same_cluster_absolute_error"].astype(float)
+        - primary_rows["selected_absolute_error"].astype(float)
+    )
+    primary_rows["oracle_changed_model"] = np.where(
+        primary_rows["selected_is_same_cluster"].astype(bool),
+        "Same LSTM",
+        "Different LSTM",
+    )
+    fig, ax = plt.subplots(figsize=(10, 5.5))
+    sns.boxplot(
+        data=primary_rows,
+        x="assigned_test_cluster",
+        y="absolute_error_improvement",
+        hue="oracle_changed_model",
+        ax=ax,
+    )
+    ax.axhline(0.0, color="black", linewidth=1.0, linestyle="--")
+    ax.set_title("Per-window Oracle Absolute-error Improvement")
+    ax.set_xlabel("Assigned test cluster")
+    ax.set_ylabel("Same-cluster MAE minus oracle MAE (mm)")
+    ax.grid(True, alpha=0.3, axis="y")
+    ax.legend(title="")
+    fig.tight_layout()
+    fig.savefig(diagnostics_dir / "05_oracle_error_improvement_distribution.png")
+    plt.close(fig)
+
+
 def save_test_model_selection_report(
     output_dir: Path,
     test_model_selection: dict[str, object],
@@ -1439,10 +1952,19 @@ def save_test_model_selection_report(
         test_model_selection.get("metric_summary_rows", [])
     )
     summary = dict(test_model_selection.get("summary", {}))
+    primary_metric = str(summary.get("primary_metric", "RMSE"))
+    transfer_matrix = oracle_transfer_matrix(selection_df, primary_metric)
+    cluster_summary, pair_summary = oracle_routing_diagnostic_tables(
+        selection_df,
+        primary_metric,
+    )
 
     comparison_df.to_csv(output_dir / "test_model_comparison.csv", index=False)
     selection_df.to_csv(output_dir / "test_model_selection.csv", index=False)
     metric_summary_df.to_csv(output_dir / "test_model_metric_summary.csv", index=False)
+    transfer_matrix.to_csv(output_dir / "oracle_model_selection_matrix.csv")
+    cluster_summary.to_csv(output_dir / "oracle_cluster_routing_summary.csv", index=False)
+    pair_summary.to_csv(output_dir / "oracle_cluster_pair_summary.csv", index=False)
 
     with open(output_dir / "test_model_selection_report.txt", "w", encoding="utf-8") as f:
         f.write("TEST CLUSTER MODEL SELECTION REPORT\n")
@@ -1450,8 +1972,8 @@ def save_test_model_selection_report(
         f.write(
             "Each test sample was evaluated with every trained cluster LSTM. "
             "A winning model is selected independently for each sample and "
-            "metric. The main prediction columns use the RMSE/MSE-equivalent "
-            "per-sample squared-error choice.\n\n"
+            "metric. These selections are diagnostic only: the main metrics, "
+            "predictions, and plots keep the LSTM of the assigned cluster.\n\n"
         )
         f.write(
             "Important interpretation note: model selection is performed on the "
@@ -1544,6 +2066,51 @@ def save_test_model_selection_report(
         f.write("\nFull model-by-sample errors are in test_model_comparison.csv.\n")
         f.write("Per-sample selected models by metric are in test_model_selection.csv.\n")
         f.write("Metric-level selected prediction summaries are in test_model_metric_summary.csv.\n")
+        f.write("Assigned-cluster routing summaries are in oracle_cluster_routing_summary.csv.\n")
+        f.write("Assigned-to-oracle pair summaries are in oracle_cluster_pair_summary.csv.\n")
+
+    with open(
+        output_dir / "oracle_vs_same_cluster_summary.txt",
+        "w",
+        encoding="utf-8",
+    ) as f:
+        f.write("ANALISE DE TRANSFERENCIA ENTRE CLUSTERS\n")
+        f.write("=" * 72 + "\n\n")
+        f.write(
+            "Resultado principal: cada janela de teste usa a LSTM do cluster "
+            "ao qual foi atribuida. Portanto, metricas, test_predictions.csv "
+            "e os plots principais nao usam a selecao abaixo.\n\n"
+        )
+        f.write(
+            "Diagnostico-oraculo: para analisar transferencia, cada janela foi "
+            "tambem avaliada por todas as LSTMs e a vencedora foi escolhida apos "
+            "observar o alvo real no teste. Isto nao e uma estimativa valida de "
+            "desempenho futuro; indica apenas o potencial caso o roteamento entre "
+            "clusters fosse melhor.\n\n"
+        )
+        f.write(f"Metrica de selecao: {primary_metric}\n")
+        f.write(
+            f"RMSE mesma LSTM do cluster: {summary.get('original_rmse', float('nan')):.4f}\n"
+        )
+        f.write(
+            f"RMSE oraculo: {summary.get('selected_rmse', float('nan')):.4f}\n"
+        )
+        f.write(
+            f"Janelas cujo modelo mudou: {summary.get('switched_samples', 0)} de "
+            f"{summary.get('n_test_samples', 0)}\n\n"
+        )
+        f.write("Matriz de transferencia (linhas=cluster atribuido; colunas=LSTM oraculo)\n")
+        f.write("-" * 72 + "\n")
+        if transfer_matrix.empty:
+            f.write("Sem janelas elegiveis para a analise.\n")
+        else:
+            f.write(transfer_matrix.to_string())
+            f.write("\n")
+        if not cluster_summary.empty:
+            f.write("\nResumo por cluster atribuido\n")
+            f.write("-" * 72 + "\n")
+            f.write(cluster_summary.to_string(index=False))
+            f.write("\n")
 
 
 def pca_mode_label(
@@ -1627,12 +2194,17 @@ def save_config_summary(
 
         if test_model_selection is not None:
             summary = dict(test_model_selection.get("summary", {}))
-            f.write("\nCross-cluster test model selection\n")
+            f.write("\nAnalise de transferencia entre clusters (diagnostico-oraculo)\n")
             f.write("-" * 72 + "\n")
             f.write(
-                f"Same-cluster RMSE={summary.get('original_rmse', float('nan')):.4f}, "
-                f"selected-model RMSE={summary.get('selected_rmse', float('nan')):.4f}, "
-                f"improvement={summary.get('rmse_improvement', float('nan')):.4f}\n"
+                "As metricas acima e os plots principais usam a LSTM do cluster "
+                "atribuido. A comparacao abaixo usa o alvo do teste e serve apenas "
+                "para diagnosticar o potencial de melhor roteamento.\n"
+            )
+            f.write(
+                f"RMSE mesma LSTM do cluster={summary.get('original_rmse', float('nan')):.4f}, "
+                f"RMSE oraculo={summary.get('selected_rmse', float('nan')):.4f}, "
+                f"ganho descritivo={summary.get('rmse_improvement', float('nan')):.4f}\n"
             )
             f.write(
                 f"Primary metric: {summary.get('primary_metric', 'RMSE')}; "
@@ -1673,6 +2245,7 @@ def save_run_outputs(
     y_pred_test_by_lead_day: np.ndarray | None = None,
     test_target_dates_by_lead_day: np.ndarray | None = None,
     cluster_feature_splits: Mapping[str, tuple[np.ndarray, np.ndarray]] | None = None,
+    batch_size: int | None = None,
 ) -> dict[str, float | int | str | None]:
     """Save all artifacts for one run and return one sweep-level result row."""
     train_metrics = calculate_regression_metrics(y_train, y_pred_train)
@@ -1732,41 +2305,66 @@ def save_run_outputs(
             test_targets_by_lead_day[:, lead_offset]
             - prediction_by_lead_day[:, lead_offset]
         )
+    predictions_df = predictions_df.sort_values("window_index")
+    predictions_df.to_csv(output_dir / "test_predictions.csv", index=False)
+    predictions_df.to_csv(output_dir / "test_predictions_same_cluster.csv", index=False)
+
     if test_model_selection is not None:
-        selected_model_by_sample = np.asarray(
-            test_model_selection.get("selected_model_by_sample", []),
-            dtype=float,
-        )
-        original_prediction_by_sample = np.asarray(
-            test_model_selection.get("original_prediction_by_sample", []),
-            dtype=float,
-        )
-        if len(selected_model_by_sample) == len(predictions_df):
-            predictions_df["selected_model_cluster"] = selected_model_by_sample
-        if len(original_prediction_by_sample) == len(predictions_df):
-            predictions_df["same_cluster_prediction"] = original_prediction_by_sample
-            predictions_df["same_cluster_residual"] = y_test - original_prediction_by_sample
+        selection_summary = dict(test_model_selection.get("summary", {}))
+        primary_metric = str(selection_summary.get("primary_metric", "RMSE"))
         selected_prediction_by_metric = dict(
             test_model_selection.get("selected_prediction_by_metric", {})
         )
         selected_model_by_metric = dict(
             test_model_selection.get("selected_model_by_metric", {})
         )
-        for metric_name, metric_predictions in selected_prediction_by_metric.items():
-            metric_key = str(metric_name).lower()
-            metric_predictions = np.asarray(metric_predictions, dtype=float)
-            if len(metric_predictions) == len(predictions_df):
-                predictions_df[f"selected_prediction_{metric_key}"] = metric_predictions
-                predictions_df[f"selected_residual_{metric_key}"] = (
-                    y_test - metric_predictions
-                )
-        for metric_name, metric_models in selected_model_by_metric.items():
-            metric_key = str(metric_name).lower()
-            metric_models = np.asarray(metric_models, dtype=float)
-            if len(metric_models) == len(predictions_df):
-                predictions_df[f"selected_model_cluster_{metric_key}"] = metric_models
-    predictions_df = predictions_df.sort_values("window_index")
-    predictions_df.to_csv(output_dir / "test_predictions.csv", index=False)
+        oracle_predictions = np.asarray(
+            selected_prediction_by_metric.get(primary_metric, []),
+            dtype=float,
+        )
+        oracle_models = np.asarray(
+            selected_model_by_metric.get(primary_metric, []),
+            dtype=float,
+        )
+        if len(oracle_predictions) == len(predictions_df) and len(oracle_models) == len(
+            predictions_df
+        ):
+            output_order = np.argsort(np.asarray(test_indices))
+            oracle_predictions_df = predictions_df.rename(
+                columns={
+                    "predicted": "same_cluster_prediction",
+                    "residual": "same_cluster_residual",
+                }
+            ).copy()
+            oracle_predictions_df["oracle_selection_metric"] = primary_metric
+            oracle_predictions_df["oracle_selected_model_cluster"] = oracle_models[
+                output_order
+            ]
+            oracle_predictions_df["oracle_prediction"] = oracle_predictions[output_order]
+            oracle_predictions_df["oracle_residual"] = (
+                y_test[output_order] - oracle_predictions[output_order]
+            )
+
+            selected_by_lead_day = np.asarray(
+                test_model_selection.get("selected_prediction_by_lead_day", []),
+                dtype=float,
+            )
+            if selected_by_lead_day.shape == prediction_by_lead_day.shape:
+                for lead_offset in range(selected_by_lead_day.shape[1]):
+                    lead_day = lead_offset + 1
+                    oracle_predictions_df[
+                        f"oracle_prediction_lead_day_{lead_day}"
+                    ] = selected_by_lead_day[output_order, lead_offset]
+                    oracle_predictions_df[
+                        f"oracle_residual_lead_day_{lead_day}"
+                    ] = (
+                        test_targets_by_lead_day[output_order, lead_offset]
+                        - selected_by_lead_day[output_order, lead_offset]
+                    )
+            oracle_predictions_df.to_csv(
+                output_dir / "test_predictions_oracle_selection.csv",
+                index=False,
+            )
 
     horizon_summary = save_forecast_horizon_diagnostics(
         y_train,
@@ -1836,11 +2434,34 @@ def save_run_outputs(
         histories_by_cluster,
         output_dir,
         forecast_horizon=forecast_horizon,
+        batch_size=batch_size,
         test_targets_by_lead_day=test_targets_by_lead_day,
         y_pred_test_by_lead_day=prediction_by_lead_day,
         test_target_dates_by_lead_day=test_target_dates_by_lead_day,
         cluster_feature_splits=cluster_feature_splits,
     )
+    if test_model_selection is not None:
+        save_oracle_model_visualizations(
+            test_model_selection,
+            y_test,
+            c_test,
+            test_indices,
+            next_day_precipitation,
+            input_cluster_labels,
+            histories_by_cluster,
+            output_dir,
+            forecast_horizon=forecast_horizon,
+            batch_size=batch_size,
+            test_targets_by_lead_day=test_targets_by_lead_day,
+            regular_prediction_by_lead_day=prediction_by_lead_day,
+            test_target_dates_by_lead_day=test_target_dates_by_lead_day,
+            cluster_feature_splits=cluster_feature_splits,
+        )
+        save_oracle_transfer_diagnostics(
+            y_test,
+            test_model_selection,
+            output_dir,
+        )
 
     result = {
         "run_name": config.name,

@@ -7,7 +7,8 @@ from typing import Callable, Sequence, Tuple
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
-from keras import layers
+
+layers = keras.layers
 
 
 SUPPORTED_LOSS_FUNCTIONS = (
@@ -18,6 +19,26 @@ SUPPORTED_LOSS_FUNCTIONS = (
     "huber",
     "quantile_weighted_mse",
 )
+
+
+def _create_adamw_optimizer(
+    learning_rate: float,
+    weight_decay: float,
+) -> keras.optimizers.Optimizer:
+    """Return AdamW across current and legacy TensorFlow/Keras namespaces."""
+    optimizer_class = getattr(keras.optimizers, "AdamW", None)
+    if optimizer_class is None:
+        experimental_optimizers = getattr(keras.optimizers, "experimental", None)
+        optimizer_class = getattr(experimental_optimizers, "AdamW", None)
+    if optimizer_class is None:
+        raise RuntimeError(
+            "The installed TensorFlow/Keras version does not provide AdamW. "
+            "Upgrade TensorFlow and Keras before training this model."
+        )
+    return optimizer_class(
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+    )
 
 
 def quantile_weighted_mse_loss(
@@ -111,6 +132,7 @@ class LSTMPrecipitationPredictor:
         lstm_units_2: int = 32,
         dropout_rate: float = 0.2,
         learning_rate: float = 0.001,
+        weight_decay: float = 0.0,
         random_state: int = 42,
         loss_function: str = "mean_squared_error",
         loss_quantile_thresholds_mm: Sequence[float] | None = None,
@@ -125,6 +147,7 @@ class LSTMPrecipitationPredictor:
             lstm_units_2: Number of units in second LSTM layer
             dropout_rate: Dropout rate for regularization
             learning_rate: Learning rate for optimizer
+            weight_decay: Decoupled AdamW weight-decay coefficient
             random_state: Random seed for reproducibility
             loss_function: Keras loss name or `quantile_weighted_mse`.
             loss_quantile_thresholds_mm: Cluster-specific rain thresholds in the
@@ -135,11 +158,14 @@ class LSTMPrecipitationPredictor:
         """
         if output_units <= 0:
             raise ValueError("output_units must be positive.")
+        if not np.isfinite(weight_decay) or weight_decay < 0:
+            raise ValueError("weight_decay must be a finite non-negative value.")
         self.input_shape = input_shape
         self.lstm_units = lstm_units
         self.lstm_units_2 = lstm_units_2
         self.dropout_rate = dropout_rate
         self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
         self.random_state = random_state
         self.loss_function = loss_function
         self.loss_quantile_thresholds_mm = loss_quantile_thresholds_mm
@@ -187,7 +213,10 @@ class LSTMPrecipitationPredictor:
         ])
 
         # Compile model
-        optimizer = keras.optimizers.Adam(learning_rate=self.learning_rate)
+        optimizer = _create_adamw_optimizer(
+            learning_rate=self.learning_rate,
+            weight_decay=self.weight_decay,
+        )
         loss = resolve_loss_function(
             self.loss_function,
             quantile_thresholds_mm=self.loss_quantile_thresholds_mm,

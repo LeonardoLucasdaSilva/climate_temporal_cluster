@@ -99,7 +99,7 @@ Dense(1, activation='linear')  ← Precipitation prediction
 - **Configuration**:
   - LSTM units: 64 (1st layer), 32 (2nd layer)
   - Dropout rate: 0.2 (regularization)
-  - Optimizer: Adam (learning_rate=0.001)
+  - Optimizer: AdamW (learning_rate=0.001, weight_decay=0.0001)
   - Loss function: Mean Squared Error (MSE)
   - Metrics: MAE, MSE
 
@@ -249,7 +249,8 @@ USE_ALL_FEATURES = True   # Use all numeric features
 LSTM_UNITS = 64           # First LSTM layer
 LSTM_UNITS_2 = 32         # Second LSTM layer
 DROPOUT_RATE = 0.2        # Regularization
-LEARNING_RATE = 0.001     # Adam optimizer
+LEARNING_RATE = 0.001     # AdamW optimizer
+WEIGHT_DECAY = 1e-4       # Decoupled parameter decay
 
 # Training
 EPOCHS = 50               # Max epochs

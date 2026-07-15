@@ -153,7 +153,9 @@ For each configuration, the experiment runs these stages:
    model.
 10. Evaluate test samples with either their own cluster model only or, when
    `TEST_ALL_MODELS = True`, every trained cluster model with per-metric sample
-   selection.
+   selection. The all-model path is an oracle diagnostic: it compares the LSTM
+   selected by the assigned test cluster with the best LSTM for that same
+   window after observing the target, then writes routing summaries and plots.
 11. Save metrics, reports, predictions, plots, and LaTeX tables.
 
 ## ARMA Baseline
@@ -407,6 +409,8 @@ prediction.
 ## Cluster-Specific LSTM Models
 
 After clustering, the experiment trains one LSTM model per cluster.
+Training uses AdamW with `LEARNING_RATE` and decoupled `WEIGHT_DECAY`
+configured in the active LSTM runner.
 
 Implementation:
 
@@ -489,6 +493,10 @@ Each configuration folder contains:
   target dates from the source dataset on the x-axis, formatted as `dd/mm/YYYY`
 - cluster silhouette diagnostics under `cluster_diagnostics/`, including
   `08_silhouette_analysis.png` and `silhouette_scores.csv`
+- `06_cluster_distribution.png` and
+  `cluster_training_batch_statistics.csv` under `cluster_diagnostics/`, showing
+  train/validation/test counts plus `n_train` and
+  `ceil(n_train / batch_size)` for every cluster
 - input-window forecast-horizon precipitation distribution plots by cluster under
   `input_precipitation_distribution_by_cluster/`
 - current-window versus forecast-horizon target diagnostics and persistence

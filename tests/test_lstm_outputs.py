@@ -14,13 +14,18 @@ import pandas as pd
 
 from data.lstm_outputs import (
     compressed_time_positions,
+    save_cluster_distribution_plot,
     pca_mode_label,
     save_cluster_silhouette_plot,
     save_cluster_prediction_scatters,
     save_cluster_prediction_timeseries,
     save_forecast_horizon_diagnostics,
     save_forecast_lead_day_diagnostics,
+    save_oracle_model_visualizations,
+    save_oracle_transfer_diagnostics,
+    oracle_routing_diagnostic_tables,
     save_prediction_timeseries_splits,
+    save_test_model_selection_report,
     save_sweep_outputs,
 )
 
@@ -29,6 +34,280 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class LstmOutputTests(unittest.TestCase):
+    def test_oracle_model_mirrors_visualizations_only_with_valid_oracle_outputs(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_oracle_model_plots_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+        test_model_selection = {
+            "summary": {"primary_metric": "RMSE"},
+            "selected_prediction_by_metric": {"RMSE": np.array([1.0, 2.0])},
+            "selected_prediction_by_lead_day": np.array(
+                [[0.5, 1.0], [1.5, 2.0]]
+            ),
+        }
+
+        try:
+            with patch("data.lstm_outputs.save_visualizations") as save_plots:
+                written = save_oracle_model_visualizations(
+                    test_model_selection,
+                    y_test=np.array([1.0, 2.0]),
+                    c_test=np.array([0, 1]),
+                    test_indices=np.array([10, 11]),
+                    forecast_horizon_precipitation=np.array([1.0, 2.0]),
+                    input_cluster_labels=np.array([0, 1]),
+                    histories_by_cluster={},
+                    output_dir=output_dir,
+                    forecast_horizon=2,
+                    batch_size=4,
+                    test_targets_by_lead_day=np.array(
+                        [[0.5, 1.0], [1.5, 2.0]]
+                    ),
+                    regular_prediction_by_lead_day=np.array(
+                        [[0.4, 0.9], [1.4, 1.9]]
+                    ),
+                    test_target_dates_by_lead_day=None,
+                    cluster_feature_splits=None,
+                )
+
+            self.assertTrue(written)
+            self.assertTrue((output_dir / "oracle_model").is_dir())
+            self.assertEqual(save_plots.call_count, 1)
+            args = save_plots.call_args.args
+            np.testing.assert_allclose(args[1], [1.0, 2.0])
+            self.assertEqual(args[7], output_dir / "oracle_model")
+            np.testing.assert_array_equal(
+                save_plots.call_args.kwargs["y_pred_test_by_lead_day"],
+                [[0.5, 1.0], [1.5, 2.0]],
+            )
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_oracle_transfer_outputs_are_separate_from_same_cluster_result(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_oracle_transfer_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+        test_model_selection = {
+            "comparison_rows": [],
+            "selection_rows": [
+                {
+                    "sample_index": 0,
+                    "test_cluster": 0,
+                    "metric": "RMSE",
+                    "selected_model_cluster": 1,
+                    "selected_is_same_cluster": False,
+                    "actual": 10.0,
+                    "selected_absolute_error": 1.0,
+                    "same_cluster_absolute_error": 5.0,
+                },
+                {
+                    "sample_index": 1,
+                    "test_cluster": 0,
+                    "metric": "RMSE",
+                    "selected_model_cluster": 0,
+                    "selected_is_same_cluster": True,
+                    "actual": 2.0,
+                    "selected_absolute_error": 0.5,
+                    "same_cluster_absolute_error": 0.5,
+                },
+                {
+                    "sample_index": 2,
+                    "test_cluster": 1,
+                    "metric": "RMSE",
+                    "selected_model_cluster": 1,
+                    "selected_is_same_cluster": True,
+                    "actual": 3.0,
+                    "selected_absolute_error": 0.25,
+                    "same_cluster_absolute_error": 0.25,
+                },
+            ],
+            "metric_summary_rows": [],
+            "summary": {
+                "primary_metric": "RMSE",
+                "original_rmse": 3.0,
+                "selected_rmse": 1.0,
+                "rmse_improvement": 2.0,
+                "original_mae": 2.0,
+                "selected_mae": 0.5,
+                "mae_improvement": 1.5,
+                "original_mse": 9.0,
+                "selected_mse": 1.0,
+                "mse_improvement": 8.0,
+                "mse_improvement_ci_low": 5.0,
+                "mse_improvement_ci_high": 10.0,
+                "mse_improvement_probability": 0.99,
+                "switched_samples": 1,
+                "n_test_samples": 3,
+            },
+            "selected_prediction_by_metric": {"RMSE": np.array([1.0, 2.0, 3.0])},
+            "selected_model_by_metric": {"RMSE": np.array([1, 0, 1])},
+        }
+
+        def fake_savefig(_figure: object, path: object, *_args: object, **_kwargs: object) -> None:
+            Path(path).write_bytes(b"plot")
+
+        try:
+            save_test_model_selection_report(output_dir, test_model_selection)
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                save_oracle_transfer_diagnostics(
+                    np.array([1.0, 2.0, 3.0]),
+                    test_model_selection,
+                    output_dir,
+                )
+
+            transfer_matrix = pd.read_csv(
+                output_dir / "oracle_model_selection_matrix.csv"
+            )
+            self.assertEqual(
+                transfer_matrix.columns.tolist(),
+                ["assigned_test_cluster", "LSTM_0", "LSTM_1"],
+            )
+            self.assertEqual(transfer_matrix["LSTM_1"].tolist(), [1, 1])
+            summary_text = (output_dir / "oracle_vs_same_cluster_summary.txt").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("metricas, test_predictions.csv", summary_text)
+            diagnostics_dir = output_dir / "oracle_model_selection_diagnostics"
+            self.assertTrue(
+                (diagnostics_dir / "01_oracle_predictions_vs_actual.png").exists()
+            )
+            self.assertTrue(
+                (diagnostics_dir / "02_oracle_model_transfer_matrix.png").exists()
+            )
+            self.assertTrue(
+                (
+                    diagnostics_dir
+                    / "03_oracle_switch_rate_by_assigned_cluster.png"
+                ).exists()
+            )
+            self.assertTrue(
+                (diagnostics_dir / "04_oracle_mae_by_assigned_cluster.png").exists()
+            )
+            self.assertTrue(
+                (
+                    diagnostics_dir
+                    / "05_oracle_error_improvement_distribution.png"
+                ).exists()
+            )
+            self.assertTrue((output_dir / "oracle_cluster_routing_summary.csv").exists())
+            self.assertTrue((output_dir / "oracle_cluster_pair_summary.csv").exists())
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_oracle_routing_tables_quantify_cluster_switch_gains(self) -> None:
+        selection_df = pd.DataFrame(
+            [
+                {
+                    "test_cluster": 0,
+                    "metric": "RMSE",
+                    "selected_model_cluster": 1,
+                    "selected_is_same_cluster": False,
+                    "actual": 10.0,
+                    "selected_absolute_error": 1.0,
+                    "same_cluster_absolute_error": 5.0,
+                },
+                {
+                    "test_cluster": 0,
+                    "metric": "RMSE",
+                    "selected_model_cluster": 0,
+                    "selected_is_same_cluster": True,
+                    "actual": 2.0,
+                    "selected_absolute_error": 0.5,
+                    "same_cluster_absolute_error": 0.5,
+                },
+                {
+                    "test_cluster": 1,
+                    "metric": "RMSE",
+                    "selected_model_cluster": 1,
+                    "selected_is_same_cluster": True,
+                    "actual": 3.0,
+                    "selected_absolute_error": 0.25,
+                    "same_cluster_absolute_error": 0.25,
+                },
+            ]
+        )
+
+        cluster_summary, pair_summary = oracle_routing_diagnostic_tables(
+            selection_df,
+            "RMSE",
+        )
+
+        cluster_zero = cluster_summary.loc[
+            cluster_summary["assigned_test_cluster"] == 0
+        ].iloc[0]
+        self.assertEqual(cluster_zero["n_test"], 2)
+        self.assertEqual(cluster_zero["oracle_switched_samples"], 1)
+        self.assertAlmostEqual(cluster_zero["oracle_switched_percent"], 50.0)
+        self.assertAlmostEqual(cluster_zero["mae_improvement"], 2.0)
+        transfer = pair_summary.loc[
+            (pair_summary["assigned_test_cluster"] == 0)
+            & (pair_summary["oracle_selected_model_cluster"] == 1)
+        ].iloc[0]
+        self.assertAlmostEqual(transfer["percent_of_assigned_cluster"], 50.0)
+        self.assertAlmostEqual(transfer["mae_improvement"], 4.0)
+
+    def test_cluster_distribution_includes_training_batch_statistics(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_distribution_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+        captured: dict[str, object] = {}
+
+        def fake_savefig(
+            figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            captured["figure"] = figure
+            captured["path"] = Path(path)
+            Path(path).write_bytes(b"plot")
+
+        try:
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                statistics = save_cluster_distribution_plot(
+                    c_test=np.array([0, 0, 1]),
+                    output_dir=output_dir,
+                    c_train=np.array([0, 0, 0, 1, 1]),
+                    c_val=np.array([0, 1]),
+                    batch_size=2,
+                )
+
+            self.assertIsNotNone(statistics)
+            assert statistics is not None
+            self.assertEqual(
+                statistics["optimizer_steps_per_epoch"].tolist(),
+                [2, 1],
+            )
+            csv_path = (
+                output_dir
+                / "cluster_diagnostics"
+                / "cluster_training_batch_statistics.csv"
+            )
+            csv_df = pd.read_csv(csv_path)
+            self.assertEqual(csv_df["n_train"].tolist(), [3, 2])
+            self.assertEqual(csv_df["optimizer_steps_per_epoch"].tolist(), [2, 1])
+            self.assertEqual(
+                captured["path"],
+                output_dir / "cluster_diagnostics" / "06_cluster_distribution.png",
+            )
+
+            figure = captured["figure"]
+            table = figure.axes[1].tables[0]
+            cells = table.get_celld()
+            self.assertEqual(cells[(1, 1)].get_text().get_text(), "3")
+            self.assertEqual(cells[(1, 2)].get_text().get_text(), "2")
+            self.assertEqual(cells[(2, 1)].get_text().get_text(), "2")
+            self.assertEqual(cells[(2, 2)].get_text().get_text(), "1")
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
     def test_sweep_summary_records_pca_choice(self) -> None:
         output_dir = PROJECT_ROOT / "tests" / f"_pca_summary_test_{uuid.uuid4().hex}"
         output_dir.mkdir()
