@@ -109,6 +109,7 @@ CLUSTERING_ALGORITHM = "spectral"  # "kmeans", "spectral", or "manual"
 FORECAST_HORIZON = 1
 N_SIGMA_VALUES = 5
 TEST_ALL_MODELS = True
+RUN_ONLY_CLUSTER = True  # False enables the complete LSTM+clustering pipeline
 SHOW_CONSOLE_INFO = True
 ```
 
@@ -126,6 +127,11 @@ Set `PCA_VARIANCE_THRESHOLD` and `PCA_FOR_CLUSTERING_ONLY` in
 PCA is always fitted on training windows only. Validation and test windows use
 the fitted training transform. See
 `src/methods/lstm_cluster/lstm_cluster.md` for complete configuration examples.
+
+When `RUN_ONLY_CLUSTER = True`, the run stops after train-only clustering and
+held-out validation/test assignment. It writes cluster assignments, silhouette
+and distribution diagnostics, and a cluster-only report; LSTM preprocessing,
+training, predictions, and their output folders are skipped.
 
 For each configuration, the experiment runs these stages:
 

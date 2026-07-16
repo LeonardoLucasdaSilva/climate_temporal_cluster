@@ -21,6 +21,54 @@ from methods.lstm_cluster.report import config_summary_list, render_report  # no
 
 
 class LstmReportTests(unittest.TestCase):
+    def test_cluster_only_report_excludes_supervised_sections(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_only_report_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+        pd.DataFrame(
+            [
+                {
+                    "split": "Training",
+                    "cluster": 0,
+                    "n_samples": 3,
+                    "target_mean_mm": 2.0,
+                }
+            ]
+        ).to_csv(output_dir / "cluster_summary.csv", index=False)
+
+        try:
+            tex = render_report(
+                output_dir,
+                {
+                    "state": "RS",
+                    "station_id": "A801",
+                    "run_only_cluster": True,
+                    "forecast_horizon": 5,
+                    "test_all_models": True,
+                    "clustering_feature_normalize": "standard",
+                    "clustering_precipitation_normalize": None,
+                    "lstm_feature_normalize": "minmax",
+                    "lstm_precipitation_normalize": "standard",
+                },
+            )
+
+            self.assertIn("Cluster-only Experiment", tex)
+            self.assertIn(r"\section*{Cluster Configuration}", tex)
+            self.assertIn(r"\section*{Cluster Analysis}", tex)
+            self.assertIn(r"Run Only Cluster", tex)
+            self.assertIn("Cluster Assignment Summary", tex)
+            self.assertNotIn(r"\section*{LSTM Configs}", tex)
+            self.assertNotIn(r"\section*{Metrics}", tex)
+            self.assertNotIn("LSTM Feature Scaler", tex)
+            self.assertNotIn("LSTM Precipitation Scaler", tex)
+            self.assertNotIn("Forecast Horizon", tex)
+            self.assertNotIn("Test Samples on All Models", tex)
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
     def test_report_configuration_includes_selected_scalers(self) -> None:
         tex = render_report(
             PROJECT_ROOT / "tests" / "_missing_report_dir",

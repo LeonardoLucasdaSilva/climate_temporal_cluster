@@ -15,11 +15,11 @@ STATE = "RS"
 STATION_ID = "A801"
 
 # Clustering sweep
-WINDOW_SIZES = [15]
-N_CLUSTERS_LIST = [1,2]
+WINDOW_SIZES = [35]
+N_CLUSTERS_LIST = [5]
 PCA_VARIANCE_THRESHOLD = None
 PCA_FOR_CLUSTERING_ONLY = True  # Keep pre-PCA window features as LSTM inputs
-CLUSTERING_FEATURE_NORMALIZE = "minmax"  # "standard", "minmax", or None
+CLUSTERING_FEATURE_NORMALIZE = 'standard'  # "standard", "minmax", or None
 CLUSTERING_PRECIPITATION_NORMALIZE = 'minmax'  # "standard", "minmax", or None
 LSTM_FEATURE_NORMALIZE = "standard"  # "standard", "minmax", or None
 LSTM_PRECIPITATION_NORMALIZE = None  # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
@@ -27,10 +27,10 @@ LSTM_PRECIPITATION_NORMALIZE = None  # None keeps PRECIPITACAO_TOTAL and LSTM ta
 
 
 # Clustering setting
-CLUSTERING_ALGORITHM = "kmeans"  # "kmeans" or "spectral"
+CLUSTERING_ALGORITHM = "spectral"  # "kmeans" or "spectral"
 N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"  # "auto" or "manual"
-MANUAL_SIGMA_VALUES = [0.3]  # Only used if SIGMA_MODE is "manual"
+MANUAL_SIGMA_VALUES = [0.4,0.5,0.6,0.7,0.8,0.9]  # Only used if SIGMA_MODE is "manual"
 USE_ALL_FEATURES = True
 FORECAST_HORIZON = 5
 
@@ -42,11 +42,11 @@ QUANTITATIVE_METRICS = ["MSE"]
 TEST_ALL_MODELS = True
 
 # Model hyperparameters
-LSTM_UNITS = 128
+LSTM_UNITS = 256
 LSTM_UNITS_2 = 128
 DROPOUT_RATE = 0.1
 LEARNING_RATE = 0.001
-WEIGHT_DECAY = 1e-4  # Decoupled weight decay used by AdamW
+WEIGHT_DECAY = 0  # Decoupled weight decay used by AdamW
 LSTM_LOSS_FUNCTION = "quantile_weighted_mse"  # "mean_squared_error", "mae", "huber", or "quantile_weighted_mse"
 LOSS_QUANTILES = [0.9]
 LOSS_QUANTILE_WEIGHTS = "auto"  # "auto" or one positive weight per quantile bin
@@ -54,10 +54,11 @@ LOSS_QUANTILE_WEIGHTS = "auto"  # "auto" or one positive weight per quantile bin
 # Training settings
 EPOCHS = 250
 BATCH_SIZE = 64
-EARLY_STOPPING = False
-PATIENCE = 50
+EARLY_STOPPING = True
+PATIENCE = 251
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True
+RUN_ONLY_CLUSTER = True  # Only cluster windows; skip all LSTM training/output.
 
 # Train/validation/test split
 TRAIN_RATIO = 0.6
@@ -85,6 +86,7 @@ def main() -> None:
         lstm_precipitation_normalize=LSTM_PRECIPITATION_NORMALIZE,
         variance_threshold=PCA_VARIANCE_THRESHOLD,
         pca_for_clustering_only=PCA_FOR_CLUSTERING_ONLY,
+        run_only_cluster=RUN_ONLY_CLUSTER,
         n_clusters_list=N_CLUSTERS_LIST,
         clustering_algorithm=CLUSTERING_ALGORITHM,
         n_sigma_values=N_SIGMA_VALUES,

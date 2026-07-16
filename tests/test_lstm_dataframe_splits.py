@@ -549,6 +549,42 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         )
         np.testing.assert_allclose(split_data.X_train, split_data.cluster_X_train)
 
+    def test_run_only_cluster_skips_lstm_space_and_target_scaler(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+
+        split_data, _splits = create_window_split_data(
+            self.df,
+            config,
+            ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize="minmax",
+            lstm_feature_normalize="minmax",
+            lstm_precipitation_normalize="standard",
+            variance_threshold=0.9,
+            forecast_horizon=1,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+            pca_for_clustering_only=True,
+            run_only_cluster=True,
+        )
+
+        np.testing.assert_allclose(split_data.X_train, split_data.cluster_X_train)
+        self.assertLess(split_data.X_train.shape[1], config.window_size * 3)
+        self.assertIsNone(split_data.target_scaler)
+        np.testing.assert_allclose(
+            split_data.y_train_by_lead_day_scaled,
+            split_data.y_train_by_lead_day,
+        )
+
     def test_quantile_weighted_mse_config_uses_cluster_rain_values(self) -> None:
         thresholds, weights = quantile_weighted_mse_config(
             np.array([0.0, 0.0, 1.0, 5.0, 20.0, 50.0]),

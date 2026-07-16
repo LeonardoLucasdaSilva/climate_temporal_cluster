@@ -6,6 +6,7 @@ import shutil
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import matplotlib.dates as mdates
@@ -20,6 +21,7 @@ from data.lstm_outputs import (
     save_cluster_silhouette_plot,
     save_cluster_prediction_scatters,
     save_cluster_prediction_timeseries,
+    save_cluster_only_outputs,
     save_forecast_horizon_diagnostics,
     save_forecast_lead_day_diagnostics,
     save_oracle_model_visualizations,
@@ -28,6 +30,7 @@ from data.lstm_outputs import (
     save_prediction_timeseries_splits,
     save_test_model_selection_report,
     save_sweep_outputs,
+    save_training_history_plots,
 )
 
 
@@ -35,6 +38,123 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class LstmOutputTests(unittest.TestCase):
+    def test_cluster_only_outputs_skip_supervised_artifacts(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_only_outputs_test_{uuid.uuid4().hex}"
+        )
+        config = SimpleNamespace(
+            name="cluster_only_test",
+            window_size=3,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+        c_train = np.array([0, 1, 0, 1])
+        c_val = np.array([0, 1])
+        c_test = np.array([0, 1, 0, 1])
+        y_train = np.array([1.0, 2.0, 1.5, 2.5])
+        y_val = np.array([1.2, 2.2])
+        y_test = np.array([1.1, 2.1, 1.4, 2.4])
+        current_train = y_train - 0.1
+        current_val = y_val - 0.1
+        current_test = y_test - 0.1
+        feature_splits = {
+            "Training": (np.array([[0.0, 0.0], [1.0, 1.0], [0.1, 0.0], [1.1, 1.0]]), c_train),
+            "Validation": (np.array([[0.2, 0.0], [1.2, 1.0]]), c_val),
+            "Test": (np.array([[0.3, 0.0], [1.3, 1.0], [0.4, 0.0], [1.4, 1.0]]), c_test),
+        }
+
+        try:
+            output_dir.mkdir()
+            result = save_cluster_only_outputs(
+                config,
+                output_dir,
+                ["feature_1", "feature_2"],
+                np.concatenate([y_train, y_val, y_test]),
+                np.concatenate([current_train, current_val, current_test]),
+                np.concatenate([c_train, c_val, c_test]),
+                y_train,
+                y_val,
+                y_test,
+                current_train,
+                current_val,
+                current_test,
+                c_train,
+                c_val,
+                c_test,
+                np.arange(len(y_train)),
+                np.arange(len(y_val)) + 4,
+                np.arange(len(y_test)) + 6,
+                state="RS",
+                station_id="A801",
+                pca_variance_threshold=None,
+                pca_for_clustering_only=False,
+                forecast_horizon=1,
+                cluster_feature_splits=feature_splits,
+            )
+
+            self.assertEqual(result["run_name"], "cluster_only_test")
+            self.assertTrue((output_dir / "cluster_assignments.csv").exists())
+            self.assertTrue((output_dir / "cluster_summary.csv").exists())
+            self.assertTrue(
+                (output_dir / "cluster_diagnostics" / "08_silhouette_analysis.png").exists()
+            )
+            for forbidden_dir in (
+                "model_fit",
+                "prediction_overview_same_cluster",
+                "residual_diagnostics",
+                "forecast_horizon_diagnostics",
+                "oracle_model",
+            ):
+                self.assertFalse((output_dir / forbidden_dir).exists())
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_training_history_writes_four_metric_panel_per_cluster(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_training_history_test_{uuid.uuid4().hex}"
+        )
+        history = SimpleNamespace(
+            history={
+                "loss": [1.0, 0.8],
+                "val_loss": [1.1, 0.9],
+                "mse": [1.0, 0.8],
+                "val_mse": [1.1, 0.9],
+                "mae": [0.7, 0.5],
+                "val_mae": [0.8, 0.6],
+                "r2": [0.1, 0.3],
+                "val_r2": [0.0, 0.2],
+            }
+        )
+
+        try:
+            output_dir.mkdir()
+            captured: dict[str, object] = {}
+
+            def fake_savefig(
+                figure: object,
+                path: object,
+                *_args: object,
+                **_kwargs: object,
+            ) -> None:
+                captured["figure"] = figure
+                captured["path"] = path
+
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                save_training_history_plots({0: history}, output_dir)
+
+            self.assertEqual(len(captured["figure"].axes), 4)
+            self.assertEqual(
+                captured["path"],
+                output_dir / "model_fit" / "01_training_history_cluster_0.png",
+            )
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
     def test_oracle_model_mirrors_visualizations_only_with_valid_oracle_outputs(self) -> None:
         output_dir = (
             PROJECT_ROOT

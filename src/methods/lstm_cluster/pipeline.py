@@ -15,9 +15,13 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 
 from data.load_data import load_station_daily_data
-from data.lstm_outputs import save_run_outputs, save_sweep_outputs
+from data.lstm_outputs import (
+    save_cluster_only_outputs,
+    save_cluster_sweep_outputs,
+    save_run_outputs,
+    save_sweep_outputs,
+)
 from evaluation.metrics import calculate_regression_metrics
-from models.lstm import LSTMPrecipitationPredictor
 from methods.cluster.manual import ManualRainClustering
 from methods.cluster.ng import spectral_clustering
 from methods.cluster.cluster_pipeline import (
@@ -597,6 +601,7 @@ def create_window_split_data(
     random_state: int = 42,
     manual_zero_tolerance: float = 0.0,
     pca_for_clustering_only: bool = False,
+    run_only_cluster: bool = False,
     normalize: bool | None = None,
     scaler_type: str | None = None,
     precipitation_scaler_type: str | None = None,
@@ -630,14 +635,18 @@ def create_window_split_data(
         clustering_precipitation_normalize,
         setting_name="clustering_precipitation_normalize",
     )
-    lstm_feature_normalize = _normalize_optional_scaler_type(
-        lstm_feature_normalize,
-        setting_name="lstm_feature_normalize",
-    )
-    lstm_precipitation_normalize = _normalize_optional_scaler_type(
-        lstm_precipitation_normalize,
-        setting_name="lstm_precipitation_normalize",
-    )
+    if run_only_cluster:
+        lstm_feature_normalize = None
+        lstm_precipitation_normalize = None
+    else:
+        lstm_feature_normalize = _normalize_optional_scaler_type(
+            lstm_feature_normalize,
+            setting_name="lstm_feature_normalize",
+        )
+        lstm_precipitation_normalize = _normalize_optional_scaler_type(
+            lstm_precipitation_normalize,
+            setting_name="lstm_precipitation_normalize",
+        )
     splits = split_daily_dataframe(df, train_ratio=train_ratio, val_ratio=val_ratio)
 
     empty_scalers = FeatureScalingState()
@@ -682,42 +691,47 @@ def create_window_split_data(
         fit_pca=False,
         variance_threshold=variance_threshold,
     )
-    train_windows, train_flat, lstm_feature_scalers, _ = _split_feature_matrix(
-        splits.train,
-        feature_columns,
-        config.window_size,
-        scalers=empty_scalers,
-        covariate_scaler_type=lstm_feature_normalize,
-        precipitation_scaler_type=lstm_precipitation_normalize,
-        pca=None,
-        fit_scaler=True,
-        fit_pca=False,
-        variance_threshold=None,
-    )
-    val_windows, val_flat, _, _ = _split_feature_matrix(
-        splits.val,
-        feature_columns,
-        config.window_size,
-        scalers=lstm_feature_scalers,
-        covariate_scaler_type=lstm_feature_normalize,
-        precipitation_scaler_type=lstm_precipitation_normalize,
-        pca=None,
-        fit_scaler=False,
-        fit_pca=False,
-        variance_threshold=None,
-    )
-    test_windows, test_flat, _, _ = _split_feature_matrix(
-        splits.test,
-        feature_columns,
-        config.window_size,
-        scalers=lstm_feature_scalers,
-        covariate_scaler_type=lstm_feature_normalize,
-        precipitation_scaler_type=lstm_precipitation_normalize,
-        pca=None,
-        fit_scaler=False,
-        fit_pca=False,
-        variance_threshold=None,
-    )
+    if run_only_cluster:
+        train_windows, train_flat = cluster_train_windows, cluster_train_flat
+        val_windows, val_flat = cluster_val_windows, cluster_val_flat
+        test_windows, test_flat = cluster_test_windows, cluster_test_flat
+    else:
+        train_windows, train_flat, lstm_feature_scalers, _ = _split_feature_matrix(
+            splits.train,
+            feature_columns,
+            config.window_size,
+            scalers=empty_scalers,
+            covariate_scaler_type=lstm_feature_normalize,
+            precipitation_scaler_type=lstm_precipitation_normalize,
+            pca=None,
+            fit_scaler=True,
+            fit_pca=False,
+            variance_threshold=None,
+        )
+        val_windows, val_flat, _, _ = _split_feature_matrix(
+            splits.val,
+            feature_columns,
+            config.window_size,
+            scalers=lstm_feature_scalers,
+            covariate_scaler_type=lstm_feature_normalize,
+            precipitation_scaler_type=lstm_precipitation_normalize,
+            pca=None,
+            fit_scaler=False,
+            fit_pca=False,
+            variance_threshold=None,
+        )
+        test_windows, test_flat, _, _ = _split_feature_matrix(
+            splits.test,
+            feature_columns,
+            config.window_size,
+            scalers=lstm_feature_scalers,
+            covariate_scaler_type=lstm_feature_normalize,
+            precipitation_scaler_type=lstm_precipitation_normalize,
+            pca=None,
+            fit_scaler=False,
+            fit_pca=False,
+            variance_threshold=None,
+        )
 
     (
         cluster_X_train,
@@ -764,7 +778,7 @@ def create_window_split_data(
     train_local_indices = i_train - splits.train_offset
     val_local_indices = i_val - splits.val_offset
     test_local_indices = i_test - splits.test_offset
-    if cluster_pca is not None and not pca_for_clustering_only:
+    if run_only_cluster or (cluster_pca is not None and not pca_for_clustering_only):
         X_train = cluster_X_train
         X_val = cluster_X_val
         X_test = cluster_X_test
@@ -772,13 +786,11 @@ def create_window_split_data(
         X_train = train_flat[train_local_indices]
         X_val = val_flat[val_local_indices]
         X_test = test_flat[test_local_indices]
-    target_scaler = (
-        create_feature_scaler(lstm_precipitation_normalize).fit(
+    target_scaler = None
+    if not run_only_cluster and lstm_precipitation_normalize is not None:
+        target_scaler = create_feature_scaler(lstm_precipitation_normalize).fit(
             y_train_by_lead_day.reshape(-1, 1)
         )
-        if lstm_precipitation_normalize is not None
-        else None
-    )
     y_train_by_lead_day_scaled = _transform_precipitation_values(
         y_train_by_lead_day,
         target_scaler,
@@ -1213,6 +1225,8 @@ def train_cluster_models(
     dict[str, object] | None,
 ]:
     """Train cluster-specific LSTMs and merge their predictions."""
+    from models.lstm import LSTMPrecipitationPredictor
+
     X_train_lstm = to_lstm_shape(X_train)
     X_val_lstm = to_lstm_shape(X_val)
     X_test_lstm = to_lstm_shape(X_test)
@@ -1414,6 +1428,7 @@ def run_configuration(
     show_console_info: bool,
     test_all_models: bool,
     pca_for_clustering_only: bool = False,
+    run_only_cluster: bool = False,
 ) -> dict[str, float | int | str | None]:
     """Run one sweep configuration and save its artifacts."""
     clustering_feature_normalize = _normalize_optional_scaler_type(
@@ -1424,14 +1439,18 @@ def run_configuration(
         clustering_precipitation_normalize,
         setting_name="clustering_precipitation_normalize",
     )
-    lstm_feature_normalize = _normalize_optional_scaler_type(
-        lstm_feature_normalize,
-        setting_name="lstm_feature_normalize",
-    )
-    lstm_precipitation_normalize = _normalize_optional_scaler_type(
-        lstm_precipitation_normalize,
-        setting_name="lstm_precipitation_normalize",
-    )
+    if run_only_cluster:
+        lstm_feature_normalize = None
+        lstm_precipitation_normalize = None
+    else:
+        lstm_feature_normalize = _normalize_optional_scaler_type(
+            lstm_feature_normalize,
+            setting_name="lstm_feature_normalize",
+        )
+        lstm_precipitation_normalize = _normalize_optional_scaler_type(
+            lstm_precipitation_normalize,
+            setting_name="lstm_precipitation_normalize",
+        )
     print_section(f"Running {config.name}", show_console_info)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1451,6 +1470,7 @@ def run_configuration(
         val_ratio=val_ratio,
         manual_zero_tolerance=manual_zero_tolerance,
         pca_for_clustering_only=pca_for_clustering_only,
+        run_only_cluster=run_only_cluster,
     )
 
     X_train = split_data.X_train
@@ -1532,7 +1552,50 @@ def run_configuration(
         "loss_quantile_weights": loss_quantile_weights,
         "metrics": ["mae", "mse"],
         "test_all_models": test_all_models,
+        "run_only_cluster": run_only_cluster,
     }
+
+    if run_only_cluster:
+        cluster_feature_splits = {
+            "Training": (split_data.cluster_X_train, c_train),
+            "Validation": (split_data.cluster_X_val, c_val),
+            "Test": (split_data.cluster_X_test, c_test),
+        }
+        result = save_cluster_only_outputs(
+            config,
+            output_dir,
+            feature_columns,
+            split_data.all_targets,
+            split_data.all_current_precipitation,
+            split_data.all_cluster_labels,
+            y_train,
+            y_val,
+            y_test,
+            current_train,
+            current_val,
+            current_test,
+            c_train,
+            c_val,
+            c_test,
+            i_train,
+            i_val,
+            i_test,
+            state=config.state,
+            station_id=config.station_id,
+            pca_variance_threshold=variance_threshold,
+            pca_for_clustering_only=pca_for_clustering_only,
+            forecast_horizon=forecast_horizon,
+            cluster_feature_splits=cluster_feature_splits,
+        )
+        tex_path, pdf_path = generate_config_report(output_dir, report_config)
+        print_info(f"  Cluster report: {tex_path.name}", show_console_info)
+        if pdf_path is not None:
+            print_info(f"  Cluster report PDF: {pdf_path.name}", show_console_info)
+        print_info(
+            "  Cluster-only mode: no LSTM model was trained.",
+            show_console_info,
+        )
+        return result
 
     (
         y_pred_train,
@@ -1668,6 +1731,7 @@ def run_experiment(
     test_all_models: bool = True,
     weight_decay: float = 0.0,
     pca_for_clustering_only: bool = False,
+    run_only_cluster: bool = False,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
     clustering_algorithm = clustering_algorithm.lower()
@@ -1679,15 +1743,19 @@ def run_experiment(
         clustering_precipitation_normalize,
         setting_name="clustering_precipitation_normalize",
     )
-    lstm_feature_normalize = _normalize_optional_scaler_type(
-        lstm_feature_normalize,
-        setting_name="lstm_feature_normalize",
-    )
-    lstm_precipitation_normalize = _normalize_optional_scaler_type(
-        lstm_precipitation_normalize,
-        setting_name="lstm_precipitation_normalize",
-    )
-    lstm_loss_function = validate_loss_function(lstm_loss_function)
+    if run_only_cluster:
+        lstm_feature_normalize = None
+        lstm_precipitation_normalize = None
+    else:
+        lstm_feature_normalize = _normalize_optional_scaler_type(
+            lstm_feature_normalize,
+            setting_name="lstm_feature_normalize",
+        )
+        lstm_precipitation_normalize = _normalize_optional_scaler_type(
+            lstm_precipitation_normalize,
+            setting_name="lstm_precipitation_normalize",
+        )
+        lstm_loss_function = validate_loss_function(lstm_loss_function)
     if clustering_algorithm not in SUPPORTED_CLUSTERING_ALGORITHMS:
         supported = ", ".join(SUPPORTED_CLUSTERING_ALGORITHMS)
         raise ValueError(
@@ -1698,9 +1766,9 @@ def run_experiment(
         raise ValueError("forecast_horizon must be positive.")
     if manual_zero_tolerance < 0:
         raise ValueError("manual_zero_tolerance cannot be negative.")
-    if batch_size <= 0:
+    if not run_only_cluster and batch_size <= 0:
         raise ValueError("batch_size must be positive.")
-    if not np.isfinite(weight_decay) or weight_decay < 0:
+    if not run_only_cluster and (not np.isfinite(weight_decay) or weight_decay < 0):
         raise ValueError("weight_decay must be a finite non-negative value.")
 
     timestamp = datetime.now().strftime(timestamp_format)
@@ -1764,7 +1832,10 @@ def run_experiment(
         n_clusters_list=n_clusters_list,
         clustering_algorithm=clustering_algorithm,
     )
-    print_section("LSTM CLUSTER SWEEP", show_console_info)
+    print_section(
+        "CLUSTER-ONLY SWEEP" if run_only_cluster else "LSTM CLUSTER SWEEP",
+        show_console_info,
+    )
     print_info(f"Station: {state}/{station_id}", show_console_info)
     print_info(f"Output directory: {sweep_dir}", show_console_info)
     print_info(
@@ -1773,22 +1844,28 @@ def run_experiment(
         f"precipitation={clustering_precipitation_normalize or 'none'}",
         show_console_info,
     )
-    print_info(
-        "LSTM normalization: "
-        f"features={lstm_feature_normalize or 'none'}, "
-        f"precipitation/target={lstm_precipitation_normalize or 'none'}",
-        show_console_info,
-    )
-    print_info(f"LSTM loss: {lstm_loss_function}", show_console_info)
-    print_info(
-        f"Optimizer: AdamW (learning_rate={learning_rate:g}, "
-        f"weight_decay={weight_decay:g})",
-        show_console_info,
-    )
+    if run_only_cluster:
+        print_info(
+            "Run-only-cluster mode: LSTM preprocessing and training are disabled.",
+            show_console_info,
+        )
+    else:
+        print_info(
+            "LSTM normalization: "
+            f"features={lstm_feature_normalize or 'none'}, "
+            f"precipitation/target={lstm_precipitation_normalize or 'none'}",
+            show_console_info,
+        )
+        print_info(f"LSTM loss: {lstm_loss_function}", show_console_info)
+        print_info(
+            f"Optimizer: AdamW (learning_rate={learning_rate:g}, "
+            f"weight_decay={weight_decay:g})",
+            show_console_info,
+        )
     if variance_threshold is not None:
         pca_scope = (
             "clustering only"
-            if pca_for_clustering_only
+            if pca_for_clustering_only or run_only_cluster
             else "clustering and LSTM"
         )
         print_info(
@@ -1835,31 +1912,53 @@ def run_experiment(
                 show_console_info=show_console_info,
                 test_all_models=test_all_models,
                 pca_for_clustering_only=pca_for_clustering_only,
+                run_only_cluster=run_only_cluster,
             )
         )
 
-    save_sweep_outputs(
-        results,
-        sweep_dir=sweep_dir,
-        state=state,
-        station_id=station_id,
-        window_sizes=window_sizes,
-        n_clusters_list=n_clusters_list,
-        clustering_algorithm=clustering_algorithm,
-        pca_variance_threshold=variance_threshold,
-        pca_for_clustering_only=pca_for_clustering_only,
-        quantitative_metrics=quantitative_metrics,
-    )
+    if run_only_cluster:
+        save_cluster_sweep_outputs(
+            results,
+            sweep_dir=sweep_dir,
+            state=state,
+            station_id=station_id,
+            window_sizes=window_sizes,
+            n_clusters_list=n_clusters_list,
+            clustering_algorithm=clustering_algorithm,
+            pca_variance_threshold=variance_threshold,
+            pca_for_clustering_only=pca_for_clustering_only,
+        )
+    else:
+        save_sweep_outputs(
+            results,
+            sweep_dir=sweep_dir,
+            state=state,
+            station_id=station_id,
+            window_sizes=window_sizes,
+            n_clusters_list=n_clusters_list,
+            clustering_algorithm=clustering_algorithm,
+            pca_variance_threshold=variance_threshold,
+            pca_for_clustering_only=pca_for_clustering_only,
+            quantitative_metrics=quantitative_metrics,
+        )
 
     print_section("Sweep Complete", show_console_info)
     print_info(f"Results folder: {sweep_dir}", show_console_info)
     print_info("Sweep-level files:", show_console_info)
-    print_info("  - sweep_results.csv", show_console_info)
-    print_info("  - sweep_summary.txt", show_console_info)
-    print_info("  - overleaf_table.txt", show_console_info)
-    print_info("  - overleaf_cluster_metric_tables.txt", show_console_info)
-    print_info(
-        "Each configuration folder contains metrics, reports, predictions, and plots.",
-        show_console_info,
-    )
+    if run_only_cluster:
+        print_info("  - cluster_sweep_results.csv", show_console_info)
+        print_info("  - cluster_sweep_summary.txt", show_console_info)
+        print_info(
+            "Each configuration folder contains cluster assignments, diagnostics, and report.",
+            show_console_info,
+        )
+    else:
+        print_info("  - sweep_results.csv", show_console_info)
+        print_info("  - sweep_summary.txt", show_console_info)
+        print_info("  - overleaf_table.txt", show_console_info)
+        print_info("  - overleaf_cluster_metric_tables.txt", show_console_info)
+        print_info(
+            "Each configuration folder contains metrics, reports, predictions, and plots.",
+            show_console_info,
+        )
     return sweep_dir

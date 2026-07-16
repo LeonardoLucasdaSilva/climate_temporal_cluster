@@ -87,6 +87,9 @@ Change experiment variables in `run_experiment.py`:
   rebuilt LSTM space and target; supported values are `"standard"`,
   `"minmax"`, and `None`
 - test evaluation mode: `TEST_ALL_MODELS`
+- execution mode: set `RUN_ONLY_CLUSTER = True` to stop after clustering and
+  held-out assignment, without LSTM preprocessing, training, prediction, or
+  supervised-output folders
 - exported table metrics: `QUANTITATIVE_METRICS`
 - model hyperparameters: `LSTM_UNITS`, `LSTM_UNITS_2`, `DROPOUT_RATE`,
   `LEARNING_RATE`, `WEIGHT_DECAY`; the optimizer is AdamW and
@@ -306,3 +309,7 @@ change sample order or metric calculations.
 The automatic report also includes a `Cluster Prediction Scatter` section with
 one test actual-versus-predicted scatter plot per cluster. Test samples are red
 x markers and each plot keeps its legend.
+
+Each configuration also writes `model_fit/01_training_history_cluster_<cluster>.png`.
+This image is a 2x2 panel with per-epoch LOSS, MSE, MAE, and R² curves for the
+training and validation histories.

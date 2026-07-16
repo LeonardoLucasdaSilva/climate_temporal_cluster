@@ -21,6 +21,27 @@ SUPPORTED_LOSS_FUNCTIONS = (
 )
 
 
+def r2(y_true, y_pred):
+    """Return the coefficient of determination as a Keras metric."""
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+    residual_sum_of_squares = tf.reduce_sum(tf.square(y_true - y_pred))
+    centered_true = y_true - tf.reduce_mean(y_true)
+    total_sum_of_squares = tf.reduce_sum(tf.square(centered_true))
+    return 1.0 - tf.math.divide_no_nan(
+        residual_sum_of_squares,
+        total_sum_of_squares,
+    )
+
+
+def _r2_metric() -> object:
+    """Return the native R² metric when available, with a compatible fallback."""
+    r2_score = getattr(keras.metrics, "R2Score", None)
+    if r2_score is not None:
+        return r2_score(name="r2")
+    return r2
+
+
 def _create_adamw_optimizer(
     learning_rate: float,
     weight_decay: float,
@@ -225,7 +246,7 @@ class LSTMPrecipitationPredictor:
         model.compile(
             optimizer=optimizer,
             loss=loss,
-            metrics=['mae', 'mse'],
+            metrics=['mae', 'mse', _r2_metric()],
         )
 
         self.model = model

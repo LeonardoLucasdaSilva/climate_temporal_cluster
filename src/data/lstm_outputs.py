@@ -41,29 +41,46 @@ def save_training_history_plots(
     histories_by_cluster: dict[int, object],
     output_dir: Path,
 ) -> None:
-    """Save loss and MAE curves for each cluster model."""
+    """Save the four-plot training history panel for each cluster model."""
     plot_dir = output_dir / "model_fit"
     plot_dir.mkdir(exist_ok=True)
 
     for cluster_id, history in histories_by_cluster.items():
         hist = history.history
-        fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+        metric_specs = (
+            ("loss", "LOSS", "LOSS"),
+            ("mse", "MSE", "MSE"),
+            ("mae", "MAE", "MAE"),
+            ("r2", "R²", "R²"),
+        )
+        fig, axes = plt.subplots(2, 2, figsize=(14, 9), squeeze=False)
 
-        axes[0].plot(hist.get("loss", []), label="Train", linewidth=2)
-        if "val_loss" in hist:
-            axes[0].plot(hist["val_loss"], label="Validation", linewidth=2)
-        axes[0].set_title(f"Cluster {cluster_id}: Loss")
-        axes[0].set_xlabel("Epoch")
-        axes[0].set_ylabel("MSE")
-        axes[0].legend()
-
-        axes[1].plot(hist.get("mae", []), label="Train", linewidth=2)
-        if "val_mae" in hist:
-            axes[1].plot(hist["val_mae"], label="Validation", linewidth=2)
-        axes[1].set_title(f"Cluster {cluster_id}: MAE")
-        axes[1].set_xlabel("Epoch")
-        axes[1].set_ylabel("MAE")
-        axes[1].legend()
+        for axis, (metric_key, title, ylabel) in zip(axes.flat, metric_specs):
+            train_values = np.asarray(hist.get(metric_key, []), dtype=float)
+            validation_values = np.asarray(
+                hist.get(f"val_{metric_key}", []),
+                dtype=float,
+            )
+            if train_values.size:
+                axis.plot(
+                    np.arange(1, train_values.size + 1),
+                    train_values,
+                    label="Train",
+                    linewidth=2,
+                )
+            if validation_values.size:
+                axis.plot(
+                    np.arange(1, validation_values.size + 1),
+                    validation_values,
+                    label="Validation",
+                    linewidth=2,
+                )
+            axis.set_title(f"Cluster {cluster_id}: {title}")
+            axis.set_xlabel("Epoch")
+            axis.set_ylabel(ylabel)
+            axis.grid(True, alpha=0.3)
+            if train_values.size or validation_values.size:
+                axis.legend()
 
         fig.tight_layout()
         fig.savefig(plot_dir / f"01_training_history_cluster_{cluster_id}.png")
@@ -2279,6 +2296,157 @@ def save_config_summary(
             )
 
 
+def save_cluster_only_outputs(
+    config: ExperimentConfigLike,
+    output_dir: Path,
+    feature_columns: list[str],
+    all_targets: np.ndarray,
+    all_current_precipitation: np.ndarray,
+    all_cluster_labels: np.ndarray,
+    y_train: np.ndarray,
+    y_val: np.ndarray,
+    y_test: np.ndarray,
+    current_train: np.ndarray,
+    current_val: np.ndarray,
+    current_test: np.ndarray,
+    c_train: np.ndarray,
+    c_val: np.ndarray,
+    c_test: np.ndarray,
+    i_train: np.ndarray,
+    i_val: np.ndarray,
+    i_test: np.ndarray,
+    state: str,
+    station_id: str,
+    pca_variance_threshold: float | None,
+    pca_for_clustering_only: bool,
+    forecast_horizon: int,
+    cluster_feature_splits: Mapping[str, tuple[np.ndarray, np.ndarray]],
+) -> dict[str, float | int | str | None]:
+    """Save only clustering assignments, diagnostics, and cluster summaries."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    split_values = (
+        ("Training", i_train, c_train, y_train, current_train),
+        ("Validation", i_val, c_val, y_val, current_val),
+        ("Test", i_test, c_test, y_test, current_test),
+    )
+    assignment_frames = []
+    for split_name, indices, labels, targets, current in split_values:
+        assignment_frames.append(
+            pd.DataFrame(
+                {
+                    "split": split_name,
+                    "window_index": np.asarray(indices, dtype=int),
+                    "cluster": np.asarray(labels, dtype=int),
+                    "target_precipitation_mm": np.asarray(targets, dtype=float),
+                    "current_window_precipitation_mm": np.asarray(
+                        current,
+                        dtype=float,
+                    ),
+                }
+            )
+        )
+    assignments = pd.concat(assignment_frames, ignore_index=True)
+    assignments.to_csv(output_dir / "cluster_assignments.csv", index=False)
+
+    cluster_summary = (
+        assignments.groupby(["split", "cluster"], sort=True)
+        .agg(
+            n_samples=("cluster", "size"),
+            target_mean_mm=("target_precipitation_mm", "mean"),
+            target_std_mm=("target_precipitation_mm", "std"),
+            current_mean_mm=("current_window_precipitation_mm", "mean"),
+        )
+        .reset_index()
+    )
+    cluster_summary["target_std_mm"] = cluster_summary["target_std_mm"].fillna(0.0)
+    cluster_summary.to_csv(output_dir / "cluster_summary.csv", index=False)
+
+    save_cluster_distribution_plot(np.asarray(c_test), output_dir)
+    save_cluster_timeline_plot(
+        output_dir,
+        c_train=np.asarray(c_train),
+        c_val=np.asarray(c_val),
+        c_test=np.asarray(c_test),
+    )
+    save_precipitation_by_cluster_plot(y_test, c_test, output_dir)
+    save_cluster_precipitation_histograms(y_test, c_test, output_dir)
+    save_input_precipitation_assignments(
+        all_targets,
+        all_current_precipitation,
+        all_cluster_labels,
+        output_dir,
+        forecast_horizon=forecast_horizon,
+    )
+    save_input_precipitation_distribution_by_cluster(
+        np.asarray(all_targets, dtype=float),
+        np.asarray(all_cluster_labels, dtype=int),
+        output_dir,
+        forecast_horizon=forecast_horizon,
+    )
+
+    silhouette_summary = save_cluster_silhouette_plot(
+        cluster_feature_splits,
+        output_dir,
+    )
+    silhouette_means = {}
+    for split_name in ("Training", "Validation", "Test"):
+        rows = silhouette_summary[
+            (silhouette_summary["split"] == split_name)
+            & (silhouette_summary["cluster"].astype(str) == "overall")
+        ]
+        silhouette_means[split_name.lower()] = (
+            float(rows.iloc[0]["mean_silhouette"])
+            if not rows.empty
+            else np.nan
+        )
+
+    with open(output_dir / "cluster_only_summary.txt", "w", encoding="utf-8") as f:
+        f.write("CLUSTER-ONLY EXPERIMENT\n")
+        f.write("=" * 72 + "\n\n")
+        f.write(f"Run folder: {config.name}\n")
+        f.write(f"Station: {state}/{station_id}\n")
+        f.write(f"Window size: {config.window_size}\n")
+        f.write(f"Number of clusters: {config.n_clusters}\n")
+        f.write(f"Clustering algorithm: {config.algorithm}\n")
+        f.write(
+            f"Sigma: {config.sigma if config.sigma is not None else 'not used'}\n"
+        )
+        f.write(
+            f"PCA variance threshold: {pca_variance_threshold}\n"
+            f"PCA mode: {pca_mode_label(pca_variance_threshold, True)}\n"
+        )
+        f.write(f"Features ({len(feature_columns)}): {', '.join(feature_columns)}\n")
+        f.write(f"Samples: {len(assignments)}\n")
+        f.write(
+            "Mean silhouette: "
+            f"train={silhouette_means['training']:.4f}, "
+            f"validation={silhouette_means['validation']:.4f}, "
+            f"test={silhouette_means['test']:.4f}\n"
+        )
+
+    return {
+        "run_name": config.name,
+        "window_size": config.window_size,
+        "n_clusters": config.n_clusters,
+        "algorithm": config.algorithm,
+        "sigma": config.sigma,
+        "pca_variance_threshold": pca_variance_threshold,
+        "pca_for_clustering_only": pca_for_clustering_only,
+        "pca_mode": pca_mode_label(
+            pca_variance_threshold,
+            True,
+        ),
+        "n_train": len(y_train),
+        "n_val": len(y_val),
+        "n_test": len(y_test),
+        "training_mean_silhouette": silhouette_means["training"],
+        "validation_mean_silhouette": silhouette_means["validation"],
+        "test_mean_silhouette": silhouette_means["test"],
+        "cluster_summary_path": "cluster_summary.csv",
+    }
+
+
 def save_run_outputs(
     config: ExperimentConfigLike,
     output_dir: Path,
@@ -2760,3 +2928,44 @@ def save_sweep_outputs(
         f.write("-" * 72 + "\n")
         f.write(best.to_string())
         f.write("\n\nFull results are in sweep_results.csv.\n")
+
+
+def save_cluster_sweep_outputs(
+    results: list[dict[str, float | int | str | None]],
+    sweep_dir: Path,
+    state: str,
+    station_id: str,
+    window_sizes: list[int],
+    n_clusters_list: list[int],
+    clustering_algorithm: str,
+    pca_variance_threshold: float | None = None,
+    pca_for_clustering_only: bool = False,
+) -> None:
+    """Save sweep-level artifacts for a clustering-only experiment."""
+    results_df = pd.DataFrame(results)
+    if not results_df.empty:
+        sort_columns = [
+            column
+            for column in ("n_clusters", "window_size", "sigma")
+            if column in results_df.columns
+        ]
+        if sort_columns:
+            results_df = results_df.sort_values(sort_columns)
+    results_df.to_csv(sweep_dir / "cluster_sweep_results.csv", index=False)
+
+    with open(sweep_dir / "cluster_sweep_summary.txt", "w", encoding="utf-8") as f:
+        f.write("CLUSTER-ONLY SWEEP SUMMARY\n")
+        f.write("=" * 72 + "\n\n")
+        f.write(f"Station: {state}/{station_id}\n")
+        f.write(f"Configurations: {len(results_df)}\n")
+        f.write(f"Window sizes: {window_sizes}\n")
+        f.write(f"Cluster counts: {n_clusters_list}\n")
+        f.write(f"Algorithm: {clustering_algorithm}\n")
+        f.write(
+            f"PCA variance threshold: {pca_variance_threshold}\n"
+            f"PCA mode: {pca_mode_label(pca_variance_threshold, True)}\n\n"
+        )
+        f.write(
+            "No LSTM models were trained. See cluster_sweep_results.csv and "
+            "each configuration's cluster_only_summary.txt.\n"
+        )
