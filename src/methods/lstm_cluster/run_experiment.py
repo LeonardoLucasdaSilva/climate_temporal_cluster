@@ -15,14 +15,18 @@ STATE = "RS"
 STATION_ID = "A801"
 
 # Clustering sweep
-
 WINDOW_SIZES = [30]
 N_CLUSTERS_LIST = [5,7,9]
 PCA_VARIANCE_THRESHOLD = None
+PCA_FOR_CLUSTERING_ONLY = True  # Keep pre-PCA window features as LSTM inputs
 CLUSTERING_FEATURE_NORMALIZE = "minmax"  # "standard", "minmax", or None
 CLUSTERING_PRECIPITATION_NORMALIZE = 'minmax'  # "standard", "minmax", or None
 LSTM_FEATURE_NORMALIZE = "standard"  # "standard", "minmax", or None
 LSTM_PRECIPITATION_NORMALIZE = None  # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
+
+
+
+# Clustering setting
 CLUSTERING_ALGORITHM = "spectral"  # "kmeans" or "spectral"
 N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"  # "auto" or "manual"
@@ -80,6 +84,7 @@ def main() -> None:
         lstm_feature_normalize=LSTM_FEATURE_NORMALIZE,
         lstm_precipitation_normalize=LSTM_PRECIPITATION_NORMALIZE,
         variance_threshold=PCA_VARIANCE_THRESHOLD,
+        pca_for_clustering_only=PCA_FOR_CLUSTERING_ONLY,
         n_clusters_list=N_CLUSTERS_LIST,
         clustering_algorithm=CLUSTERING_ALGORITHM,
         n_sigma_values=N_SIGMA_VALUES,

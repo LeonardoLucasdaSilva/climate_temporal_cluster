@@ -2179,6 +2179,18 @@ def save_test_model_selection_report(
             f.write("\n")
 
 
+def pca_mode_label(
+    pca_variance_threshold: float | None,
+    pca_for_clustering_only: bool,
+) -> str:
+    """Return the human-readable PCA mode used by an experiment."""
+    if pca_variance_threshold is None:
+        return "disabled"
+    if pca_for_clustering_only:
+        return "clustering only"
+    return "clustering and LSTM"
+
+
 def save_config_summary(
     config: ExperimentConfigLike,
     output_dir: Path,
@@ -2192,8 +2204,9 @@ def save_config_summary(
     split_sizes: dict[str, int],
     state: str,
     station_id: str,
-    pca_variance_threshold: float,
+    pca_variance_threshold: float | None,
     forecast_horizon: int,
+    pca_for_clustering_only: bool = False,
 ) -> None:
     """Save a compact human-readable summary for one configuration."""
     with open(output_dir / "summary.txt", "w", encoding="utf-8") as f:
@@ -2206,7 +2219,15 @@ def save_config_summary(
         f.write(f"Number of clusters: {config.n_clusters}\n")
         f.write(f"Clustering algorithm: {config.algorithm}\n")
         f.write(f"Sigma: {config.sigma if config.sigma is not None else 'not used'}\n")
-        f.write(f"PCA variance threshold: {pca_variance_threshold:.2f}\n" if pca_variance_threshold is not None else "PCA variance threshold: not used\n")
+        f.write(
+            f"PCA variance threshold: {pca_variance_threshold:.2f}\n"
+            if pca_variance_threshold is not None
+            else "PCA variance threshold: not used\n"
+        )
+        f.write(
+            "PCA mode: "
+            f"{pca_mode_label(pca_variance_threshold, pca_for_clustering_only)}\n"
+        )
         f.write(f"Features ({len(feature_columns)}): {', '.join(feature_columns)}\n")
         f.write(f"Splits: {split_sizes}\n\n")
 
@@ -2283,8 +2304,9 @@ def save_run_outputs(
     metrics_by_cluster: dict[int, dict[str, float]],
     state: str,
     station_id: str,
-    pca_variance_threshold: float,
+    pca_variance_threshold: float | None,
     forecast_horizon: int,
+    pca_for_clustering_only: bool = False,
     test_model_selection: dict[str, object] | None = None,
     y_pred_test_by_lead_day: np.ndarray | None = None,
     test_target_dates_by_lead_day: np.ndarray | None = None,
@@ -2465,6 +2487,7 @@ def save_run_outputs(
         state=state,
         station_id=station_id,
         pca_variance_threshold=pca_variance_threshold,
+        pca_for_clustering_only=pca_for_clustering_only,
         forecast_horizon=forecast_horizon,
     )
     save_visualizations(
@@ -2512,6 +2535,12 @@ def save_run_outputs(
         "n_clusters": config.n_clusters,
         "algorithm": config.algorithm,
         "sigma": config.sigma,
+        "pca_variance_threshold": pca_variance_threshold,
+        "pca_for_clustering_only": pca_for_clustering_only,
+        "pca_mode": pca_mode_label(
+            pca_variance_threshold,
+            pca_for_clustering_only,
+        ),
         "forecast_horizon": forecast_horizon,
         "zero_days_ratio": zero_metrics["zero_days_ratio"],
         "rainy_days_rmse": zero_metrics.get("rainy_days_rmse", np.nan),
@@ -2696,6 +2725,8 @@ def save_sweep_outputs(
     n_clusters_list: list[int],
     clustering_algorithm: str,
     quantitative_metrics: list[str],
+    pca_variance_threshold: float | None = None,
+    pca_for_clustering_only: bool = False,
 ) -> None:
     """Save sweep-level CSV, text summary, and LaTeX table."""
     results_df = pd.DataFrame(results).sort_values(["test_rmse", "test_mae"])
@@ -2715,7 +2746,16 @@ def save_sweep_outputs(
         f.write(f"Configurations: {len(results_df)}\n")
         f.write(f"Window sizes: {window_sizes}\n")
         f.write(f"Cluster counts: {n_clusters_list}\n")
-        f.write(f"Algorithm: {clustering_algorithm}\n\n")
+        f.write(f"Algorithm: {clustering_algorithm}\n")
+        f.write(
+            f"PCA variance threshold: {pca_variance_threshold:.2f}\n"
+            if pca_variance_threshold is not None
+            else "PCA variance threshold: not used\n"
+        )
+        f.write(
+            "PCA mode: "
+            f"{pca_mode_label(pca_variance_threshold, pca_for_clustering_only)}\n\n"
+        )
         f.write("Best configuration by test RMSE\n")
         f.write("-" * 72 + "\n")
         f.write(best.to_string())

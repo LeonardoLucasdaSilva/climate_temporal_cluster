@@ -13,6 +13,11 @@ from config import DATA_ROOT
 from data.load_data import load_station_daily_data
 from methods.cluster.manual import manual_clustering
 from methods.cluster.ng import spectral_clustering
+from methods.tools.feature_scaling import (
+    FeatureScalingState,
+    normalize_precipitation_scaler_type,
+    scale_weather_features,
+)
 from methods.tools.sliding_windows import create_windows
 
 
@@ -82,6 +87,54 @@ def create_cluster_feature_matrix(
         windows_flat = windows
 
     return windows, windows_flat, scaler, pca, feature_columns
+
+
+def create_pipeline_clustering_features(
+    df: pd.DataFrame,
+    window_size: int,
+    columns: list[str] | None,
+    normalize: bool,
+    scaler_type: str,
+    precipitation_scaler_type: str | None,
+    train_ratio: float,
+    pca_variance_threshold: float | None,
+) -> tuple[np.ndarray, list[str]]:
+    """Build training clustering features like the LSTM+cluster pipeline."""
+    if not 0 < train_ratio < 1:
+        raise ValueError("train_ratio must be between 0 and 1.")
+
+    train_end = int(np.floor(len(df) * train_ratio))
+    if train_end < window_size:
+        raise ValueError(
+            f"Training split has {train_end} rows, fewer than window size "
+            f"{window_size}."
+        )
+
+    feature_columns = columns if columns is not None else numeric_feature_columns(df)
+    if not feature_columns:
+        raise ValueError("No numeric feature columns are available.")
+
+    precipitation_scaler_type = normalize_precipitation_scaler_type(
+        precipitation_scaler_type
+    )
+    training_df = df.iloc[:train_end].reset_index(drop=True)
+    scaled_features, _ = scale_weather_features(
+        training_df,
+        feature_columns,
+        scalers=FeatureScalingState(),
+        covariate_scaler_type=scaler_type,
+        precipitation_scaler_type=precipitation_scaler_type,
+        fit_scalers=normalize,
+    )
+    _, windows_flat, _, _, _ = create_cluster_feature_matrix(
+        scaled_features,
+        window_size=window_size,
+        columns=feature_columns,
+        normalize=False,
+        variance_threshold=pca_variance_threshold,
+        verbose=False,
+    )
+    return windows_flat, feature_columns
 
 
 def cluster_feature_matrix(

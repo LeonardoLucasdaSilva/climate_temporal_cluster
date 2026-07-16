@@ -16,6 +16,7 @@ from data.lstm_outputs import (
     compressed_time_positions,
     save_cluster_distribution_plot,
     save_cluster_timeline_plot,
+    pca_mode_label,
     save_cluster_silhouette_plot,
     save_cluster_prediction_scatters,
     save_cluster_prediction_timeseries,
@@ -26,6 +27,7 @@ from data.lstm_outputs import (
     oracle_routing_diagnostic_tables,
     save_prediction_timeseries_splits,
     save_test_model_selection_report,
+    save_sweep_outputs,
 )
 
 
@@ -307,6 +309,52 @@ class LstmOutputTests(unittest.TestCase):
             self.assertEqual(cells[(2, 2)].get_text().get_text(), "1")
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
+    def test_sweep_summary_records_pca_choice(self) -> None:
+        output_dir = PROJECT_ROOT / "tests" / f"_pca_summary_test_{uuid.uuid4().hex}"
+        output_dir.mkdir()
+        try:
+            with (
+                patch("data.lstm_outputs.latex_table", return_value="table"),
+                patch(
+                    "data.lstm_outputs.cluster_metric_latex_tables",
+                    return_value="cluster tables",
+                ),
+            ):
+                save_sweep_outputs(
+                    results=[
+                        {
+                            "run_name": "pca_run",
+                            "test_rmse": 1.0,
+                            "test_mae": 0.5,
+                            "pca_variance_threshold": 0.9,
+                            "pca_for_clustering_only": True,
+                            "pca_mode": "clustering only",
+                        }
+                    ],
+                    sweep_dir=output_dir,
+                    state="RS",
+                    station_id="A801",
+                    window_sizes=[15],
+                    n_clusters_list=[3],
+                    clustering_algorithm="kmeans",
+                    pca_variance_threshold=0.9,
+                    pca_for_clustering_only=True,
+                    quantitative_metrics=["MSE"],
+                )
+
+            summary = (output_dir / "sweep_summary.txt").read_text(encoding="utf-8")
+            self.assertIn("PCA variance threshold: 0.90", summary)
+            self.assertIn("PCA mode: clustering only", summary)
+            self.assertIn("pca_for_clustering_only", summary)
+            self.assertIn("pca_mode", summary)
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_pca_mode_label_covers_all_modes(self) -> None:
+        self.assertEqual(pca_mode_label(None, False), "disabled")
+        self.assertEqual(pca_mode_label(None, True), "disabled")
+        self.assertEqual(pca_mode_label(0.9, True), "clustering only")
+        self.assertEqual(pca_mode_label(0.9, False), "clustering and LSTM")
 
     def test_cluster_timeline_uses_all_splits_in_chronological_order(self) -> None:
         output_dir = (

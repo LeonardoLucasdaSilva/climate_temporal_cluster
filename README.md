@@ -65,6 +65,8 @@ climate_temporal_cluster/
 |   |   |   |-- arma.md            # Folder documentation
 |   |   |   `-- pipeline.py        # ARMA fitting and rolling forecasts
 |   |   |-- cluster/
+|   |   |   |-- automatic_sigma.py # Standalone automatic sigma selector
+|   |   |   |-- eigengap.py         # Standalone eigengap analysis
 |   |   |   |-- manual.py          # Horizon-rain-guided clustering
 |   |   |   |-- ng.py              # Spectral clustering implementation
 |   |   |   `-- cluster_pipeline.py
@@ -101,12 +103,29 @@ STATE = "RS"
 STATION_ID = "A801"
 WINDOW_SIZES = [8, 12, 16, 20, 24, 28]
 N_CLUSTERS_LIST = [3, 4, 5]
+PCA_VARIANCE_THRESHOLD = 0.90  # None disables PCA
+PCA_FOR_CLUSTERING_ONLY = True
 CLUSTERING_ALGORITHM = "spectral"  # "kmeans", "spectral", or "manual"
 FORECAST_HORIZON = 1
 N_SIGMA_VALUES = 5
 TEST_ALL_MODELS = True
 SHOW_CONSOLE_INFO = True
 ```
+
+### PCA configuration modes
+
+Set `PCA_VARIANCE_THRESHOLD` and `PCA_FOR_CLUSTERING_ONLY` in
+`src/methods/lstm_cluster/run_experiment.py` according to the desired pipeline:
+
+| Mode | `PCA_VARIANCE_THRESHOLD` | `PCA_FOR_CLUSTERING_ONLY` | Features used by the LSTM |
+| --- | --- | --- | --- |
+| No PCA | `None` | `False` (ignored) | Original flattened windows |
+| PCA only for clustering | A value between `0` and `1`, such as `0.90` | `True` | Original flattened windows |
+| PCA for clustering and LSTM | A value between `0` and `1`, such as `0.90` | `False` | PCA-transformed windows |
+
+PCA is always fitted on training windows only. Validation and test windows use
+the fitted training transform. See
+`src/methods/lstm_cluster/lstm_cluster.md` for complete configuration examples.
 
 For each configuration, the experiment runs these stages:
 
@@ -122,6 +141,8 @@ For each configuration, the experiment runs these stages:
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
    calculate training-cluster centroids, then assign validation and test
    windows to the nearest existing centroid.
+   With `PCA_FOR_CLUSTERING_ONLY = True`, clustering uses PCA coordinates while
+   each LSTM receives the retained pre-PCA flattened window features.
 7. Create one precipitation target column per lead day from D+1 through the
    configured forecast horizon inside each split.
 8. Rebuild the LSTM feature matrix from the original window dimensions, fit
@@ -258,6 +279,29 @@ from methods.tools.sigma_choosing import calculate_sigma_values
 sigmas = calculate_sigma_values(df, n_values=5)
 ```
 
+The same heuristic is available as a standalone command for a chosen station
+and window configuration:
+
+```powershell
+cluster-auto-sigma --state RS --station-id A801 --window-size 15 --n-values 5 --scaler-type standard --precipitation-scaler none --train-ratio 0.6
+```
+
+This command uses the same feature preprocessing as the LSTM+cluster pipeline:
+scalers are fitted only on the chronological training fraction, covariates and
+precipitation use their separately configured scalers, windows are flattened,
+and optional PCA is fitted on the training windows. Match
+`--scaler-type`, `--precipitation-scaler`, `--train-ratio`, and
+`--pca-variance-threshold` to the experiment configuration.
+
+For code that already has its clustering features prepared (for example an
+eigengap analysis), avoid loading and windowing the data again:
+
+```python
+from methods.cluster.automatic_sigma import generate_sigma_candidates_from_features
+
+sigmas = generate_sigma_candidates_from_features(windows_flat, n_values=5)
+```
+
 The sigma logic lives in `src/methods/tools/sigma_choosing.py`.
 It contains:
 
@@ -265,6 +309,37 @@ It contains:
 - `take_sigma`
 - `sigma_values_from_distance_distribution`
 - `calculate_sigma_values`
+
+## Eigengap Cluster-Count Analysis
+
+The standalone eigengap command evaluates multiple sliding-window sizes using
+the same normalized Gaussian affinity graph as spectral clustering:
+
+```powershell
+cluster-eigengap --state RS --station-id A801 --window-sizes 5 10 15 --n-sigma-values 5 --additional-sigma-values 0.5 1.0 2.0 --scaler-type standard --precipitation-scaler none --train-ratio 0.6
+```
+
+For each window size, it generates sigma candidates with the automatic
+pairwise-distance heuristic, evaluates every candidate, and saves one plot per
+window/sigma pair with the first 20 eigengaps. It highlights the largest gap
+and prints the suggested cluster count, sigma, and gap value for every result.
+The eigengap heuristic uses
+`gap(k) = lambda_k - lambda_(k+1)` on eigenvalues sorted from largest to
+smallest. Configure the sweep with `--n-sigma-values`, `--lower-quantile`, and
+`--upper-quantile`. Additional manually selected values can be applied to every
+window configuration with `--additional-sigma-values` (or its shorter
+`--sigma-values` alias); duplicates are evaluated once. More options and assumptions are documented in
+`src/methods/cluster/cluster.md`. A candidate that produces a degenerate
+affinity matrix is reported explicitly; its recommendation is marked `N/A` and
+the remaining sigma candidates and window sizes continue to run.
+
+Its feature preprocessing matches the LSTM+cluster pipeline: scalers are fitted
+only on the chronological training fraction, covariates and precipitation use
+their separately configured scalers, and PCA is optionally fitted after window
+flattening. Keep the eigengap `SCALER_TYPE`, `PRECIPITATION_SCALER`,
+`TRAIN_RATIO`, and `PCA_VARIANCE_THRESHOLD` values synchronized with
+`src/methods/lstm_cluster/run_experiment.py` when comparing recommendations
+with an experiment.
 
 ## Clustering
 
@@ -391,6 +466,10 @@ Sweep-level files:
 - `overleaf_table.txt`
 - `overleaf_cluster_metric_tables.txt`
 
+`sweep_summary.txt` records the PCA variance threshold and whether PCA was
+disabled, applied only to clustering, or applied to both clustering and LSTM
+inputs. The best-configuration section also includes these PCA fields.
+
 Each configuration folder contains:
 
 - `metrics_summary.csv`
@@ -440,9 +519,11 @@ Each configuration folder contains:
   plot legends
 
 The `Configuration` section of `experiment_report.tex` and the compiled PDF
-record the run's selected clustering feature scaler, clustering precipitation
-scaler, LSTM feature scaler, LSTM precipitation scaler, and LSTM target scale.
-Predictions are inverse-transformed to millimeters before metrics and plots.
+record the run's PCA variance threshold, PCA mode (`disabled`, `clustering
+only`, or `clustering and LSTM`), selected covariate scaler, precipitation
+scaler, and LSTM target scale. Predictions are inverse-transformed to
+millimeters before metrics and plots.
+
 
 Metrics include:
 
@@ -584,6 +665,7 @@ results = run_clustering_pipeline(
 | Clean/load data internals | `data` |
 | Sliding windows | `methods.tools.sliding_windows` |
 | Sigma selection | `methods.tools.sigma_choosing` |
+| Standalone automatic sigma runner | `methods.cluster.automatic_sigma` |
 | Cluster feature matrix and dispatch | `methods.cluster.cluster_pipeline` |
 | Horizon-rain-guided clustering | `methods.cluster.manual` |
 | Spectral clustering | `methods.cluster.ng` |
