@@ -15,12 +15,12 @@ STATE = "RS"
 STATION_ID = "A801"
 
 # Clustering sweep
-WINDOW_SIZES = [35]
-N_CLUSTERS_LIST = [5]
+WINDOW_SIZES = [5,10]
+N_CLUSTERS_LIST = [2]
 PCA_VARIANCE_THRESHOLD = None
 PCA_FOR_CLUSTERING_ONLY = True  # Keep pre-PCA window features as LSTM inputs
 CLUSTERING_FEATURE_NORMALIZE = 'standard'  # "standard", "minmax", or None
-CLUSTERING_PRECIPITATION_NORMALIZE = 'minmax'  # "standard", "minmax", or None
+CLUSTERING_PRECIPITATION_NORMALIZE = None  # "standard", "minmax", or None
 LSTM_FEATURE_NORMALIZE = "standard"  # "standard", "minmax", or None
 LSTM_PRECIPITATION_NORMALIZE = None  # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
 
@@ -30,7 +30,7 @@ LSTM_PRECIPITATION_NORMALIZE = None  # None keeps PRECIPITACAO_TOTAL and LSTM ta
 CLUSTERING_ALGORITHM = "spectral"  # "kmeans" or "spectral"
 N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"  # "auto" or "manual"
-MANUAL_SIGMA_VALUES = [0.4,0.5,0.6,0.7,0.8,0.9]  # Only used if SIGMA_MODE is "manual"
+MANUAL_SIGMA_VALUES = [0.3]  # Only used if SIGMA_MODE is "manual"
 USE_ALL_FEATURES = True
 FORECAST_HORIZON = 5
 
@@ -58,7 +58,7 @@ EARLY_STOPPING = True
 PATIENCE = 251
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True
-RUN_ONLY_CLUSTER = True  # Only cluster windows; skip all LSTM training/output.
+RUN_ONLY_CLUSTER = False  # Only cluster windows; skip all LSTM training/output.
 
 # Train/validation/test split
 TRAIN_RATIO = 0.6
