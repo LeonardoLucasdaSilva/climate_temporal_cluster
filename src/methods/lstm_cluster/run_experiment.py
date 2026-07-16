@@ -16,16 +16,17 @@ STATION_ID = "A801"
 
 # Clustering sweep
 
-WINDOW_SIZES = [20,30,45]
+WINDOW_SIZES = [30]
 N_CLUSTERS_LIST = [5,7,9]
 PCA_VARIANCE_THRESHOLD = None
-NORMALIZE = True
-SCALER_TYPE = "standard"  # Covariates: "standard" or "minmax"; ignored when NORMALIZE=False
-PRECIPITATION_SCALER = None  # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
-CLUSTERING_ALGORITHM = "kmeans"  # "kmeans" or "spectral"
+CLUSTERING_FEATURE_NORMALIZE = "minmax"  # "standard", "minmax", or None
+CLUSTERING_PRECIPITATION_NORMALIZE = 'minmax'  # "standard", "minmax", or None
+LSTM_FEATURE_NORMALIZE = "standard"  # "standard", "minmax", or None
+LSTM_PRECIPITATION_NORMALIZE = None  # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
+CLUSTERING_ALGORITHM = "spectral"  # "kmeans" or "spectral"
 N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"  # "auto" or "manual"
-MANUAL_SIGMA_VALUES = [0.3,0.5,0.7]  # Only used if SIGMA_MODE is "manual"
+MANUAL_SIGMA_VALUES = [0.3]  # Only used if SIGMA_MODE is "manual"
 USE_ALL_FEATURES = True
 FORECAST_HORIZON = 5
 
@@ -38,7 +39,7 @@ TEST_ALL_MODELS = True
 
 # Model hyperparameters
 LSTM_UNITS = 32
-LSTM_UNITS_2 = 16
+LSTM_UNITS_2 = 32
 DROPOUT_RATE = 0.1
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-4  # Decoupled weight decay used by AdamW
@@ -48,8 +49,8 @@ LOSS_QUANTILE_WEIGHTS = "auto"  # "auto" or one positive weight per quantile bin
 
 # Training settings
 EPOCHS = 250
-BATCH_SIZE = 64
-EARLY_STOPPING = True
+BATCH_SIZE = 32
+EARLY_STOPPING = False
 PATIENCE = 50
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True
@@ -74,9 +75,10 @@ def main() -> None:
         state=STATE,
         station_id=STATION_ID,
         window_sizes=WINDOW_SIZES,
-        normalize=NORMALIZE,
-        scaler_type=SCALER_TYPE,
-        precipitation_scaler_type=PRECIPITATION_SCALER,
+        clustering_feature_normalize=CLUSTERING_FEATURE_NORMALIZE,
+        clustering_precipitation_normalize=CLUSTERING_PRECIPITATION_NORMALIZE,
+        lstm_feature_normalize=LSTM_FEATURE_NORMALIZE,
+        lstm_precipitation_normalize=LSTM_PRECIPITATION_NORMALIZE,
         variance_threshold=PCA_VARIANCE_THRESHOLD,
         n_clusters_list=N_CLUSTERS_LIST,
         clustering_algorithm=CLUSTERING_ALGORITHM,

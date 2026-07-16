@@ -1083,6 +1083,66 @@ def save_cluster_distribution_plot(
     return None
 
 
+def save_cluster_timeline_plot(
+    output_dir: Path,
+    *,
+    c_train: np.ndarray | None = None,
+    c_val: np.ndarray | None = None,
+    c_test: np.ndarray | None = None,
+) -> None:
+    """Save the chronological cluster label of every available window."""
+    split_labels = (
+        ("Training", c_train),
+        ("Validation", c_val),
+        ("Test", c_test),
+    )
+    nonempty_splits = [
+        (name, np.asarray(labels).reshape(-1))
+        for name, labels in split_labels
+        if labels is not None and np.asarray(labels).size
+    ]
+    if not nonempty_splits:
+        return
+
+    all_labels = np.concatenate([values for _, values in nonempty_splits])
+    sample_positions = np.arange(all_labels.size)
+    fig, ax = plt.subplots(figsize=(14, 5))
+    ax.scatter(
+        sample_positions,
+        all_labels,
+        c=all_labels,
+        cmap="tab10",
+        s=16,
+        alpha=0.85,
+        edgecolors="none",
+    )
+    split_end = 0
+    for split_name, split_values in nonempty_splits:
+        split_end += split_values.size
+        if split_end < all_labels.size:
+            ax.axvline(split_end - 0.5, color="0.35", linestyle="--", alpha=0.65)
+        ax.text(
+            split_end - split_values.size / 2 - 0.5,
+            0.97,
+            split_name,
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="top",
+            fontsize=9,
+            bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"},
+        )
+
+    unique_clusters = np.unique(all_labels)
+    ax.set_title("Cluster Timeline Across All Windows")
+    ax.set_xlabel("Window sample (training + validation + test)")
+    ax.set_ylabel("Cluster")
+    ax.set_yticks(unique_clusters)
+    ax.grid(True, alpha=0.25, axis="both")
+    fig.tight_layout()
+    fig.savefig(output_dir / "cluster_timeline.png")
+    plt.close(fig)
+
+
 def _prepare_silhouette_inputs(
     feature_matrix: np.ndarray,
     cluster_labels: np.ndarray,
@@ -1528,6 +1588,12 @@ def save_visualizations(
         c_train=training_cluster_labels,
         c_val=validation_cluster_labels,
         batch_size=batch_size,
+    )
+    save_cluster_timeline_plot(
+        output_dir,
+        c_train=training_cluster_labels,
+        c_val=validation_cluster_labels,
+        c_test=c_test,
     )
     save_precipitation_by_cluster_plot(y_test, c_test, output_dir)
     save_cluster_silhouette_plot(cluster_feature_splits, output_dir)

@@ -115,19 +115,21 @@ For each configuration, the experiment runs these stages:
 3. Split the daily dataframe chronologically into train, validation, and test
    blocks.
 4. Build sliding windows independently inside each dataframe split.
-5. Fit the selected covariate normalizer (`SCALER_TYPE`) and, when enabled, the
-   precipitation normalizer (`PRECIPITATION_SCALER`) on training rows/windows
-   only, then transform validation and test with the training transforms.
+5. Fit the selected clustering normalizers
+   (`CLUSTERING_FEATURE_NORMALIZE` and `CLUSTERING_PRECIPITATION_NORMALIZE`)
+   and optional clustering PCA on training rows/windows only, then transform
+   validation and test with the training transforms.
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
    calculate training-cluster centroids, then assign validation and test
    windows to the nearest existing centroid.
 7. Create one precipitation target column per lead day from D+1 through the
    configured forecast horizon inside each split.
-8. When `PRECIPITATION_SCALER` is set, normalize the LSTM target matrix, train
-   one LSTM model per training cluster with one output unit per lead day, then
-   inverse-transform predictions before metrics and plots. With
-   `PRECIPITATION_SCALER = None`, precipitation features and targets stay in
-   millimeters.
+8. Rebuild the LSTM feature matrix from the original window dimensions, fit
+   `LSTM_FEATURE_NORMALIZE` and `LSTM_PRECIPITATION_NORMALIZE` on training
+   rows/windows only, train one LSTM model per training cluster with one output
+   unit per lead day, then inverse-transform predictions before metrics and
+   plots. With `LSTM_PRECIPITATION_NORMALIZE = None`, precipitation features
+   and targets stay in millimeters.
 9. Predict train and validation precipitation with each sample's own cluster
    model.
 10. Evaluate test samples with either their own cluster model only or, when
@@ -418,6 +420,9 @@ Each configuration folder contains:
   `cluster_training_batch_statistics.csv` under `cluster_diagnostics/`, showing
   train/validation/test counts plus `n_train` and
   `ceil(n_train / batch_size)` for every cluster
+- `cluster_timeline.png` in the configuration root, plotting every training,
+  validation, and test window in chronological split order against its assigned
+  cluster
 - input-window forecast-horizon precipitation distribution plots by cluster under
   `input_precipitation_distribution_by_cluster/`
 - current-window versus forecast-horizon target diagnostics and persistence
@@ -435,9 +440,9 @@ Each configuration folder contains:
   plot legends
 
 The `Configuration` section of `experiment_report.tex` and the compiled PDF
-record the run's selected covariate scaler, precipitation scaler, and LSTM
-target scale. Predictions are inverse-transformed to millimeters before metrics
-and plots.
+record the run's selected clustering feature scaler, clustering precipitation
+scaler, LSTM feature scaler, LSTM precipitation scaler, and LSTM target scale.
+Predictions are inverse-transformed to millimeters before metrics and plots.
 
 Metrics include:
 
@@ -505,9 +510,10 @@ The default sweep can be expensive. To test quickly, edit
 ```python
 WINDOW_SIZES = [8]
 N_CLUSTERS_LIST = [3]
-NORMALIZE = True
-SCALER_TYPE = "standard"  # covariates: "standard" or "minmax"
-PRECIPITATION_SCALER = None  # None keeps PRECIPITACAO_TOTAL and targets in mm
+CLUSTERING_FEATURE_NORMALIZE = "standard"
+CLUSTERING_PRECIPITATION_NORMALIZE = None
+LSTM_FEATURE_NORMALIZE = "standard"
+LSTM_PRECIPITATION_NORMALIZE = None  # None keeps PRECIPITACAO_TOTAL and targets in mm
 LSTM_LOSS_FUNCTION = "quantile_weighted_mse"
 LOSS_QUANTILES = [0.5, 0.75, 0.9, 0.95]
 LOSS_QUANTILE_WEIGHTS = "auto"

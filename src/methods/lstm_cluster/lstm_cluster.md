@@ -42,21 +42,24 @@ Or use the root launcher:
 3. Split the daily dataframe chronologically into train, validation, and test
    blocks.
 4. Build sliding windows independently inside each split.
-5. Fit the selected covariate normalizer (`SCALER_TYPE`), optional
-   precipitation normalizer (`PRECIPITATION_SCALER`), and PCA on training
-   rows/windows only, then transform validation and test with those training
-   transforms.
+5. Fit the selected clustering normalizers
+   (`CLUSTERING_FEATURE_NORMALIZE` and `CLUSTERING_PRECIPITATION_NORMALIZE`)
+   and optional clustering PCA on training rows/windows only, then transform
+   validation and test with those training transforms.
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
    calculate training-cluster centroids, then assign validation and test
    windows to the nearest existing centroid.
 7. Build one target column for each lead day from D+1 through the configured
    forecast horizon inside each split. The final D+`FORECAST_HORIZON` column is
    still kept as the scalar target for legacy metrics and plots.
-8. When `PRECIPITATION_SCALER` is set, normalize the LSTM target matrix before
-   training. With `PRECIPITATION_SCALER = None`, precipitation features and
-   targets stay in millimeters. Each LSTM still has one output unit per lead
-   day, so the loss is optimized across the full D+1..D+`FORECAST_HORIZON`
-   target matrix.
+8. Rebuild the LSTM feature matrix from the original window dimensions and fit
+   the LSTM normalizers (`LSTM_FEATURE_NORMALIZE` and
+   `LSTM_PRECIPITATION_NORMALIZE`) on training rows/windows only. When
+   `LSTM_PRECIPITATION_NORMALIZE` is set, the LSTM target matrix is normalized
+   before training; with `LSTM_PRECIPITATION_NORMALIZE = None`, precipitation
+   features and targets stay in millimeters. Each LSTM still has one output
+   unit per lead day, so the loss is optimized across the full
+   D+1..D+`FORECAST_HORIZON` target matrix.
 9. Keep train and validation predictions tied to each sample's own cluster
    model.
 10. Predict each test sample with the LSTM trained for its assigned cluster.
@@ -73,9 +76,10 @@ Change experiment variables in `run_experiment.py`:
 - clustering sweep: `WINDOW_SIZES`, `N_CLUSTERS_LIST`,
   `CLUSTERING_ALGORITHM`, `FORECAST_HORIZON`, `MANUAL_ZERO_TOLERANCE`,
   `SIGMA_MODE`, `N_SIGMA_VALUES`, `MANUAL_SIGMA_VALUES`, `USE_ALL_FEATURES`
-- normalization: `NORMALIZE`, `SCALER_TYPE` for covariates and
-  `PRECIPITATION_SCALER` for `PRECIPITACAO_TOTAL` plus the LSTM target;
-  supported values are `"standard"`, `"minmax"`, and `None`
+- normalization: `CLUSTERING_FEATURE_NORMALIZE`,
+  `CLUSTERING_PRECIPITATION_NORMALIZE`, `LSTM_FEATURE_NORMALIZE`, and
+  `LSTM_PRECIPITATION_NORMALIZE`; supported values are `"standard"`,
+  `"minmax"`, and `None`
 - test evaluation mode: `TEST_ALL_MODELS`
 - exported table metrics: `QUANTITATIVE_METRICS`
 - model hyperparameters: `LSTM_UNITS`, `LSTM_UNITS_2`, `DROPOUT_RATE`,
@@ -189,7 +193,8 @@ RMSLE can differ because it ranks closeness after applying the logarithmic
 transform.
 
 Each configuration folder also gets `experiment_report.tex`. Its
-`Configuration` section includes the selected covariate scaler, precipitation
+`Configuration` section includes the selected clustering feature scaler,
+clustering precipitation scaler, LSTM feature scaler, LSTM precipitation
 scaler, and target scale for that run. Predictions are inverse-transformed to
 millimeters before metrics and plots. When all-model test selection is enabled,
 this report includes an `Análise de transferência entre clusters` section that
@@ -220,6 +225,9 @@ remain in folders such as
 `cluster_prediction_scatter/`. The `cluster_prediction_timeseries/` plots use
 the final forecast-horizon target date on the x-axis, formatted as
 `dd/mm/YYYY`.
+The configuration root also contains `cluster_timeline.png`, an XY plot that
+shows the assigned cluster of every window in chronological split order:
+training, validation, and test.
 
 Each configuration also saves
 `input_forecast_horizon_precipitation_by_cluster.csv`, which assigns the

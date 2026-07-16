@@ -73,9 +73,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             self.df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
-            normalize=True,
-            scaler_type="standard",
-            precipitation_scaler_type="standard",
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize="standard",
+            lstm_feature_normalize="standard",
+            lstm_precipitation_normalize="standard",
             variance_threshold=None,
             forecast_horizon=1,
             train_ratio=0.5,
@@ -118,9 +119,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             self.df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN"],
-            normalize=True,
-            scaler_type="minmax",
-            precipitation_scaler_type="standard",
+            clustering_feature_normalize="minmax",
+            clustering_precipitation_normalize="standard",
+            lstm_feature_normalize="minmax",
+            lstm_precipitation_normalize="standard",
             variance_threshold=None,
             forecast_horizon=1,
             train_ratio=0.5,
@@ -146,9 +148,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             self.df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
-            normalize=True,
-            scaler_type="standard",
-            precipitation_scaler_type="minmax",
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize="minmax",
+            lstm_feature_normalize="standard",
+            lstm_precipitation_normalize="minmax",
             variance_threshold=None,
             forecast_horizon=2,
             train_ratio=0.5,
@@ -193,9 +196,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             self.df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
-            normalize=True,
-            scaler_type="standard",
-            precipitation_scaler_type=None,
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize=None,
+            lstm_feature_normalize="standard",
+            lstm_precipitation_normalize=None,
             variance_threshold=None,
             forecast_horizon=2,
             train_ratio=0.5,
@@ -233,6 +237,57 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             split_data.y_val_by_lead_day,
         )
 
+    def test_clustering_scalers_do_not_change_lstm_feature_space(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+        feature_columns = [
+            "TEMPERATURA_MAXIMA",
+            "TEMPERATURA_MIN",
+            "PRECIPITACAO_TOTAL",
+        ]
+        split_data, _splits = create_window_split_data(
+            self.df,
+            config,
+            feature_columns,
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize="minmax",
+            lstm_feature_normalize=None,
+            lstm_precipitation_normalize=None,
+            variance_threshold=None,
+            forecast_horizon=1,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+        )
+        expected_train_windows = np.array(
+            [
+                self.df[feature_columns]
+                .iloc[int(start) : int(start) + config.window_size]
+                .to_numpy(dtype=float)
+                .reshape(-1)
+                for start in split_data.i_train
+            ]
+        )
+
+        np.testing.assert_allclose(split_data.X_train, expected_train_windows)
+        with self.assertRaises(AssertionError):
+            np.testing.assert_allclose(
+                split_data.X_cluster_train,
+                expected_train_windows,
+            )
+        np.testing.assert_allclose(
+            split_data.y_train_by_lead_day_scaled,
+            split_data.y_train_by_lead_day,
+        )
+        self.assertIsNone(split_data.target_scaler)
+
     def test_precipitation_scaler_type_accepts_disabled_values(self) -> None:
         self.assertIsNone(_normalize_precipitation_scaler_type(None))
         self.assertIsNone(_normalize_precipitation_scaler_type("none"))
@@ -254,9 +309,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             self.df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
-            normalize=False,
-            scaler_type="standard",
-            precipitation_scaler_type="standard",
+            clustering_feature_normalize=None,
+            clustering_precipitation_normalize=None,
+            lstm_feature_normalize=None,
+            lstm_precipitation_normalize=None,
             variance_threshold=None,
             forecast_horizon=2,
             train_ratio=0.5,
@@ -350,9 +406,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN"],
-            normalize=False,
-            scaler_type="standard",
-            precipitation_scaler_type="standard",
+            clustering_feature_normalize=None,
+            clustering_precipitation_normalize=None,
+            lstm_feature_normalize=None,
+            lstm_precipitation_normalize=None,
             variance_threshold=None,
             forecast_horizon=2,
             train_ratio=0.5,

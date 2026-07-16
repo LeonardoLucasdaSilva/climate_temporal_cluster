@@ -41,6 +41,9 @@ It is separate from the root `data/` directory, which stores raw INMET files.
   dataset on the x-axis. The `cluster_prediction_timeseries/` plots use the
   final forecast-horizon target date on the x-axis with the same `dd/mm/YYYY`
   formatting.
+  The configuration root also receives `cluster_timeline.png`, an XY plot of
+  every window in chronological split order (training, validation, then test)
+  against its assigned cluster label.
 
 Typical usage:
 

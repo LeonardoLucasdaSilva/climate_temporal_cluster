@@ -15,6 +15,7 @@ import pandas as pd
 from data.lstm_outputs import (
     compressed_time_positions,
     save_cluster_distribution_plot,
+    save_cluster_timeline_plot,
     save_cluster_silhouette_plot,
     save_cluster_prediction_scatters,
     save_cluster_prediction_timeseries,
@@ -304,6 +305,40 @@ class LstmOutputTests(unittest.TestCase):
             self.assertEqual(cells[(1, 2)].get_text().get_text(), "2")
             self.assertEqual(cells[(2, 1)].get_text().get_text(), "2")
             self.assertEqual(cells[(2, 2)].get_text().get_text(), "1")
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_cluster_timeline_uses_all_splits_in_chronological_order(self) -> None:
+        output_dir = (
+            PROJECT_ROOT / "tests" / f"_cluster_timeline_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+        captured: dict[str, object] = {}
+
+        def fake_savefig(
+            figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            captured["figure"] = figure
+            captured["path"] = Path(path)
+            Path(path).write_bytes(b"plot")
+
+        try:
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                save_cluster_timeline_plot(
+                    output_dir,
+                    c_train=np.array([0, 1, 1]),
+                    c_val=np.array([2]),
+                    c_test=np.array([2, 0]),
+                )
+
+            self.assertEqual(captured["path"], output_dir / "cluster_timeline.png")
+            figure = captured["figure"]
+            offsets = figure.axes[0].collections[0].get_offsets()
+            np.testing.assert_allclose(offsets[:, 0], [0, 1, 2, 3, 4, 5])
+            np.testing.assert_allclose(offsets[:, 1], [0, 1, 1, 2, 2, 0])
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
 

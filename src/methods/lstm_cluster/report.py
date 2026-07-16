@@ -221,17 +221,32 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
         for key, label in leading_labels
         if key in config_map
     ]
-    if "normalize" in config_map:
-        rows.append(("Normalize", config_map.get("normalize")))
-    covariate_scaler = configured_scaler_summary(config_map, "scaler_type")
-    if covariate_scaler is not None:
-        rows.append(("Covariate Scaler", covariate_scaler))
-    precipitation_scaler = configured_scaler_summary(
+    clustering_feature_scaler = configured_scaler_summary(
         config_map,
-        "precipitation_scaler_type",
+        "clustering_feature_normalize",
     )
-    if precipitation_scaler is not None:
-        rows.append(("Precipitation Scaler", precipitation_scaler))
+    if clustering_feature_scaler is not None:
+        rows.append(("Clustering Feature Scaler", clustering_feature_scaler))
+    clustering_precipitation_scaler = configured_scaler_summary(
+        config_map,
+        "clustering_precipitation_normalize",
+    )
+    if clustering_precipitation_scaler is not None:
+        rows.append(
+            ("Clustering Precipitation Scaler", clustering_precipitation_scaler)
+        )
+    lstm_feature_scaler = configured_scaler_summary(
+        config_map,
+        "lstm_feature_normalize",
+    )
+    if lstm_feature_scaler is not None:
+        rows.append(("LSTM Feature Scaler", lstm_feature_scaler))
+    lstm_precipitation_scaler = configured_scaler_summary(
+        config_map,
+        "lstm_precipitation_normalize",
+    )
+    if lstm_precipitation_scaler is not None:
+        rows.append(("LSTM Precipitation Scaler", lstm_precipitation_scaler))
     if "target_scale" in config_map:
         rows.append(("LSTM Target Scale", config_map.get("target_scale")))
     rows.extend(
@@ -263,9 +278,6 @@ def configured_scaler_summary(
     """Return a configured scaler name, honoring disabled normalization."""
     if key not in config_map:
         return None
-
-    if config_map.get("normalize") is False:
-        return "none"
 
     scaler_type = config_map.get(key)
     if scaler_type is None or str(scaler_type).strip().lower() in {"", "none"}:

@@ -31,9 +31,10 @@ class LstmReportTests(unittest.TestCase):
                 "n_clusters": 3,
                 "algorithm": "kmeans",
                 "forecast_horizon": 2,
-                "normalize": True,
-                "scaler_type": "standard",
-                "precipitation_scaler_type": "minmax",
+                "clustering_feature_normalize": "standard",
+                "clustering_precipitation_normalize": None,
+                "lstm_feature_normalize": "minmax",
+                "lstm_precipitation_normalize": "standard",
                 "target_scale": "normalized",
                 "optimizer": "AdamW",
                 "weight_decay": 1e-4,
@@ -41,8 +42,10 @@ class LstmReportTests(unittest.TestCase):
         )
 
         self.assertIn(r"\section*{Configuration}", tex)
-        self.assertIn(r"\item \textbf{Covariate Scaler:} standard", tex)
-        self.assertIn(r"\item \textbf{Precipitation Scaler:} minmax", tex)
+        self.assertIn(r"\item \textbf{Clustering Feature Scaler:} standard", tex)
+        self.assertIn(r"\item \textbf{Clustering Precipitation Scaler:} none", tex)
+        self.assertIn(r"\item \textbf{LSTM Feature Scaler:} minmax", tex)
+        self.assertIn(r"\item \textbf{LSTM Precipitation Scaler:} standard", tex)
         self.assertIn(r"\item \textbf{LSTM Target Scale:} normalized", tex)
         self.assertIn(r"\item \textbf{Optimizer:} AdamW", tex)
         self.assertIn(r"\item \textbf{Weight decay:} 0.0001", tex)
@@ -51,15 +54,18 @@ class LstmReportTests(unittest.TestCase):
         tex = config_summary_list(
             {
                 "window_size": 8,
-                "normalize": False,
-                "scaler_type": "standard",
-                "precipitation_scaler_type": "minmax",
+                "clustering_feature_normalize": None,
+                "clustering_precipitation_normalize": None,
+                "lstm_feature_normalize": None,
+                "lstm_precipitation_normalize": None,
                 "target_scale": "mm",
             }
         )
 
-        self.assertIn(r"\item \textbf{Covariate Scaler:} none", tex)
-        self.assertIn(r"\item \textbf{Precipitation Scaler:} none", tex)
+        self.assertIn(r"\item \textbf{Clustering Feature Scaler:} none", tex)
+        self.assertIn(r"\item \textbf{Clustering Precipitation Scaler:} none", tex)
+        self.assertIn(r"\item \textbf{LSTM Feature Scaler:} none", tex)
+        self.assertIn(r"\item \textbf{LSTM Precipitation Scaler:} none", tex)
         self.assertIn(r"\item \textbf{LSTM Target Scale:} mm", tex)
         self.assertNotIn("standard", tex)
         self.assertNotIn("minmax", tex)

@@ -80,6 +80,9 @@ class WindowSplitData:
     X_train: np.ndarray
     X_val: np.ndarray
     X_test: np.ndarray
+    X_cluster_train: np.ndarray
+    X_cluster_val: np.ndarray
+    X_cluster_test: np.ndarray
     y_train: np.ndarray
     y_val: np.ndarray
     y_test: np.ndarray
@@ -128,7 +131,7 @@ DEFAULT_PLOT_STYLE: dict[str, object] = {
 }
 
 SUPPORTED_SCALER_TYPES = ("standard", "minmax")
-DISABLED_PRECIPITATION_SCALER_VALUES = {"", "none", "null"}
+DISABLED_SCALER_VALUES = {"", "none", "null"}
 SUPPORTED_LSTM_LOSS_FUNCTIONS = (
     "mean_squared_error",
     "mse",
@@ -158,21 +161,32 @@ def create_feature_scaler(scaler_type: str) -> FeatureScaler:
     )
 
 
-def _normalize_precipitation_scaler_type(scaler_type: str | None) -> str | None:
-    """Return a precipitation scaler name, or None to keep precipitation in mm."""
+def _normalize_optional_scaler_type(
+    scaler_type: str | None,
+    *,
+    setting_name: str,
+) -> str | None:
+    """Return a scaler name, or None to leave values in their original scale."""
     if scaler_type is None:
         return None
 
     normalized = str(scaler_type).strip().lower()
-    if normalized in DISABLED_PRECIPITATION_SCALER_VALUES:
+    if normalized in DISABLED_SCALER_VALUES:
         return None
     if normalized in SUPPORTED_SCALER_TYPES:
         return normalized
 
     supported = ", ".join((*SUPPORTED_SCALER_TYPES, "None"))
     raise ValueError(
-        "Unsupported precipitation_scaler_type: "
-        f"{scaler_type!r}. Use one of: {supported}"
+        f"Unsupported {setting_name}: {scaler_type!r}. Use one of: {supported}"
+    )
+
+
+def _normalize_precipitation_scaler_type(scaler_type: str | None) -> str | None:
+    """Return a precipitation scaler name, or None to keep precipitation in mm."""
+    return _normalize_optional_scaler_type(
+        scaler_type,
+        setting_name="precipitation_scaler_type",
     )
 
 
@@ -366,7 +380,7 @@ def _split_feature_matrix(
     columns: list[str],
     window_size: int,
     scalers: FeatureScalingState,
-    covariate_scaler_type: str,
+    covariate_scaler_type: str | None,
     precipitation_scaler_type: str | None,
     pca: PCA | None,
     fit_scaler: bool,
@@ -388,7 +402,7 @@ def _split_feature_matrix(
             create_feature_scaler(covariate_scaler_type).fit(
                 values_df[covariate_columns].to_numpy(dtype=float)
             )
-            if covariate_columns
+            if covariate_columns and covariate_scaler_type is not None
             else None
         )
         precipitation_scaler = (
@@ -601,9 +615,10 @@ def create_window_split_data(
     df: pd.DataFrame,
     config: ExperimentConfig,
     feature_columns: list[str],
-    normalize: bool,
-    scaler_type: str,
-    precipitation_scaler_type: str | None,
+    clustering_feature_normalize: str | None,
+    clustering_precipitation_normalize: str | None,
+    lstm_feature_normalize: str | None,
+    lstm_precipitation_normalize: str | None,
     variance_threshold: float | None,
     forecast_horizon: int,
     train_ratio: float,
@@ -612,51 +627,105 @@ def create_window_split_data(
     manual_zero_tolerance: float,
 ) -> tuple[WindowSplitData, DailyDataSplits]:
     """Create independent split windows from chronological dataframe blocks."""
-    precipitation_scaler_type = _normalize_precipitation_scaler_type(
-        precipitation_scaler_type
+    clustering_feature_normalize = _normalize_optional_scaler_type(
+        clustering_feature_normalize,
+        setting_name="clustering_feature_normalize",
+    )
+    clustering_precipitation_normalize = _normalize_optional_scaler_type(
+        clustering_precipitation_normalize,
+        setting_name="clustering_precipitation_normalize",
+    )
+    lstm_feature_normalize = _normalize_optional_scaler_type(
+        lstm_feature_normalize,
+        setting_name="lstm_feature_normalize",
+    )
+    lstm_precipitation_normalize = _normalize_optional_scaler_type(
+        lstm_precipitation_normalize,
+        setting_name="lstm_precipitation_normalize",
     )
     splits = split_daily_dataframe(df, train_ratio=train_ratio, val_ratio=val_ratio)
 
     empty_scalers = FeatureScalingState()
-    train_windows, train_flat, feature_scalers, pca = _split_feature_matrix(
+    (
+        cluster_train_windows,
+        cluster_train_flat,
+        cluster_feature_scalers,
+        cluster_pca,
+    ) = _split_feature_matrix(
         splits.train,
         feature_columns,
         config.window_size,
         scalers=empty_scalers,
-        covariate_scaler_type=scaler_type,
-        precipitation_scaler_type=precipitation_scaler_type,
+        covariate_scaler_type=clustering_feature_normalize,
+        precipitation_scaler_type=clustering_precipitation_normalize,
         pca=None,
-        fit_scaler=normalize,
+        fit_scaler=True,
         fit_pca=True,
         variance_threshold=variance_threshold,
+    )
+    cluster_val_windows, cluster_val_flat, _, _ = _split_feature_matrix(
+        splits.val,
+        feature_columns,
+        config.window_size,
+        scalers=cluster_feature_scalers,
+        covariate_scaler_type=clustering_feature_normalize,
+        precipitation_scaler_type=clustering_precipitation_normalize,
+        pca=cluster_pca,
+        fit_scaler=False,
+        fit_pca=False,
+        variance_threshold=variance_threshold,
+    )
+    cluster_test_windows, cluster_test_flat, _, _ = _split_feature_matrix(
+        splits.test,
+        feature_columns,
+        config.window_size,
+        scalers=cluster_feature_scalers,
+        covariate_scaler_type=clustering_feature_normalize,
+        precipitation_scaler_type=clustering_precipitation_normalize,
+        pca=cluster_pca,
+        fit_scaler=False,
+        fit_pca=False,
+        variance_threshold=variance_threshold,
+    )
+    train_windows, train_flat, lstm_feature_scalers, _ = _split_feature_matrix(
+        splits.train,
+        feature_columns,
+        config.window_size,
+        scalers=empty_scalers,
+        covariate_scaler_type=lstm_feature_normalize,
+        precipitation_scaler_type=lstm_precipitation_normalize,
+        pca=None,
+        fit_scaler=True,
+        fit_pca=False,
+        variance_threshold=None,
     )
     val_windows, val_flat, _, _ = _split_feature_matrix(
         splits.val,
         feature_columns,
         config.window_size,
-        scalers=feature_scalers,
-        covariate_scaler_type=scaler_type,
-        precipitation_scaler_type=precipitation_scaler_type,
-        pca=pca,
+        scalers=lstm_feature_scalers,
+        covariate_scaler_type=lstm_feature_normalize,
+        precipitation_scaler_type=lstm_precipitation_normalize,
+        pca=None,
         fit_scaler=False,
         fit_pca=False,
-        variance_threshold=variance_threshold,
+        variance_threshold=None,
     )
     test_windows, test_flat, _, _ = _split_feature_matrix(
         splits.test,
         feature_columns,
         config.window_size,
-        scalers=feature_scalers,
-        covariate_scaler_type=scaler_type,
-        precipitation_scaler_type=precipitation_scaler_type,
-        pca=pca,
+        scalers=lstm_feature_scalers,
+        covariate_scaler_type=lstm_feature_normalize,
+        precipitation_scaler_type=lstm_precipitation_normalize,
+        pca=None,
         fit_scaler=False,
         fit_pca=False,
-        variance_threshold=variance_threshold,
+        variance_threshold=None,
     )
 
     (
-        X_train,
+        cluster_X_train,
         y_train,
         y_train_by_lead_day,
         current_train,
@@ -664,13 +733,13 @@ def create_window_split_data(
         _train_target_dates_by_lead_day,
     ) = _valid_supervised_windows(
         splits.train,
-        train_flat,
+        cluster_train_flat,
         config.window_size,
         forecast_horizon,
         splits.train_offset,
     )
     (
-        X_val,
+        cluster_X_val,
         y_val,
         y_val_by_lead_day,
         current_val,
@@ -678,13 +747,13 @@ def create_window_split_data(
         _val_target_dates_by_lead_day,
     ) = _valid_supervised_windows(
         splits.val,
-        val_flat,
+        cluster_val_flat,
         config.window_size,
         forecast_horizon,
         splits.val_offset,
     )
     (
-        X_test,
+        cluster_X_test,
         y_test,
         y_test_by_lead_day,
         current_test,
@@ -692,16 +761,19 @@ def create_window_split_data(
         test_target_dates_by_lead_day,
     ) = _valid_supervised_windows(
         splits.test,
-        test_flat,
+        cluster_test_flat,
         config.window_size,
         forecast_horizon,
         splits.test_offset,
     )
+    X_train = train_flat[i_train - splits.train_offset]
+    X_val = val_flat[i_val - splits.val_offset]
+    X_test = test_flat[i_test - splits.test_offset]
     target_scaler = (
-        create_feature_scaler(precipitation_scaler_type).fit(
+        create_feature_scaler(lstm_precipitation_normalize).fit(
             y_train_by_lead_day.reshape(-1, 1)
         )
-        if normalize and precipitation_scaler_type is not None
+        if lstm_precipitation_normalize is not None
         else None
     )
     y_train_by_lead_day_scaled = _transform_precipitation_values(
@@ -715,9 +787,9 @@ def create_window_split_data(
 
     c_train, c_val, c_test = _cluster_window_splits(
         config,
-        X_train,
-        X_val,
-        X_test,
+        cluster_X_train,
+        cluster_X_val,
+        cluster_X_test,
         y_train,
         random_state=random_state,
         manual_zero_tolerance=manual_zero_tolerance,
@@ -727,6 +799,9 @@ def create_window_split_data(
             X_train=X_train,
             X_val=X_val,
             X_test=X_test,
+            X_cluster_train=cluster_X_train,
+            X_cluster_val=cluster_X_val,
+            X_cluster_test=cluster_X_test,
             y_train=y_train,
             y_val=y_val,
             y_test=y_test,
@@ -752,7 +827,11 @@ def create_window_split_data(
             test_targets_by_lead_day=y_test_by_lead_day,
             test_target_dates_by_lead_day=test_target_dates_by_lead_day,
             target_scaler=target_scaler,
-            n_windows=len(train_windows) + len(val_windows) + len(test_windows),
+            n_windows=(
+                len(cluster_train_windows)
+                + len(cluster_val_windows)
+                + len(cluster_test_windows)
+            ),
         ),
         splits,
     )
@@ -1304,9 +1383,10 @@ def run_configuration(
     df: pd.DataFrame,
     config: ExperimentConfig,
     numeric_cols: list[str],
-    normalize: bool,
-    scaler_type: str,
-    precipitation_scaler_type: str | None,
+    clustering_feature_normalize: str | None,
+    clustering_precipitation_normalize: str | None,
+    lstm_feature_normalize: str | None,
+    lstm_precipitation_normalize: str | None,
     variance_threshold: float | None,
     output_dir: Path,
     use_all_features: bool,
@@ -1332,8 +1412,21 @@ def run_configuration(
     test_all_models: bool,
 ) -> dict[str, float | int | str | None]:
     """Run one sweep configuration and save its artifacts."""
-    precipitation_scaler_type = _normalize_precipitation_scaler_type(
-        precipitation_scaler_type
+    clustering_feature_normalize = _normalize_optional_scaler_type(
+        clustering_feature_normalize,
+        setting_name="clustering_feature_normalize",
+    )
+    clustering_precipitation_normalize = _normalize_optional_scaler_type(
+        clustering_precipitation_normalize,
+        setting_name="clustering_precipitation_normalize",
+    )
+    lstm_feature_normalize = _normalize_optional_scaler_type(
+        lstm_feature_normalize,
+        setting_name="lstm_feature_normalize",
+    )
+    lstm_precipitation_normalize = _normalize_optional_scaler_type(
+        lstm_precipitation_normalize,
+        setting_name="lstm_precipitation_normalize",
     )
     print_section(f"Running {config.name}", show_console_info)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1343,9 +1436,10 @@ def run_configuration(
         df,
         config,
         feature_columns,
-        normalize=normalize,
-        scaler_type=scaler_type,
-        precipitation_scaler_type=precipitation_scaler_type,
+        clustering_feature_normalize=clustering_feature_normalize,
+        clustering_precipitation_normalize=clustering_precipitation_normalize,
+        lstm_feature_normalize=lstm_feature_normalize,
+        lstm_precipitation_normalize=lstm_precipitation_normalize,
         variance_threshold=variance_threshold,
         forecast_horizon=forecast_horizon,
         random_state=random_state,
@@ -1392,11 +1486,10 @@ def run_configuration(
         "dataset_start_date": df["Data"].min().date().isoformat(),
         "dataset_end_date": df["Data"].max().date().isoformat(),
         "features": feature_columns,
-        "normalize": normalize,
-        "scaler_type": scaler_type if normalize else "none",
-        "precipitation_scaler_type": (
-            precipitation_scaler_type if normalize else "none"
-        ),
+        "clustering_feature_normalize": clustering_feature_normalize,
+        "clustering_precipitation_normalize": clustering_precipitation_normalize,
+        "lstm_feature_normalize": lstm_feature_normalize,
+        "lstm_precipitation_normalize": lstm_precipitation_normalize,
         "target_scale": "normalized" if split_data.target_scaler is not None else "mm",
         "n_samples": n_samples,
         "forecast_horizon": forecast_horizon,
@@ -1507,9 +1600,9 @@ def run_configuration(
         test_target_dates_by_lead_day=split_data.test_target_dates_by_lead_day,
         test_model_selection=test_model_selection,
         cluster_feature_splits={
-            "Training": (X_train, c_train),
-            "Validation": (X_val, c_val),
-            "Test": (X_test, c_test),
+            "Training": (split_data.X_cluster_train, c_train),
+            "Validation": (split_data.X_cluster_val, c_val),
+            "Test": (split_data.X_cluster_test, c_test),
         },
         batch_size=batch_size,
     )
@@ -1529,9 +1622,10 @@ def run_experiment(
     state: str,
     station_id: str,
     window_sizes: list[int],
-    normalize: bool,
-    scaler_type: str,
-    precipitation_scaler_type: str | None,
+    clustering_feature_normalize: str | None,
+    clustering_precipitation_normalize: str | None,
+    lstm_feature_normalize: str | None,
+    lstm_precipitation_normalize: str | None,
     variance_threshold: float | None,
     n_clusters_list: list[int],
     clustering_algorithm: str,
@@ -1568,9 +1662,21 @@ def run_experiment(
 ) -> Path:
     """Run the configured sweep and return its output directory."""
     clustering_algorithm = clustering_algorithm.lower()
-    scaler_type = scaler_type.lower()
-    precipitation_scaler_type = _normalize_precipitation_scaler_type(
-        precipitation_scaler_type
+    clustering_feature_normalize = _normalize_optional_scaler_type(
+        clustering_feature_normalize,
+        setting_name="clustering_feature_normalize",
+    )
+    clustering_precipitation_normalize = _normalize_optional_scaler_type(
+        clustering_precipitation_normalize,
+        setting_name="clustering_precipitation_normalize",
+    )
+    lstm_feature_normalize = _normalize_optional_scaler_type(
+        lstm_feature_normalize,
+        setting_name="lstm_feature_normalize",
+    )
+    lstm_precipitation_normalize = _normalize_optional_scaler_type(
+        lstm_precipitation_normalize,
+        setting_name="lstm_precipitation_normalize",
     )
     lstm_loss_function = validate_loss_function(lstm_loss_function)
     if clustering_algorithm not in SUPPORTED_CLUSTERING_ALGORITHMS:
@@ -1578,11 +1684,6 @@ def run_experiment(
         raise ValueError(
             f"Unsupported clustering algorithm: {clustering_algorithm!r}. "
             f"Use one of: {supported}"
-        )
-    if scaler_type not in SUPPORTED_SCALER_TYPES:
-        supported = ", ".join(SUPPORTED_SCALER_TYPES)
-        raise ValueError(
-            f"Unsupported scaler_type: {scaler_type!r}. Use one of: {supported}"
         )
     if forecast_horizon <= 0:
         raise ValueError("forecast_horizon must be positive.")
@@ -1658,12 +1759,15 @@ def run_experiment(
     print_info(f"Station: {state}/{station_id}", show_console_info)
     print_info(f"Output directory: {sweep_dir}", show_console_info)
     print_info(
-        "Normalization: off"
-        if not normalize
-        else (
-            f"Normalization: covariates={scaler_type}, "
-            f"precipitation/target={precipitation_scaler_type or 'none'}"
-        ),
+        "Clustering normalization: "
+        f"features={clustering_feature_normalize or 'none'}, "
+        f"precipitation={clustering_precipitation_normalize or 'none'}",
+        show_console_info,
+    )
+    print_info(
+        "LSTM normalization: "
+        f"features={lstm_feature_normalize or 'none'}, "
+        f"precipitation/target={lstm_precipitation_normalize or 'none'}",
         show_console_info,
     )
     print_info(f"LSTM loss: {lstm_loss_function}", show_console_info)
@@ -1684,9 +1788,10 @@ def run_experiment(
                 df,
                 config,
                 numeric_cols,
-                normalize,
-                scaler_type,
-                precipitation_scaler_type,
+                clustering_feature_normalize,
+                clustering_precipitation_normalize,
+                lstm_feature_normalize,
+                lstm_precipitation_normalize,
                 variance_threshold,
                 sweep_dir / config.name,
                 use_all_features=use_all_features,
