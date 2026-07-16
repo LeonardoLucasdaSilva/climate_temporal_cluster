@@ -115,6 +115,21 @@ class WindowSplitData:
     target_scaler: FeatureScaler | None
     n_windows: int
 
+    @property
+    def X_cluster_train(self) -> np.ndarray:
+        """Compatibility alias for the training matrix used by clustering."""
+        return self.cluster_X_train
+
+    @property
+    def X_cluster_val(self) -> np.ndarray:
+        """Compatibility alias for the validation matrix used by clustering."""
+        return self.cluster_X_val
+
+    @property
+    def X_cluster_test(self) -> np.ndarray:
+        """Compatibility alias for the test matrix used by clustering."""
+        return self.cluster_X_test
+
 
 DEFAULT_PLOT_STYLE: dict[str, object] = {
     "seaborn": {
@@ -129,7 +144,6 @@ DEFAULT_PLOT_STYLE: dict[str, object] = {
     },
 }
 
-SUPPORTED_SCALER_TYPES = ("standard", "minmax")
 DISABLED_SCALER_VALUES = {"", "none", "null"}
 SUPPORTED_LSTM_LOSS_FUNCTIONS = (
     "mean_squared_error",
@@ -144,19 +158,6 @@ SUPPORTED_LSTM_LOSS_FUNCTIONS = (
 def _mapping_from_config(value: object) -> Mapping[str, object]:
     """Return nested config dictionaries safely."""
     return value if isinstance(value, Mapping) else {}
-
-
-def create_feature_scaler(scaler_type: str) -> FeatureScaler:
-    """Return the configured scaler for weather feature normalization."""
-    scaler_type = scaler_type.lower()
-    if scaler_type == "standard":
-        return StandardScaler()
-    if scaler_type == "minmax":
-        return MinMaxScaler()
-    supported = ", ".join(SUPPORTED_SCALER_TYPES)
-    raise ValueError(
-        f"Unsupported scaler_type: {scaler_type!r}. Use one of: {supported}"
-    )
 
 
 def _normalize_optional_scaler_type(
@@ -385,39 +386,6 @@ def _split_feature_matrix(
     fit_pca: bool,
     variance_threshold: float | None,
 ) -> tuple[np.ndarray, np.ndarray, FeatureScalingState, PCA | None]:
-    values_df = df[columns].astype(float).copy()
-    covariate_columns = [
-        column for column in columns if column != DEFAULT_PRECIPITATION_COLUMN
-    ]
-    precipitation_columns = [
-        column for column in columns if column == DEFAULT_PRECIPITATION_COLUMN
-    ]
-    covariate_scaler = scalers.covariate_scaler
-    precipitation_scaler = scalers.precipitation_scaler
-
-    if fit_scaler:
-        covariate_scaler = (
-            create_feature_scaler(covariate_scaler_type).fit(
-                values_df[covariate_columns].to_numpy(dtype=float)
-            )
-            if covariate_columns and covariate_scaler_type is not None
-            else None
-        )
-        precipitation_scaler = (
-            create_feature_scaler(precipitation_scaler_type).fit(
-                values_df[precipitation_columns].to_numpy(dtype=float)
-            )
-            if precipitation_columns and precipitation_scaler_type is not None
-            else None
-        )
-    if covariate_scaler is not None and covariate_columns:
-        values_df.loc[:, covariate_columns] = covariate_scaler.transform(
-            values_df[covariate_columns].to_numpy(dtype=float)
-        )
-    if precipitation_scaler is not None and precipitation_columns:
-        values_df.loc[:, precipitation_columns] = precipitation_scaler.transform(
-            values_df[precipitation_columns].to_numpy(dtype=float)
-        )
     values_df, fitted_scalers = scale_weather_features(
         df,
         columns,
@@ -618,17 +586,20 @@ def create_window_split_data(
     df: pd.DataFrame,
     config: ExperimentConfig,
     feature_columns: list[str],
-    clustering_feature_normalize: str | None,
-    clustering_precipitation_normalize: str | None,
-    lstm_feature_normalize: str | None,
-    lstm_precipitation_normalize: str | None,
-    variance_threshold: float | None,
-    forecast_horizon: int,
-    train_ratio: float,
-    val_ratio: float,
-    random_state: int,
-    manual_zero_tolerance: float,
+    clustering_feature_normalize: str | None = None,
+    clustering_precipitation_normalize: str | None = None,
+    lstm_feature_normalize: str | None = None,
+    lstm_precipitation_normalize: str | None = None,
+    variance_threshold: float | None = None,
+    forecast_horizon: int = 1,
+    train_ratio: float = 0.6,
+    val_ratio: float = 0.1,
+    random_state: int = 42,
+    manual_zero_tolerance: float = 0.0,
     pca_for_clustering_only: bool = False,
+    normalize: bool | None = None,
+    scaler_type: str | None = None,
+    precipitation_scaler_type: str | None = None,
 ) -> tuple[WindowSplitData, DailyDataSplits]:
     """Create independent split windows from chronological dataframe blocks.
 
@@ -636,8 +607,21 @@ def create_window_split_data(
     assign clusters while the LSTM feature matrices retain their pre-PCA
     dimensionality. PCA is still fitted only on training windows.
     """
-    
-    
+    if (
+        normalize is not None
+        or scaler_type is not None
+        or precipitation_scaler_type is not None
+    ):
+        legacy_scaler = scaler_type or "standard"
+        legacy_feature_scaler = legacy_scaler if normalize is not False else None
+        legacy_precipitation_scaler = (
+            precipitation_scaler_type if normalize is not False else None
+        )
+        clustering_feature_normalize = legacy_feature_scaler
+        clustering_precipitation_normalize = legacy_precipitation_scaler
+        lstm_feature_normalize = legacy_feature_scaler
+        lstm_precipitation_normalize = legacy_precipitation_scaler
+
     clustering_feature_normalize = _normalize_optional_scaler_type(
         clustering_feature_normalize,
         setting_name="clustering_feature_normalize",
@@ -653,10 +637,7 @@ def create_window_split_data(
     lstm_precipitation_normalize = _normalize_optional_scaler_type(
         lstm_precipitation_normalize,
         setting_name="lstm_precipitation_normalize",
-    
-    #precipitation_scaler_type = _normalize_precipitation_scaler_type(
-    #    precipitation_scaler_type
-    #)
+    )
     splits = split_daily_dataframe(df, train_ratio=train_ratio, val_ratio=val_ratio)
 
     empty_scalers = FeatureScalingState()
@@ -738,16 +719,6 @@ def create_window_split_data(
         variance_threshold=None,
     )
 
-    train_lstm_flat = (
-        flatten_windows(train_windows) if pca_for_clustering_only else train_flat
-    )
-    val_lstm_flat = (
-        flatten_windows(val_windows) if pca_for_clustering_only else val_flat
-    )
-    test_lstm_flat = (
-        flatten_windows(test_windows) if pca_for_clustering_only else test_flat
-    )
-
     (
         cluster_X_train,
         y_train,
@@ -758,7 +729,6 @@ def create_window_split_data(
     ) = _valid_supervised_windows(
         splits.train,
         cluster_train_flat,
-        train_lstm_flat,
         config.window_size,
         forecast_horizon,
         splits.train_offset,
@@ -773,7 +743,6 @@ def create_window_split_data(
     ) = _valid_supervised_windows(
         splits.val,
         cluster_val_flat,
-        val_lstm_flat,
         config.window_size,
         forecast_horizon,
         splits.val_offset,
@@ -788,14 +757,21 @@ def create_window_split_data(
     ) = _valid_supervised_windows(
         splits.test,
         cluster_test_flat,
-        test_lstm_flat,
         config.window_size,
         forecast_horizon,
         splits.test_offset,
     )
-    X_train = train_flat[i_train - splits.train_offset]
-    X_val = val_flat[i_val - splits.val_offset]
-    X_test = test_flat[i_test - splits.test_offset]
+    train_local_indices = i_train - splits.train_offset
+    val_local_indices = i_val - splits.val_offset
+    test_local_indices = i_test - splits.test_offset
+    if cluster_pca is not None and not pca_for_clustering_only:
+        X_train = cluster_X_train
+        X_val = cluster_X_val
+        X_test = cluster_X_test
+    else:
+        X_train = train_flat[train_local_indices]
+        X_val = val_flat[val_local_indices]
+        X_test = test_flat[test_local_indices]
     target_scaler = (
         create_feature_scaler(lstm_precipitation_normalize).fit(
             y_train_by_lead_day.reshape(-1, 1)
@@ -811,18 +787,6 @@ def create_window_split_data(
         y_val_by_lead_day,
         target_scaler,
     )
-
-    if pca_for_clustering_only and pca is not None:
-        train_local_indices = i_train - splits.train_offset
-        val_local_indices = i_val - splits.val_offset
-        test_local_indices = i_test - splits.test_offset
-        cluster_X_train = train_flat[train_local_indices]
-        cluster_X_val = val_flat[val_local_indices]
-        cluster_X_test = test_flat[test_local_indices]
-    else:
-        cluster_X_train = X_train
-        cluster_X_val = X_val
-        cluster_X_test = X_test
 
     c_train, c_val, c_test = _cluster_window_splits(
         config,

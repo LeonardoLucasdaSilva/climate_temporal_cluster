@@ -15,8 +15,8 @@ STATE = "RS"
 STATION_ID = "A801"
 
 # Clustering sweep
-WINDOW_SIZES = [30]
-N_CLUSTERS_LIST = [5,7,9]
+WINDOW_SIZES = [15]
+N_CLUSTERS_LIST = [1,2]
 PCA_VARIANCE_THRESHOLD = None
 PCA_FOR_CLUSTERING_ONLY = True  # Keep pre-PCA window features as LSTM inputs
 CLUSTERING_FEATURE_NORMALIZE = "minmax"  # "standard", "minmax", or None
@@ -27,7 +27,7 @@ LSTM_PRECIPITATION_NORMALIZE = None  # None keeps PRECIPITACAO_TOTAL and LSTM ta
 
 
 # Clustering setting
-CLUSTERING_ALGORITHM = "spectral"  # "kmeans" or "spectral"
+CLUSTERING_ALGORITHM = "kmeans"  # "kmeans" or "spectral"
 N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"  # "auto" or "manual"
 MANUAL_SIGMA_VALUES = [0.3]  # Only used if SIGMA_MODE is "manual"
@@ -42,8 +42,8 @@ QUANTITATIVE_METRICS = ["MSE"]
 TEST_ALL_MODELS = True
 
 # Model hyperparameters
-LSTM_UNITS = 32
-LSTM_UNITS_2 = 32
+LSTM_UNITS = 128
+LSTM_UNITS_2 = 128
 DROPOUT_RATE = 0.1
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 1e-4  # Decoupled weight decay used by AdamW
@@ -53,7 +53,7 @@ LOSS_QUANTILE_WEIGHTS = "auto"  # "auto" or one positive weight per quantile bin
 
 # Training settings
 EPOCHS = 250
-BATCH_SIZE = 32
+BATCH_SIZE = 64
 EARLY_STOPPING = False
 PATIENCE = 50
 VERBOSE_TRAINING = 1

@@ -42,12 +42,12 @@ Or use the root launcher:
 3. Split the daily dataframe chronologically into train, validation, and test
    blocks.
 4. Build sliding windows independently inside each split.
-5. Fit the selected covariate normalizer (`SCALER_TYPE`), optional
-   precipitation normalizer (`PRECIPITATION_SCALER`), and PCA on training
+5. Fit the clustering covariate and precipitation normalizers
+   (`CLUSTERING_FEATURE_NORMALIZE` and
+   `CLUSTERING_PRECIPITATION_NORMALIZE`) plus optional PCA on training
    rows/windows only, then transform validation and test with those training
-   transforms. With `PCA_FOR_CLUSTERING_ONLY = True`, retain the pre-PCA
-   flattened windows for LSTM inputs and use PCA coordinates only for cluster
-   fitting and held-out cluster assignment.
+   transforms. With `PCA_FOR_CLUSTERING_ONLY = True`, use PCA coordinates only
+   for cluster fitting and held-out cluster assignment.
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
    calculate training-cluster centroids, then assign validation and test
    windows to the nearest existing centroid.
@@ -81,9 +81,11 @@ Change experiment variables in `run_experiment.py`:
 - dimensionality reduction: `PCA_VARIANCE_THRESHOLD` enables PCA and
   `PCA_FOR_CLUSTERING_ONLY` limits it to clustering while preserving the
   original flattened-window dimensionality for LSTM inputs
-- normalization: `NORMALIZE`, `SCALER_TYPE` for covariates and
-  `PRECIPITATION_SCALER` for `PRECIPITACAO_TOTAL` plus the LSTM target;
-  supported values are `"standard"`, `"minmax"`, and `None`
+- normalization: `CLUSTERING_FEATURE_NORMALIZE` and
+  `CLUSTERING_PRECIPITATION_NORMALIZE` control clustering space, while
+  `LSTM_FEATURE_NORMALIZE` and `LSTM_PRECIPITATION_NORMALIZE` control the
+  rebuilt LSTM space and target; supported values are `"standard"`,
+  `"minmax"`, and `None`
 - test evaluation mode: `TEST_ALL_MODELS`
 - exported table metrics: `QUANTITATIVE_METRICS`
 - model hyperparameters: `LSTM_UNITS`, `LSTM_UNITS_2`, `DROPOUT_RATE`,
@@ -104,9 +106,9 @@ Change experiment variables in `run_experiment.py`:
 Configure PCA with `PCA_VARIANCE_THRESHOLD` and
 `PCA_FOR_CLUSTERING_ONLY` in `run_experiment.py`.
 
-To run without PCA, set the variance threshold to `None`. The clustering
-algorithms and LSTM models will both receive the original flattened-window
-features:
+To run without PCA, set the variance threshold to `None`. Clustering and the
+LSTM keep the original flattened-window dimensionality, each using its own
+configured normalizers:
 
 ```python
 PCA_VARIANCE_THRESHOLD = None

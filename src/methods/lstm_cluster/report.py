@@ -221,7 +221,6 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
         for key, label in leading_labels
         if key in config_map
     ]
-    clustering_feature_scaler = configured_scaler_summary(
     if "normalize" in config_map:
         rows.append(("Normalize", config_map.get("normalize")))
     if (
@@ -253,6 +252,12 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
     if covariate_scaler is not None:
         rows.append(("Covariate Scaler", covariate_scaler))
     precipitation_scaler = configured_scaler_summary(
+        config_map,
+        "precipitation_scaler_type",
+    )
+    if precipitation_scaler is not None:
+        rows.append(("Precipitation Scaler", precipitation_scaler))
+    clustering_feature_scaler = configured_scaler_summary(
         config_map,
         "clustering_feature_normalize",
     )
@@ -309,6 +314,9 @@ def configured_scaler_summary(
     """Return a configured scaler name, honoring disabled normalization."""
     if key not in config_map:
         return None
+
+    if config_map.get("normalize") is False:
+        return "none"
 
     scaler_type = config_map.get(key)
     if scaler_type is None or str(scaler_type).strip().lower() in {"", "none"}:

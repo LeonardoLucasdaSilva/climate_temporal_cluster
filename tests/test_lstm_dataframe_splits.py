@@ -479,9 +479,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             self.df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
-            normalize=True,
-            scaler_type="standard",
-            precipitation_scaler_type=None,
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize=None,
+            lstm_feature_normalize=None,
+            lstm_precipitation_normalize=None,
             variance_threshold=0.9,
             forecast_horizon=1,
             train_ratio=0.5,
@@ -495,6 +496,15 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         self.assertEqual(split_data.X_train.shape[1], original_feature_count)
         self.assertEqual(split_data.X_val.shape[1], original_feature_count)
         self.assertEqual(split_data.X_test.shape[1], original_feature_count)
+        expected_first_window = (
+            self.df[
+                ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"]
+            ]
+            .iloc[: config.window_size]
+            .to_numpy(dtype=float)
+            .reshape(-1)
+        )
+        np.testing.assert_allclose(split_data.X_train[0], expected_first_window)
         self.assertLess(
             split_data.cluster_X_train.shape[1],
             original_feature_count,
