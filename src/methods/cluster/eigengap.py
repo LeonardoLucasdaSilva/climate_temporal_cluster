@@ -10,16 +10,11 @@ from typing import Sequence
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.linalg import eigvalsh
+from scipy.optimize import minimize_scalar
 from scipy.sparse.linalg import ArpackError, ArpackNoConvergence, eigsh
 
 from config import DATA_ROOT, OUTPUTS_DIR
 from data.load_data import load_station_daily_data
-from methods.cluster.automatic_sigma import (
-    LOWER_QUANTILE,
-    N_SIGMA_VALUES,
-    UPPER_QUANTILE,
-    generate_sigma_candidates_from_features,
-)
 from methods.cluster.cluster_pipeline import (
     create_pipeline_clustering_features,
 )
@@ -36,7 +31,11 @@ PRECIPITATION_SCALER: str | None = None
 TRAIN_RATIO = 0.6
 PCA_VARIANCE_THRESHOLD: float | None = None
 FEATURE_COLUMNS: list[str] | None = None
-ADDITIONAL_SIGMA_VALUES: list[float] = [10, 20, 30, 40, 50]
+SIGMA_BOUNDS = (1e-6, 100.0)
+MAX_SIGMA_EVALUATIONS = 300
+SIGMA_SCOUT_POINTS = 40
+EIGEN_MAX_ITERATIONS = 300
+EIGEN_TOLERANCE = 1e-3
 OUTPUT_DIR = OUTPUTS_DIR / "eigengap"
 
 
@@ -106,8 +105,10 @@ def calculate_eigengaps(
     sigma: float,
     window_size: int,
     max_gaps: int = MAX_GAPS,
+    eigen_max_iterations: int = EIGEN_MAX_ITERATIONS,
+    eigen_tolerance: float = EIGEN_TOLERANCE,
 ) -> EigengapResult:
-    """Return the leading normalized-affinity eigengaps for window samples."""
+    """Return eigengaps, ignoring the uninformative one-cluster gap."""
     samples = np.asarray(samples, dtype=np.float64)
     if samples.ndim != 2:
         raise ValueError(f"samples must be a 2D array, got shape {samples.shape}")
@@ -119,6 +120,8 @@ def calculate_eigengaps(
         raise ValueError("window_size must be positive.")
     if max_gaps <= 0:
         raise ValueError("max_gaps must be positive.")
+    if eigen_max_iterations <= 0:
+        raise ValueError("eigen_max_iterations must be positive.")
 
     gap_count = min(max_gaps, len(samples) - 1)
     affinities = affinity_matrix(samples, sigma=sigma)
@@ -143,6 +146,8 @@ def calculate_eigengaps(
                     k=n_eigenvalues,
                     which="LA",
                     return_eigenvectors=False,
+                    maxiter=eigen_max_iterations,
+                    tol=eigen_tolerance,
                 )
             )[::-1]
         except (ArpackError, ArpackNoConvergence) as error:
@@ -153,7 +158,8 @@ def calculate_eigengaps(
                 (
                     f"Affinity matrix is numerically degenerate for window size "
                     f"{window_size} at sigma={sigma:g}; ARPACK could not compute "
-                    f"reliable eigenvalues ({error}). Increase sigma."
+                    f"reliable eigenvalues within {eigen_max_iterations} "
+                    f"iterations ({error}). This sigma trial was skipped."
                 ),
             )
     else:
@@ -163,7 +169,21 @@ def calculate_eigengaps(
         )[::-1]
     gaps = eigenvalues[:-1] - eigenvalues[1:]
     cluster_counts = np.arange(1, gap_count + 1, dtype=int)
-    best_offset = int(np.argmax(gaps))
+    # k=1 only separates a single cluster from the rest and is not useful for
+    # choosing a clustering. Start the maximization at k=2.
+    usable_offsets = np.flatnonzero(cluster_counts >= 2)
+    if not len(usable_offsets):
+        return EigengapResult(
+            window_size=window_size,
+            sigma=sigma,
+            cluster_counts=cluster_counts,
+            gaps=gaps,
+            eigenvalues=eigenvalues,
+            best_n_clusters=None,
+            best_gap=None,
+            warning="At least two eigengaps are required to ignore the k=1 gap.",
+        )
+    best_offset = int(usable_offsets[np.argmax(gaps[usable_offsets])])
 
     return EigengapResult(
         window_size=window_size,
@@ -176,17 +196,103 @@ def calculate_eigengaps(
     )
 
 
+def optimize_sigma_for_eigengap(
+    samples: np.ndarray,
+    window_size: int,
+    sigma_bounds: tuple[float, float] = SIGMA_BOUNDS,
+    max_sigma_evaluations: int = MAX_SIGMA_EVALUATIONS,
+    sigma_scout_points: int = SIGMA_SCOUT_POINTS,
+    max_gaps: int = MAX_GAPS,
+    eigen_max_iterations: int = EIGEN_MAX_ITERATIONS,
+    eigen_tolerance: float = EIGEN_TOLERANCE,
+) -> tuple[EigengapResult, list[EigengapResult]]:
+    """Numerically find the sigma with the largest usable eigengap."""
+    lower, upper = map(float, sigma_bounds)
+    if not (np.isfinite(lower) and np.isfinite(upper) and 0 < lower < upper):
+        raise ValueError("sigma_bounds must be finite, positive, and increasing.")
+    if max_sigma_evaluations < 3:
+        raise ValueError("max_sigma_evaluations must be at least 3.")
+    if sigma_scout_points < 3:
+        raise ValueError("sigma_scout_points must be at least 3.")
+
+    evaluations: list[EigengapResult] = []
+    cache: dict[float, EigengapResult] = {}
+
+    def evaluate(sigma: float) -> EigengapResult:
+        key = float(sigma)
+        if key not in cache:
+            cache[key] = calculate_eigengaps(
+                samples,
+                sigma=key,
+                window_size=window_size,
+                max_gaps=max_gaps,
+                eigen_max_iterations=eigen_max_iterations,
+                eigen_tolerance=eigen_tolerance,
+            )
+            evaluations.append(cache[key])
+            result = cache[key]
+            status = (
+                f"gap={result.best_gap:.6g} at k={result.best_n_clusters}"
+                if result.best_gap is not None
+                else f"skipped ({result.warning})"
+            )
+            print(f"    sigma={key:.8g}: {status}")
+        return cache[key]
+
+    def objective(sigma: float) -> float:
+        result = evaluate(sigma)
+        return np.inf if result.best_gap is None else -result.best_gap
+
+    # Scout the full interval before continuous local refinement. This is more
+    # robust than assuming the objective is unimodal across the whole range.
+    scout_count = min(sigma_scout_points, max_sigma_evaluations)
+    scout_sigmas = np.linspace(lower, upper, num=scout_count)
+    scout_values = np.asarray([objective(sigma) for sigma in scout_sigmas])
+    best_scout = int(np.argmin(scout_values))
+    remaining_evaluations = max_sigma_evaluations - len(evaluations)
+    if remaining_evaluations >= 3:
+        local_lower = float(scout_sigmas[max(0, best_scout - 1)])
+        local_upper = float(scout_sigmas[min(scout_count - 1, best_scout + 1)])
+        minimize_scalar(
+            objective,
+            bounds=(local_lower, local_upper),
+            method="bounded",
+            options={
+                "maxiter": remaining_evaluations,
+                "xatol": max((upper - lower) * 1e-6, np.finfo(float).eps),
+            },
+        )
+
+    valid = [result for result in evaluations if result.best_gap is not None]
+    if not valid:
+        best = evaluations[0]
+    else:
+        best = max(valid, key=lambda result: float(result.best_gap))
+    return best, evaluations
+
+
 def plot_eigengaps(result: EigengapResult, output_path: Path) -> Path:
     """Save an eigengap plot with the largest gap highlighted."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     colors = np.full(len(result.gaps), "#4c78a8", dtype=object)
+    if len(colors):
+        colors[0] = "#b8b8b8"
     if result.best_n_clusters is not None:
         colors[result.best_n_clusters - 1] = "#e45756"
 
     fig, ax = plt.subplots(figsize=(11, 6))
     ax.bar(result.cluster_counts, result.gaps, color=colors, edgecolor="black")
+    if len(result.gaps):
+        ax.annotate(
+            "ignored",
+            xy=(1, result.gaps[0]),
+            xytext=(0, 7),
+            textcoords="offset points",
+            ha="center",
+            color="#666666",
+        )
     if result.best_n_clusters is None:
         ax.text(
             0.5,
@@ -249,22 +355,21 @@ def run_eigengap_analysis(
     precipitation_scaler_type: str | None = PRECIPITATION_SCALER,
     train_ratio: float = TRAIN_RATIO,
     pca_variance_threshold: float | None = PCA_VARIANCE_THRESHOLD,
-    n_sigma_values: int = N_SIGMA_VALUES,
-    additional_sigma_values: Sequence[float] | None = None,
-    lower_quantile: float = LOWER_QUANTILE,
-    upper_quantile: float = UPPER_QUANTILE,
+    sigma_bounds: tuple[float, float] = SIGMA_BOUNDS,
+    max_sigma_evaluations: int = MAX_SIGMA_EVALUATIONS,
+    sigma_scout_points: int = SIGMA_SCOUT_POINTS,
+    eigen_max_iterations: int = EIGEN_MAX_ITERATIONS,
+    eigen_tolerance: float = EIGEN_TOLERANCE,
 ) -> list[EigengapResult]:
-    """Analyze every automatic sigma candidate for every window size."""
+    """Optimize sigma independently for every window size."""
     if not window_sizes:
         raise ValueError("window_sizes must contain at least one value.")
     if any(window_size <= 0 for window_size in window_sizes):
         raise ValueError("Every window size must be positive.")
-    if n_sigma_values <= 0:
-        raise ValueError("n_sigma_values must be positive.")
-    validated_additional_sigmas = combine_sigma_values(
-        [],
-        additional_sigma_values,
-    )
+    if max_sigma_evaluations < 3:
+        raise ValueError("max_sigma_evaluations must be at least 3.")
+    if sigma_scout_points < 3:
+        raise ValueError("sigma_scout_points must be at least 3.")
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -276,18 +381,12 @@ def run_eigengap_analysis(
 
     print(f"Eigengap analysis for {state}/{station_id}")
     print(f"Window sizes: {list(window_sizes)}")
-    print(f"Automatic sigma candidates per window: {n_sigma_values}")
+    print(f"Sigma search interval: [{sigma_bounds[0]:g}, {sigma_bounds[1]:g}]")
+    print(f"Maximum sigma evaluations per window: {max_sigma_evaluations}")
+    print(f"Starting sigma scout points: {sigma_scout_points}")
     print(
-        "Additional sigma values applied to every window: "
-        + (
-            ", ".join(f"{sigma:g}" for sigma in validated_additional_sigmas)
-            if len(validated_additional_sigmas)
-            else "none"
-        )
-    )
-    print(
-        "Sigma distance quantile range: "
-        f"{lower_quantile:.1%} to {upper_quantile:.1%}"
+        f"Eigenvalue solver cap: {eigen_max_iterations} iterations "
+        f"(tolerance={eigen_tolerance:g})"
     )
     print(f"Training ratio: {train_ratio:g}")
     print(
@@ -318,55 +417,40 @@ def run_eigengap_analysis(
             train_ratio=train_ratio,
             pca_variance_threshold=pca_variance_threshold,
         )
-        automatic_sigma_values = generate_sigma_candidates_from_features(
+        print("  Optimizing sigma (the k=1 gap is ignored):")
+        best_result, evaluations = optimize_sigma_for_eigengap(
             windows_flat,
-            n_values=n_sigma_values,
-            lower_quantile=lower_quantile,
-            upper_quantile=upper_quantile,
+            window_size=window_size,
+            sigma_bounds=sigma_bounds,
+            max_sigma_evaluations=max_sigma_evaluations,
+            sigma_scout_points=sigma_scout_points,
+            max_gaps=max_gaps,
+            eigen_max_iterations=eigen_max_iterations,
+            eigen_tolerance=eigen_tolerance,
         )
-        sigma_values = combine_sigma_values(
-            automatic_sigma_values,
-            validated_additional_sigmas,
+        plot_path = plot_eigengaps(
+            best_result,
+            output_dir / f"eigengaps_window_{window_size:03d}_optimal.png",
         )
-        print(
-            "  Automatic sigma candidates: "
-            + ", ".join(f"{sigma:g}" for sigma in automatic_sigma_values)
-        )
-        print(
-            "  All evaluated sigma values: "
-            + ", ".join(f"{sigma:g}" for sigma in sigma_values)
-        )
-        for sigma_index, sigma_value in enumerate(sigma_values, start=1):
-            sigma = float(sigma_value)
-            print(f"  Evaluating sigma {sigma_index}/{len(sigma_values)}: {sigma:g}")
-            result = calculate_eigengaps(
-                windows_flat,
-                sigma=sigma,
-                window_size=window_size,
-                max_gaps=max_gaps,
+        results.append(best_result)
+        skipped = sum(result.warning is not None for result in evaluations)
+        if best_result.best_gap is None:
+            print(
+                f"  No usable sigma found; evaluations={len(evaluations)}; "
+                f"skipped={skipped}"
             )
-            plot_path = plot_eigengaps(
-                result,
-                output_dir
-                / (
-                    f"eigengaps_window_{window_size:03d}_"
-                    f"sigma_{sigma_index:02d}.png"
-                ),
+        else:
+            print(
+                f"  Best sigma={best_result.sigma:.8g}; "
+                f"gap={best_result.best_gap:.6g}; "
+                f"suggested k={best_result.best_n_clusters}; "
+                f"evaluations={len(evaluations)}; skipped={skipped}"
             )
-            results.append(result)
-            if result.warning is not None:
-                print(f"    WARNING: {result.warning}")
-                print("    Suggested clusters: N/A")
-            else:
-                print(
-                    f"    Largest gap: {result.best_gap:.6g} "
-                    f"at k={result.best_n_clusters}"
-                )
-            print(f"    Plot: {plot_path}")
+        print(f"  Plot: {plot_path}")
 
     print("\nEigengap summary")
-    print("Window size | Sigma        | Suggested clusters | Largest gap")
-    print("------------|--------------|--------------------|------------")
+    print("Window size | Optimal sigma | Suggested clusters | Max gap (k >= 2)")
+    print("------------|---------------|--------------------|-----------------")
     for result in results:
         suggested_clusters = (
             "N/A" if result.best_n_clusters is None else str(result.best_n_clusters)
@@ -395,21 +479,43 @@ def main() -> None:
         help="Sliding-window sizes to analyze",
     )
     parser.add_argument(
-        "--n-sigma-values",
-        type=int,
-        default=N_SIGMA_VALUES,
-        help="Automatic sigma candidates to evaluate per window size",
+        "--sigma-bounds",
+        nargs=2,
+        type=float,
+        metavar=("LOWER", "UPPER"),
+        default=SIGMA_BOUNDS,
+        help="Positive interval used by the bounded sigma optimizer",
     )
     parser.add_argument(
-        "--additional-sigma-values",
-        "--sigma-values",
-        nargs="+",
-        type=float,
-        default=ADDITIONAL_SIGMA_VALUES,
-        help="Extra sigma values evaluated for every window size",
+        "--max-sigma-evaluations",
+        type=int,
+        default=MAX_SIGMA_EVALUATIONS,
+        help=(
+            "Maximum number of sigma trials per window "
+            f"(default: {MAX_SIGMA_EVALUATIONS})"
+        ),
     )
-    parser.add_argument("--lower-quantile", type=float, default=LOWER_QUANTILE)
-    parser.add_argument("--upper-quantile", type=float, default=UPPER_QUANTILE)
+    parser.add_argument(
+        "--sigma-scout-points",
+        type=int,
+        default=SIGMA_SCOUT_POINTS,
+        help=(
+            "Evenly spaced starting sigma values "
+            f"(default: {SIGMA_SCOUT_POINTS})"
+        ),
+    )
+    parser.add_argument(
+        "--eigen-max-iterations",
+        type=int,
+        default=EIGEN_MAX_ITERATIONS,
+        help="Skip an ARPACK sigma trial after this many iterations",
+    )
+    parser.add_argument(
+        "--eigen-tolerance",
+        type=float,
+        default=EIGEN_TOLERANCE,
+        help="ARPACK convergence tolerance",
+    )
     parser.add_argument("--max-gaps", type=int, default=MAX_GAPS)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     parser.add_argument("--columns", nargs="+", default=FEATURE_COLUMNS)
@@ -448,10 +554,11 @@ def main() -> None:
         precipitation_scaler_type=args.precipitation_scaler,
         train_ratio=args.train_ratio,
         pca_variance_threshold=args.pca_variance_threshold,
-        n_sigma_values=args.n_sigma_values,
-        additional_sigma_values=args.additional_sigma_values,
-        lower_quantile=args.lower_quantile,
-        upper_quantile=args.upper_quantile,
+        sigma_bounds=tuple(args.sigma_bounds),
+        max_sigma_evaluations=args.max_sigma_evaluations,
+        sigma_scout_points=args.sigma_scout_points,
+        eigen_max_iterations=args.eigen_max_iterations,
+        eigen_tolerance=args.eigen_tolerance,
     )
 
 

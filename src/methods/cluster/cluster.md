@@ -15,8 +15,8 @@ This folder contains clustering algorithms used by the project.
   row-normalizes the embedding, and clusters that embedding.
 - `eigengap.py`: standalone multi-window eigengap analysis. It builds the same
   normalized Gaussian affinity graph, plots the first 20 leading-eigenvalue
-  gaps for every automatic sigma candidate of each window size, highlights the
-  largest gap, and reports each heuristic cluster-count recommendation.
+  gaps at the numerically optimized sigma for each window size, ignores the
+  `k=1` gap, and reports each heuristic cluster-count recommendation.
 - `automatic_sigma.py`: standalone and reusable adapter for the project's
   pairwise-distance sigma heuristic. It loads a station when run as a command,
   or accepts a dataframe or prepared feature matrix when imported.
@@ -143,7 +143,7 @@ feature-space centroids.
 Edit the defaults at the top of `eigengap.py` or pass window sizes directly:
 
 ```powershell
-cluster-eigengap --state RS --station-id A801 --window-sizes 5 10 15 --n-sigma-values 5 --additional-sigma-values 0.5 1.0 2.0 --scaler-type standard --precipitation-scaler none --train-ratio 0.6
+cluster-eigengap --state RS --station-id A801 --window-sizes 5 10 15 --sigma-bounds 0.000001 100 --sigma-scout-points 15 --max-sigma-evaluations 100 --eigen-max-iterations 300 --scaler-type standard --precipitation-scaler none --train-ratio 0.6
 ```
 
 Eigengap preprocessing mirrors the LSTM+cluster pipeline: it takes the same
@@ -156,26 +156,25 @@ flattened windows, and optionally fits PCA on the training windows. Keep
 `--scaler-type`, `--precipitation-scaler`, `--train-ratio`, and
 `--pca-variance-threshold`.
 
-For every window size, the command generates sigma candidates from the
-preprocessed window-distance distribution using `automatic_sigma.py`. It then
-evaluates every candidate and saves
-`eigengaps_window_<WINDOW_SIZE>_sigma_<SIGMA_INDEX>.png` under the configured
-output directory. Use `--lower-quantile` and `--upper-quantile` to configure
-the distance range used by the sigma heuristic. Pass manually selected values
-with `--additional-sigma-values`; each is appended to every window size's
-automatic candidates. Duplicate values are evaluated only once. The shorter
-alias `--sigma-values` is also accepted.
+For every window size, bounded scalar optimization searches for the sigma that
+maximizes the usable eigengap. It searches `(0, 100]` by default (represented
+numerically as `[1e-6, 100]`) and saves
+`eigengaps_window_<WINDOW_SIZE>_optimal.png`. Use `--sigma-bounds` to change the
+interval and `--max-sigma-evaluations` to control the fixed trial budget. The
+defaults use 15 evenly spaced scouts and a total budget of 100 evaluations;
+bounded scalar optimization uses the remainder to refine the best neighboring
+region under the assumption that the objective is continuous there. Change the
+initial coverage with `--sigma-scout-points`.
 Gap `k` is defined as `lambda_k - lambda_(k+1)` after sorting the normalized
-affinity eigenvalues from largest to smallest. The largest of the first 20
-gaps is highlighted and `k` is reported as the heuristic number of clusters
-for that window/sigma pair. The console summary includes all window sizes,
-sigma candidates, suggested cluster counts, and largest gaps. The affinity
+affinity eigenvalues from largest to smallest. Gap `k=1` is ignored; the
+largest of the remaining first 20 gaps is highlighted and `k` is reported as
+the heuristic number of clusters. The console summary includes one optimal
+sigma, suggested cluster count, and largest usable gap per window. The affinity
 matrix is dense and requires memory proportional to the square of the number
 of windows;
-large station histories can therefore require substantial memory. If `sigma`
-is so small that the affinity graph has no usable edges, the runner prints a
-degeneracy warning, marks the recommendation as `N/A`, saves an annotated plot,
-and continues with the remaining sigma candidates and window sizes.
+large station histories can therefore require substantial memory. ARPACK is
+limited to 300 iterations per sigma by default (`--eigen-max-iterations`), and
+non-convergent or degenerate trials are skipped while the search continues.
 
 ## Automatic sigma candidates
 

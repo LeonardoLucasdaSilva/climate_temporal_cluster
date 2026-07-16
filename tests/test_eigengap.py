@@ -25,6 +25,7 @@ from methods.cluster.eigengap import (  # noqa: E402
     calculate_eigengaps,
     combine_sigma_values,
     create_pipeline_clustering_features,
+    optimize_sigma_for_eigengap,
     plot_eigengaps,
     run_eigengap_analysis,
 )
@@ -105,10 +106,6 @@ class EigengapTest(unittest.TestCase):
                     "methods.cluster.eigengap.create_pipeline_clustering_features",
                     return_value=(samples, ["feature"]),
                 ),
-                patch(
-                    "methods.cluster.eigengap.generate_sigma_candidates_from_features",
-                    return_value=np.array([0.1, 1.0]),
-                ),
             ):
                 console = StringIO()
                 with redirect_stdout(console):
@@ -118,39 +115,21 @@ class EigengapTest(unittest.TestCase):
                         window_sizes=[2, 3],
                         output_dir=output_dir,
                         max_gaps=4,
-                        n_sigma_values=2,
-                        additional_sigma_values=[1.0, 2.0, 0.1],
+                        sigma_bounds=(0.01, 2.0),
+                        max_sigma_evaluations=5,
                     )
 
             self.assertEqual(
                 [(result.window_size, result.sigma) for result in results],
-                [
-                    (2, 0.1),
-                    (2, 1.0),
-                    (2, 2.0),
-                    (3, 0.1),
-                    (3, 1.0),
-                    (3, 2.0),
-                ],
+                [(2, results[0].sigma), (3, results[1].sigma)],
             )
             for window_size in (2, 3):
-                for sigma_index in (1, 2, 3):
-                    self.assertTrue(
-                        (
-                            output_dir
-                            / (
-                                f"eigengaps_window_{window_size:03d}_"
-                                f"sigma_{sigma_index:02d}.png"
-                            )
-                        ).is_file()
-                    )
+                self.assertTrue(
+                    (output_dir / f"eigengaps_window_{window_size:03d}_optimal.png").is_file()
+                )
             self.assertIn("Eigengap summary", console.getvalue())
             self.assertIn("Suggested clusters", console.getvalue())
-            self.assertIn("Automatic sigma candidates", console.getvalue())
-            self.assertIn(
-                "Additional sigma values applied to every window: 1, 2, 0.1",
-                console.getvalue(),
-            )
+            self.assertIn("Maximum sigma evaluations per window: 5", console.getvalue())
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
 
@@ -205,10 +184,6 @@ class EigengapTest(unittest.TestCase):
                     "methods.cluster.eigengap.create_pipeline_clustering_features",
                     return_value=(samples, ["feature"]),
                 ),
-                patch(
-                    "methods.cluster.eigengap.generate_sigma_candidates_from_features",
-                    return_value=np.array([1e-12, 2e-12]),
-                ),
             ):
                 console = StringIO()
                 with redirect_stdout(console):
@@ -218,18 +193,18 @@ class EigengapTest(unittest.TestCase):
                         window_sizes=[30, 45],
                         output_dir=output_dir,
                         max_gaps=2,
-                        n_sigma_values=2,
+                        sigma_bounds=(1e-12, 2e-12),
+                        max_sigma_evaluations=3,
                     )
 
-            self.assertEqual(len(results), 4)
+            self.assertEqual(len(results), 2)
             self.assertTrue(all(result.warning is not None for result in results))
-            self.assertEqual(console.getvalue().count("WARNING:"), 4)
-            self.assertIn("Suggested clusters: N/A", console.getvalue())
+            self.assertIn("No usable sigma found", console.getvalue())
             self.assertTrue(
-                (output_dir / "eigengaps_window_030_sigma_01.png").is_file()
+                (output_dir / "eigengaps_window_030_optimal.png").is_file()
             )
             self.assertTrue(
-                (output_dir / "eigengaps_window_045_sigma_02.png").is_file()
+                (output_dir / "eigengaps_window_045_optimal.png").is_file()
             )
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
@@ -248,22 +223,29 @@ class EigengapTest(unittest.TestCase):
                 window_size=2,
                 max_gaps=0,
             )
-        with self.assertRaisesRegex(ValueError, "n_sigma_values must be positive"):
+        with self.assertRaisesRegex(ValueError, "at least 3"):
             run_eigengap_analysis(
                 state="RS",
                 station_id="A801",
                 window_sizes=[2],
                 output_dir=Path("unused"),
-                n_sigma_values=0,
+                max_sigma_evaluations=2,
             )
-        with self.assertRaisesRegex(ValueError, "positive and finite"):
-            run_eigengap_analysis(
-                state="RS",
-                station_id="A801",
-                window_sizes=[2],
-                output_dir=Path("unused"),
-                additional_sigma_values=[0.0],
-            )
+
+    def test_sigma_optimizer_ignores_first_gap_and_respects_budget(self) -> None:
+        samples = np.array([[0.0], [0.01], [0.02], [10.0], [10.01], [10.02]])
+
+        best, evaluations = optimize_sigma_for_eigengap(
+            samples,
+            window_size=3,
+            sigma_bounds=(0.01, 2.0),
+            max_sigma_evaluations=6,
+            max_gaps=4,
+        )
+
+        self.assertLessEqual(len(evaluations), 6)
+        self.assertEqual(best.best_n_clusters, 2)
+        self.assertEqual(best.best_gap, max(result.best_gap for result in evaluations))
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ QUANTITATIVE_METRICS = ["MSE"]
 
 # Optional oracle diagnostic: evaluates every test window with every cluster LSTM.
 # It never replaces the same-cluster test metrics or the main plots.
-TEST_ALL_MODELS = True
+TEST_ALL_MODELS = False
 
 # Model hyperparameters
 LSTM_UNITS = 32

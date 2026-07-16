@@ -314,22 +314,19 @@ The standalone eigengap command evaluates multiple sliding-window sizes using
 the same normalized Gaussian affinity graph as spectral clustering:
 
 ```powershell
-cluster-eigengap --state RS --station-id A801 --window-sizes 5 10 15 --n-sigma-values 5 --additional-sigma-values 0.5 1.0 2.0 --scaler-type standard --precipitation-scaler none --train-ratio 0.6
+cluster-eigengap --state RS --station-id A801 --window-sizes 5 10 15 --sigma-bounds 0.000001 100 --sigma-scout-points 15 --max-sigma-evaluations 100 --eigen-max-iterations 300 --scaler-type standard --precipitation-scaler none --train-ratio 0.6
 ```
 
-For each window size, it generates sigma candidates with the automatic
-pairwise-distance heuristic, evaluates every candidate, and saves one plot per
-window/sigma pair with the first 20 eigengaps. It highlights the largest gap
-and prints the suggested cluster count, sigma, and gap value for every result.
+For each window size, it numerically maximizes the largest usable eigengap over
+the configured sigma interval and saves one plot for the optimum. It ignores
+the first (`k=1`) gap, highlights the best remaining gap, and prints the
+suggested cluster count, optimal sigma, and gap value.
 The eigengap heuristic uses
 `gap(k) = lambda_k - lambda_(k+1)` on eigenvalues sorted from largest to
-smallest. Configure the sweep with `--n-sigma-values`, `--lower-quantile`, and
-`--upper-quantile`. Additional manually selected values can be applied to every
-window configuration with `--additional-sigma-values` (or its shorter
-`--sigma-values` alias); duplicates are evaluated once. More options and assumptions are documented in
-`src/methods/cluster/cluster.md`. A candidate that produces a degenerate
-affinity matrix is reported explicitly; its recommendation is marked `N/A` and
-the remaining sigma candidates and window sizes continue to run.
+smallest. Configure the search with `--sigma-bounds`, `--sigma-scout-points`,
+and `--max-sigma-evaluations`. `--eigen-max-iterations` caps slow ARPACK trials;
+non-convergent or degenerate sigma values are skipped. More options and
+assumptions are documented in `src/methods/cluster/cluster.md`.
 
 Its feature preprocessing matches the LSTM+cluster pipeline: scalers are fitted
 only on the chronological training fraction, covariates and precipitation use
