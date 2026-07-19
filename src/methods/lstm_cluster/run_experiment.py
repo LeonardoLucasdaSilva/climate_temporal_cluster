@@ -10,29 +10,41 @@ from config import DATA_ROOT, load_output_config, output_root_from_config
 from methods.lstm_cluster.pipeline import run_experiment
 
 
-# Station and data
+# Station and data selection
 STATE = "RS"
 STATION_ID = "A801"
 
-# Clustering sweep
-WINDOW_SIZES = [5,10]
-N_CLUSTERS_LIST = [2]
+# Data setting
+WINDOW_SIZES = [15]
+FORECAST_HORIZON = 5
+USE_ALL_FEATURES = True
+
+
+#PCA settings
 PCA_VARIANCE_THRESHOLD = None
 PCA_FOR_CLUSTERING_ONLY = True  # Keep pre-PCA window features as LSTM inputs
-CLUSTERING_FEATURE_NORMALIZE = 'standard'  # "standard", "minmax", or None
+
+
+#Normalization settings
+CLUSTERING_FEATURE_NORMALIZE = 'minmax'  # "standard", "minmax", or None
 CLUSTERING_PRECIPITATION_NORMALIZE = None  # "standard", "minmax", or None
-LSTM_FEATURE_NORMALIZE = "standard"  # "standard", "minmax", or None
+LSTM_FEATURE_NORMALIZE = "minmax"  # "standard", "minmax", or None
 LSTM_PRECIPITATION_NORMALIZE = None  # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
 
 
 
 # Clustering setting
-CLUSTERING_ALGORITHM = "spectral"  # "kmeans" or "spectral"
+N_CLUSTERS_LIST = [3]
+CLUSTERING_ALGORITHM = "spectral"  # "kmeans", "spectral", or "manual"
+MANUAL_CLUSTERING_METHOD = "rain_level"  # "legacy" or "rain_level"
+MANUAL_ZERO_TOLERANCE = 0.0  # Used only by legacy manual clustering
+CLUSTER_ASSIGNMENT_METHOD = "knn"  # "centroid" or "knn"
+CLUSTER_ASSIGNMENT_NEIGHBORS = 5  # Used only when assignment method is "knn"
 N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"  # "auto" or "manual"
-MANUAL_SIGMA_VALUES = [0.3]  # Only used if SIGMA_MODE is "manual"
-USE_ALL_FEATURES = True
-FORECAST_HORIZON = 5
+MANUAL_SIGMA_VALUES = [0.1]  # Only used if SIGMA_MODE is "manual"
+
+
 
 # Metrics exported to compact comparison tables
 QUANTITATIVE_METRICS = ["MSE"]
@@ -41,21 +53,23 @@ QUANTITATIVE_METRICS = ["MSE"]
 # It never replaces the same-cluster test metrics or the main plots.
 TEST_ALL_MODELS = True
 
-# Model hyperparameters
-LSTM_UNITS = 256
-LSTM_UNITS_2 = 128
-DROPOUT_RATE = 0.1
-LEARNING_RATE = 0.001
-WEIGHT_DECAY = 0  # Decoupled weight decay used by AdamW
-LSTM_LOSS_FUNCTION = "quantile_weighted_mse"  # "mean_squared_error", "mae", "huber", or "quantile_weighted_mse"
-LOSS_QUANTILES = [0.9]
+# Model hyperparameters. Each numeric setting accepts one scalar or a sweep list.
+LSTM_UNITS: int | list[int] = 64
+LSTM_UNITS_2: int | list[int] = 32
+DROPOUT_RATE: float | list[float] = 0.3
+LEARNING_RATE: float | list[float] = 1e-3
+WEIGHT_DECAY: float | list[float] = 1e-4  # Decoupled weight decay used by AdamW
+# Supported: "mean_squared_error", "mae", "huber", "weighted_mse_loss",
+# or "quantile_weighted_mse".
+LOSS_QUANTILES = [0.5,0.75,0.95]
 LOSS_QUANTILE_WEIGHTS = "auto"  # "auto" or one positive weight per quantile bin
 
-# Training settings
-EPOCHS = 250
-BATCH_SIZE = 64
+# Training settings. Numeric settings may also be lists in a comparative grid.
+EPOCHS: int | list[int] = 150
+BATCH_SIZE: int | list[int] = 12
 EARLY_STOPPING = True
 PATIENCE = 251
+PATIENCE: int | list[int] = 20
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True
 RUN_ONLY_CLUSTER = False  # Only cluster windows; skip all LSTM training/output.
@@ -89,6 +103,10 @@ def main() -> None:
         run_only_cluster=RUN_ONLY_CLUSTER,
         n_clusters_list=N_CLUSTERS_LIST,
         clustering_algorithm=CLUSTERING_ALGORITHM,
+        manual_clustering_method=MANUAL_CLUSTERING_METHOD,
+        manual_zero_tolerance=MANUAL_ZERO_TOLERANCE,
+        cluster_assignment_method=CLUSTER_ASSIGNMENT_METHOD,
+        cluster_assignment_neighbors=CLUSTER_ASSIGNMENT_NEIGHBORS,
         n_sigma_values=N_SIGMA_VALUES,
         sigma_values=MANUAL_SIGMA_VALUES if sigma_mode == "manual" else None,
         use_all_features=USE_ALL_FEATURES,

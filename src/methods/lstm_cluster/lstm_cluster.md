@@ -49,8 +49,9 @@ Or use the root launcher:
    transforms. With `PCA_FOR_CLUSTERING_ONLY = True`, use PCA coordinates only
    for cluster fitting and held-out cluster assignment.
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
-   calculate training-cluster centroids, then assign validation and test
-   windows to the nearest existing centroid.
+   then assign validation and test windows with the configured cluster
+   assignment method. `"centroid"` uses the nearest training-cluster centroid;
+   `"knn"` uses the nearest labeled training windows.
 7. Build one target column for each lead day from D+1 through the configured
    forecast horizon inside each split. The final D+`FORECAST_HORIZON` column is
    still kept as the scalar target for legacy metrics and plots.
@@ -76,8 +77,11 @@ Change experiment variables in `run_experiment.py`:
 
 - station and data: `STATE`, `STATION_ID`
 - clustering sweep: `WINDOW_SIZES`, `N_CLUSTERS_LIST`,
-  `CLUSTERING_ALGORITHM`, `FORECAST_HORIZON`, `MANUAL_ZERO_TOLERANCE`,
-  `SIGMA_MODE`, `N_SIGMA_VALUES`, `MANUAL_SIGMA_VALUES`, `USE_ALL_FEATURES`
+  `CLUSTERING_ALGORITHM`, `MANUAL_CLUSTERING_METHOD`, `FORECAST_HORIZON`,
+  `MANUAL_ZERO_TOLERANCE`, `SIGMA_MODE`, `N_SIGMA_VALUES`,
+  `MANUAL_SIGMA_VALUES`, `USE_ALL_FEATURES`
+- held-out cluster assignment: `CLUSTER_ASSIGNMENT_METHOD` supports
+  `"centroid"` and `"knn"`; `CLUSTER_ASSIGNMENT_NEIGHBORS` sets K for KNN
 - dimensionality reduction: `PCA_VARIANCE_THRESHOLD` enables PCA and
   `PCA_FOR_CLUSTERING_ONLY` limits it to clustering while preserving the
   original flattened-window dimensionality for LSTM inputs
@@ -148,11 +152,34 @@ For spectral clustering, set `SIGMA_MODE = "auto"` to generate
 `MANUAL_SIGMA_VALUES`.
 
 Set `CLUSTERING_ALGORITHM` to `"kmeans"`, `"spectral"`, or `"manual"`.
-Manual clustering reserves label `0` for known zero-rain targets and splits
-known positive targets into ordered lower-to-heavier rain groups. Set
-`FORECAST_HORIZON = 1` for next-day rain or use a larger positive integer to
-train the LSTM on every lead day from D+1 through that horizon.
-`MANUAL_ZERO_TOLERANCE` controls the maximum precipitation treated as zero.
+For manual clustering, `MANUAL_CLUSTERING_METHOD = "legacy"` preserves the
+original behavior: label `0` is reserved for known zero-rain targets and known
+positive targets are split into ordered lower-to-heavier rain groups.
+`MANUAL_ZERO_TOLERANCE` controls the maximum target precipitation treated as
+zero by this legacy method.
+
+Set `MANUAL_CLUSTERING_METHOD = "rain_level"` to calculate the raw mean
+`PRECIPITACAO_TOTAL` across all `J` input days of every training window. If the
+largest training-window mean is `M`, the edges are
+`numpy.linspace(0, M, K + 1)`. Cluster `i` receives values in
+`[edge_i, edge_{i+1})`; the final cluster also includes `M`. Thus a value equal
+to an internal edge enters the next cluster. The calculation always uses raw
+millimeters, independently of `CLUSTERING_PRECIPITATION_NORMALIZE`. Every bin
+must receive at least one training window; otherwise the run raises a clear
+empty-cluster error.
+
+Set `FORECAST_HORIZON = 1` for next-day rain or use a larger positive integer
+to train the LSTM on every lead day from D+1 through that horizon. This horizon
+changes legacy labels but does not change `rain_level` labels, which depend only
+on the input window.
+
+`CLUSTERING_ALGORITHM` and `CLUSTER_ASSIGNMENT_METHOD` have separate roles.
+The clustering algorithm fits labels using training windows only. Validation
+and test are never refitted: `CLUSTER_ASSIGNMENT_METHOD = "centroid"` assigns
+each held-out window to the closest training-cluster mean by Euclidean
+distance, while `"knn"` uses majority voting among the configured number of
+nearest training windows. If K is larger than the number of training windows,
+the pipeline safely uses all available training windows.
 
 Forecast-horizon precipitation alignment is handled by
 `methods.tools.precipitation_utils`. The LSTM pipeline uses the configured

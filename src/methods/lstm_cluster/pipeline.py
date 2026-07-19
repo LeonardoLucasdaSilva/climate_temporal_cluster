@@ -149,6 +149,17 @@ DEFAULT_PLOT_STYLE: dict[str, object] = {
 }
 
 DISABLED_SCALER_VALUES = {"", "none", "null"}
+SUPPORTED_CLUSTER_ASSIGNMENT_METHODS = ("centroid", "knn")
+VARIANT_PARAMETER_SLUGS = {
+    "lstm_units": "u1",
+    "lstm_units_2": "u2",
+    "dropout_rate": "dropout",
+    "learning_rate": "lr",
+    "weight_decay": "wd",
+    "epochs": "epochs",
+    "batch_size": "batch",
+    "patience": "patience",
+}
 SUPPORTED_LSTM_LOSS_FUNCTIONS = (
     "mean_squared_error",
     "mse",
@@ -313,8 +324,38 @@ def build_configurations(
     window_sizes: list[int],
     n_clusters_list: list[int],
     clustering_algorithm: str,
+    manual_clustering_method: str = "legacy",
+    cluster_assignment_method: str = "centroid",
+    cluster_assignment_neighbors: int = 5,
+    training_parameter_values: Mapping[
+        str,
+        Sequence[int | float],
+    ] | None = None,
 ) -> list[ExperimentConfig]:
-    """Return every window, cluster-count, and sigma combination."""
+    """Return every clustering and numeric training-parameter combination."""
+    training_parameter_values = dict(training_parameter_values or {})
+    unsupported_parameters = sorted(
+        set(training_parameter_values) - set(VARIANT_PARAMETER_SLUGS)
+    )
+    if unsupported_parameters:
+        raise ValueError(
+            "Unsupported training sweep parameters: "
+            + ", ".join(unsupported_parameters)
+        )
+    parameter_names = list(training_parameter_values)
+    for parameter, values in training_parameter_values.items():
+        if not values:
+            raise ValueError(f"{parameter} must contain at least one value.")
+    parameter_combinations = list(
+        product(*(training_parameter_values[name] for name in parameter_names))
+    )
+    if not parameter_combinations:
+        parameter_combinations = [()]
+    varied_parameters = {
+        parameter
+        for parameter, values in training_parameter_values.items()
+        if len(values) > 1
+    }
     return [
         ExperimentConfig(
             state=state,
@@ -323,10 +364,19 @@ def build_configurations(
             n_clusters=n_clusters,
             algorithm=clustering_algorithm.lower(),
             sigma=sigma,
+            manual_clustering_method=manual_clustering_method,
+            cluster_assignment_method=cluster_assignment_method,
+            cluster_assignment_neighbors=cluster_assignment_neighbors,
+            variant_parameters=tuple(
+                (parameter, value)
+                for parameter, value in zip(parameter_names, parameter_values)
+                if parameter in varied_parameters
+            ),
         )
         for window_size in window_sizes
         for n_clusters in n_clusters_list
         for sigma in sigmas
+        for parameter_values in parameter_combinations
     ]
 
 
@@ -507,6 +557,23 @@ def _lead_day_dates(
     return np.column_stack(lead_dates)
 
 
+def _mean_input_window_precipitation(
+    df: pd.DataFrame,
+    window_start_indices: np.ndarray,
+    window_size: int,
+) -> np.ndarray:
+    """Return raw mean precipitation over every selected input window."""
+    precipitation = pd.to_numeric(
+        df[DEFAULT_PRECIPITATION_COLUMN],
+        errors="coerce",
+    ).to_numpy(dtype=float)
+    precipitation_windows = np.lib.stride_tricks.sliding_window_view(
+        precipitation,
+        window_size,
+    )
+    return precipitation_windows[window_start_indices].mean(axis=1)
+
+
 def _nearest_centroid_labels(
     feature_matrix: np.ndarray,
     centroids: np.ndarray,
@@ -520,6 +587,46 @@ def _nearest_centroid_labels(
     return np.argmin(distances_sq, axis=1).astype(int)
 
 
+def _training_cluster_centroids(
+    X_train: np.ndarray,
+    c_train: np.ndarray,
+    n_clusters: int,
+) -> np.ndarray:
+    """Calculate one feature-space centroid for each training cluster."""
+    centroids = np.vstack(
+        [
+            X_train[c_train == cluster_id].mean(axis=0)
+            for cluster_id in range(n_clusters)
+        ]
+    )
+    if not np.all(np.isfinite(centroids)):
+        raise ValueError("Clustering produced an empty training cluster.")
+    return centroids
+
+
+def _assign_held_out_cluster_labels(
+    X_train: np.ndarray,
+    c_train: np.ndarray,
+    X_held_out: np.ndarray,
+    *,
+    method: str,
+    n_clusters: int,
+    n_neighbors: int,
+) -> np.ndarray:
+    """Assign held-out windows from fixed training features and labels."""
+    if len(X_held_out) == 0:
+        return np.array([], dtype=int)
+
+    if method == "centroid":
+        centroids = _training_cluster_centroids(X_train, c_train, n_clusters)
+        return _nearest_centroid_labels(X_held_out, centroids)
+
+    effective_neighbors = min(n_neighbors, len(X_train))
+    classifier = KNeighborsClassifier(n_neighbors=effective_neighbors)
+    classifier.fit(X_train, c_train)
+    return np.asarray(classifier.predict(X_held_out), dtype=int)
+
+
 def _cluster_window_splits(
     config: ExperimentConfig,
     X_train: np.ndarray,
@@ -528,6 +635,7 @@ def _cluster_window_splits(
     y_train: np.ndarray,
     random_state: int,
     manual_zero_tolerance: float,
+    manual_window_mean_rain: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Fit cluster assignments on training windows and infer held-out labels."""
     if len(X_train) < config.n_clusters:
@@ -536,27 +644,32 @@ def _cluster_window_splits(
             f"got {len(X_train)}."
         )
 
+    assignment_method = _normalize_cluster_assignment_method(
+        config.cluster_assignment_method
+    )
+    assignment_neighbors = _validate_cluster_assignment_neighbors(
+        config.cluster_assignment_neighbors
+    )
+
     if config.algorithm == "kmeans":
         model = KMeans(
             n_clusters=config.n_clusters,
             random_state=random_state,
             n_init=KMEANS_N_INIT,
         ).fit(X_train)
-        return (
-            model.labels_,
-            _nearest_centroid_labels(X_val, model.cluster_centers_),
-            _nearest_centroid_labels(X_test, model.cluster_centers_),
-        )
-
-    if config.algorithm == "manual":
+        c_train = model.labels_
+    elif config.algorithm == "manual":
         model = ManualRainClustering(
             n_clusters=config.n_clusters,
             zero_tolerance=manual_zero_tolerance,
+            method=config.manual_clustering_method,
         )
-        c_train = model.fit_predict(X_train, y_train)
-        return c_train, model.predict(X_val), model.predict(X_test)
-
-    if config.algorithm == "spectral":
+        c_train = model.fit_predict(
+            X_train,
+            y_train,
+            window_mean_rain=manual_window_mean_rain,
+        )
+    elif config.algorithm == "spectral":
         if config.sigma is None:
             raise ValueError("sigma must be provided when algorithm='spectral'")
         c_train = spectral_clustering(
@@ -565,24 +678,33 @@ def _cluster_window_splits(
             k=config.n_clusters,
             random_state=random_state,
         )
-        centroids = np.vstack(
-            [
-                X_train[c_train == cluster_id].mean(axis=0)
-                for cluster_id in range(config.n_clusters)
-            ]
-        )
-        if not np.all(np.isfinite(centroids)):
-            raise ValueError("Spectral clustering produced an empty training cluster.")
-        return (
-            c_train,
-            _nearest_centroid_labels(X_val, centroids),
-            _nearest_centroid_labels(X_test, centroids),
+    else:
+        supported = ", ".join(SUPPORTED_CLUSTERING_ALGORITHMS)
+        raise ValueError(
+            f"Unsupported clustering algorithm: {config.algorithm!r}. "
+            f"Use one of: {supported}"
         )
 
-    supported = ", ".join(SUPPORTED_CLUSTERING_ALGORITHMS)
-    raise ValueError(
-        f"Unsupported clustering algorithm: {config.algorithm!r}. "
-        f"Use one of: {supported}"
+    _training_cluster_centroids(X_train, c_train, config.n_clusters)
+    assignment_kwargs = {
+        "method": assignment_method,
+        "n_clusters": config.n_clusters,
+        "n_neighbors": assignment_neighbors,
+    }
+    return (
+        np.asarray(c_train, dtype=int),
+        _assign_held_out_cluster_labels(
+            X_train,
+            c_train,
+            X_val,
+            **assignment_kwargs,
+        ),
+        _assign_held_out_cluster_labels(
+            X_train,
+            c_train,
+            X_test,
+            **assignment_kwargs,
+        ),
     )
 
 
@@ -739,7 +861,7 @@ def create_window_split_data(
         y_train_by_lead_day,
         current_train,
         i_train,
-        _train_target_dates_by_lead_day,
+        train_target_dates_by_lead_day,
     ) = _valid_supervised_windows(
         splits.train,
         cluster_train_flat,
@@ -778,6 +900,17 @@ def create_window_split_data(
     train_local_indices = i_train - splits.train_offset
     val_local_indices = i_val - splits.val_offset
     test_local_indices = i_test - splits.test_offset
+    manual_window_mean_rain = None
+    if (
+        config.algorithm == "manual"
+        and normalize_manual_clustering_method(config.manual_clustering_method)
+        == "rain_level"
+    ):
+        manual_window_mean_rain = _mean_input_window_precipitation(
+            splits.train,
+            train_local_indices,
+            config.window_size,
+        )
     if run_only_cluster or (cluster_pca is not None and not pca_for_clustering_only):
         X_train = cluster_X_train
         X_val = cluster_X_val
@@ -808,6 +941,7 @@ def create_window_split_data(
         y_train,
         random_state=random_state,
         manual_zero_tolerance=manual_zero_tolerance,
+        manual_window_mean_rain=manual_window_mean_rain,
     )
     return (
         WindowSplitData(
@@ -839,6 +973,7 @@ def create_window_split_data(
                 [current_train, current_val, current_test]
             ),
             all_cluster_labels=np.concatenate([c_train, c_val, c_test]),
+            train_target_dates_by_lead_day=train_target_dates_by_lead_day,
             test_targets_by_lead_day=y_test_by_lead_day,
             test_target_dates_by_lead_day=test_target_dates_by_lead_day,
             target_scaler=target_scaler,
@@ -1728,13 +1863,79 @@ def run_experiment(
     sigma_values: list[float] | None = None,
     forecast_horizon: int = 1,
     manual_zero_tolerance: float = 0.0,
+    manual_clustering_method: str = "legacy",
     test_all_models: bool = True,
     weight_decay: float = 0.0,
     pca_for_clustering_only: bool = False,
     run_only_cluster: bool = False,
+    cluster_assignment_method: str = "centroid",
+    cluster_assignment_neighbors: int = 5,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
     clustering_algorithm = clustering_algorithm.lower()
+    manual_clustering_method = normalize_manual_clustering_method(
+        manual_clustering_method
+    )
+    cluster_assignment_method = _normalize_cluster_assignment_method(
+        cluster_assignment_method
+    )
+    cluster_assignment_neighbors = _validate_cluster_assignment_neighbors(
+        cluster_assignment_neighbors
+    )
+    training_parameter_values: dict[str, list[int | float]] = {
+        "lstm_units": _normalize_numeric_sweep_values(
+            lstm_units,
+            setting_name="lstm_units",
+            integer=True,
+            minimum=1.0,
+            minimum_inclusive=True,
+        ),
+        "lstm_units_2": _normalize_numeric_sweep_values(
+            lstm_units_2,
+            setting_name="lstm_units_2",
+            integer=True,
+            minimum=1.0,
+            minimum_inclusive=True,
+        ),
+        "dropout_rate": _normalize_numeric_sweep_values(
+            dropout_rate,
+            setting_name="dropout_rate",
+            integer=False,
+            minimum=0.0,
+            minimum_inclusive=True,
+            maximum=1.0,
+            maximum_inclusive=False,
+        ),
+        "learning_rate": _normalize_learning_rate_values(learning_rate),
+        "weight_decay": _normalize_numeric_sweep_values(
+            weight_decay,
+            setting_name="weight_decay",
+            integer=False,
+            minimum=0.0,
+            minimum_inclusive=True,
+        ),
+        "epochs": _normalize_numeric_sweep_values(
+            epochs,
+            setting_name="epochs",
+            integer=True,
+            minimum=1.0,
+            minimum_inclusive=True,
+        ),
+        "batch_size": _normalize_numeric_sweep_values(
+            batch_size,
+            setting_name="batch_size",
+            integer=True,
+            minimum=1.0,
+            minimum_inclusive=True,
+        ),
+        "patience": _normalize_numeric_sweep_values(
+            patience,
+            setting_name="patience",
+            integer=True,
+            minimum=0.0,
+            minimum_inclusive=True,
+        ),
+    }
     clustering_feature_normalize = _normalize_optional_scaler_type(
         clustering_feature_normalize,
         setting_name="clustering_feature_normalize",
@@ -1831,7 +2032,73 @@ def run_experiment(
         window_sizes=window_sizes,
         n_clusters_list=n_clusters_list,
         clustering_algorithm=clustering_algorithm,
+        manual_clustering_method=manual_clustering_method,
+        cluster_assignment_method=cluster_assignment_method,
+        cluster_assignment_neighbors=cluster_assignment_neighbors,
+        training_parameter_values=training_parameter_values,
     )
+    if not configurations:
+        raise ValueError(
+            "The sweep must contain at least one window size and one cluster count."
+        )
+    configuration_names = [config.name for config in configurations]
+    duplicate_configuration_names = sorted(
+        {
+            name
+            for name in configuration_names
+            if configuration_names.count(name) > 1
+        }
+    )
+    if duplicate_configuration_names:
+        raise ValueError(
+            "Sweep configurations must have unique output names. Remove duplicate "
+            "window, cluster, sigma, or training-parameter values. Collisions: "
+            + ", ".join(duplicate_configuration_names)
+        )
+
+    run_parameter_rows = []
+    for config in configurations:
+        variant_values = dict(config.variant_parameters)
+        active_training_parameters = {
+            parameter: variant_values.get(parameter, values[0])
+            for parameter, values in training_parameter_values.items()
+        }
+        run_parameter_rows.append(
+            {
+                "window_size": config.window_size,
+                "n_clusters": config.n_clusters,
+                "algorithm": config.algorithm,
+                "sigma": config.sigma,
+                "manual_clustering_method": config.manual_clustering_method,
+                "cluster_assignment_method": config.cluster_assignment_method,
+                "cluster_assignment_neighbors": config.cluster_assignment_neighbors,
+                "pca_variance_threshold": variance_threshold,
+                "pca_for_clustering_only": pca_for_clustering_only,
+                "forecast_horizon": forecast_horizon,
+                "use_all_features": use_all_features,
+                "clustering_feature_normalize": clustering_feature_normalize,
+                "clustering_precipitation_normalize": (
+                    clustering_precipitation_normalize
+                ),
+                "lstm_feature_normalize": lstm_feature_normalize,
+                "lstm_precipitation_normalize": lstm_precipitation_normalize,
+                **active_training_parameters,
+                "early_stopping": early_stopping,
+                "early_stopping_metric": early_stopping_metric,
+                "lstm_loss_function": lstm_loss_function,
+                "loss_alpha": loss_alpha,
+                "train_ratio": train_ratio,
+                "val_ratio": val_ratio,
+                "random_state": random_state,
+                "test_all_models": test_all_models,
+            }
+        )
+    resolved_pivot_parameter = None
+    if comparative_run:
+        resolved_pivot_parameter = validate_comparative_pivot(
+            run_parameter_rows,
+            pivot_parameter,
+        )
     print_section(
         "CLUSTER-ONLY SWEEP" if run_only_cluster else "LSTM CLUSTER SWEEP",
         show_console_info,
@@ -1842,6 +2109,21 @@ def run_experiment(
         "Clustering normalization: "
         f"features={clustering_feature_normalize or 'none'}, "
         f"precipitation={clustering_precipitation_normalize or 'none'}",
+        show_console_info,
+    )
+    if clustering_algorithm == "manual":
+        print_info(
+            f"Manual clustering method: {manual_clustering_method}",
+            show_console_info,
+        )
+    assignment_detail = (
+        f", k={cluster_assignment_neighbors}"
+        if cluster_assignment_method == "knn"
+        else ""
+    )
+    print_info(
+        f"Held-out cluster assignment: {cluster_assignment_method}"
+        f"{assignment_detail}",
         show_console_info,
     )
     if run_only_cluster:
@@ -1925,6 +2207,9 @@ def run_experiment(
             window_sizes=window_sizes,
             n_clusters_list=n_clusters_list,
             clustering_algorithm=clustering_algorithm,
+            manual_clustering_method=manual_clustering_method,
+            cluster_assignment_method=cluster_assignment_method,
+            cluster_assignment_neighbors=cluster_assignment_neighbors,
             pca_variance_threshold=variance_threshold,
             pca_for_clustering_only=pca_for_clustering_only,
         )
@@ -1937,6 +2222,9 @@ def run_experiment(
             window_sizes=window_sizes,
             n_clusters_list=n_clusters_list,
             clustering_algorithm=clustering_algorithm,
+            manual_clustering_method=manual_clustering_method,
+            cluster_assignment_method=cluster_assignment_method,
+            cluster_assignment_neighbors=cluster_assignment_neighbors,
             pca_variance_threshold=variance_threshold,
             pca_for_clustering_only=pca_for_clustering_only,
             quantitative_metrics=quantitative_metrics,

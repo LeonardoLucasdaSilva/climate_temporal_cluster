@@ -106,6 +106,10 @@ N_CLUSTERS_LIST = [3, 4, 5]
 PCA_VARIANCE_THRESHOLD = 0.90  # None disables PCA
 PCA_FOR_CLUSTERING_ONLY = True
 CLUSTERING_ALGORITHM = "spectral"  # "kmeans", "spectral", or "manual"
+MANUAL_CLUSTERING_METHOD = "legacy"  # "legacy" or "rain_level"
+MANUAL_ZERO_TOLERANCE = 0.0  # Used only by legacy manual clustering
+CLUSTER_ASSIGNMENT_METHOD = "centroid"  # "centroid" or "knn"
+CLUSTER_ASSIGNMENT_NEIGHBORS = 5  # Used only by "knn"
 FORECAST_HORIZON = 1
 N_SIGMA_VALUES = 5
 TEST_ALL_MODELS = True
@@ -147,6 +151,7 @@ For each configuration, the experiment runs these stages:
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
    calculate training-cluster centroids, then assign validation and test
    windows to the nearest existing centroid.
+   then assign validation and test windows with `CLUSTER_ASSIGNMENT_METHOD`.
    With `PCA_FOR_CLUSTERING_ONLY = True`, clustering uses PCA coordinates while
    each LSTM receives the retained pre-PCA flattened window features.
 7. Create one precipitation target column per lead day from D+1 through the
@@ -370,11 +375,15 @@ Supported algorithms:
 - `spectral`: uses the local implementation in
   `src/methods/cluster/ng.py`
 
-The `methods.cluster.manual` module provides horizon-rain-guided clustering
-through the same `cluster_feature_matrix` dispatcher. Cluster `0` represents
-known zero-rain horizons, while known positive horizons are split into `k - 1`
-ordered groups from lower to heavier rain. Missing horizons are assigned to the
-nearest learned window-feature centroid.
+The `methods.cluster.manual` module provides two manual rules. `legacy` is the
+horizon-rain-guided behavior exposed through the same `cluster_feature_matrix`
+dispatcher: cluster `0` represents known zero-rain horizons, while known
+positive horizons are split into `k - 1` ordered groups. In the LSTM runner,
+`rain_level` instead averages raw `PRECIPITACAO_TOTAL` over all `J` input days
+of each training window, divides `[0, max(training window mean)]` into `k`
+equal-width intervals, and uses those intervals as training labels. Internal
+upper bounds are open; the overall maximum is included in the final cluster.
+Validation and test still use the configured held-out assignment method.
 
 ```python
 from methods.cluster.cluster_pipeline import cluster_feature_matrix
@@ -525,7 +534,8 @@ Each configuration folder contains:
   plot legends
 
 The `Configuration` section of `experiment_report.tex` and the compiled PDF
-record the run's PCA variance threshold, PCA mode (`disabled`, `clustering
+record the manual clustering method when applicable, cluster-assignment method,
+KNN neighbor count, PCA variance threshold, PCA mode (`disabled`, `clustering
 only`, or `clustering and LSTM`), selected covariate scaler, precipitation
 scaler, and LSTM target scale. Predictions are inverse-transformed to
 millimeters before metrics and plots.

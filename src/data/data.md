@@ -16,6 +16,8 @@ It is separate from the root `data/` directory, which stores raw INMET files.
 - `lstm_outputs.py`: writes experiment metrics, predictions, summaries,
   cross-cluster test model selection reports, and diagnostic plots, including
   chronological actual-versus-predicted and residual plots for each cluster.
+  Configuration and sweep summaries record the held-out cluster-assignment
+  method and, for KNN assignment, the configured neighbor count.
   The oracle transfer diagnostics compare the LSTM assigned by the test-window
   cluster with the post-hoc best LSTM for that same window, exporting routing
   summaries by assigned cluster and by assigned-to-oracle model pair.
