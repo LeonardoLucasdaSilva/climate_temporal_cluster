@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from itertools import product
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -13,8 +14,15 @@ import pandas as pd
 import seaborn as sns
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
+from sklearn.neighbors import KNeighborsClassifier
 
 from data.load_data import load_station_daily_data
+from data.lstm_comparative_outputs import (
+    ComparativeRunData,
+    build_comparative_run_data,
+    save_comparative_outputs,
+    validate_comparative_pivot,
+)
 from data.lstm_outputs import (
     save_cluster_only_outputs,
     save_cluster_sweep_outputs,
@@ -22,7 +30,10 @@ from data.lstm_outputs import (
     save_sweep_outputs,
 )
 from evaluation.metrics import calculate_regression_metrics
-from methods.cluster.manual import ManualRainClustering
+from methods.cluster.manual import (
+    ManualRainClustering,
+    normalize_manual_clustering_method,
+)
 from methods.cluster.ng import spectral_clustering
 from methods.cluster.cluster_pipeline import (
     KMEANS_N_INIT,
@@ -62,13 +73,26 @@ class ExperimentConfig:
     n_clusters: int
     algorithm: str
     sigma: float | None
+    manual_clustering_method: str = "legacy"
+    cluster_assignment_method: str = "centroid"
+    cluster_assignment_neighbors: int = 5
+    variant_parameters: tuple[tuple[str, int | float], ...] = ()
 
     @property
     def name(self) -> str:
-        sigma_part = "sigma_na" if self.sigma is None else f"sigma_{self.sigma:g}"
+        sigma_part = (
+            "sigma_na"
+            if self.sigma is None
+            else f"sigma_{_variant_value_slug(self.sigma)}"
+        )
+        variant_part = "".join(
+            f"_{_variant_parameter_slug(parameter)}_{_variant_value_slug(value)}"
+            for parameter, value in self.variant_parameters
+        )
         return (
             f"{self.state}_{self.station_id}_w{self.window_size:02d}_"
             f"k{self.n_clusters:02d}_{self.algorithm}_{sigma_part}"
+            f"{variant_part}"
         ).replace(".", "p")
 
 
@@ -114,6 +138,7 @@ class WindowSplitData:
     all_targets: np.ndarray
     all_current_precipitation: np.ndarray
     all_cluster_labels: np.ndarray
+    train_target_dates_by_lead_day: np.ndarray
     test_targets_by_lead_day: np.ndarray
     test_target_dates_by_lead_day: np.ndarray
     target_scaler: FeatureScaler | None
@@ -166,8 +191,10 @@ SUPPORTED_LSTM_LOSS_FUNCTIONS = (
     "mean_absolute_error",
     "mae",
     "huber",
+    "weighted_mse_loss",
     "quantile_weighted_mse",
 )
+SUPPORTED_EARLY_STOPPING_METRICS = ("loss", "mse", "mae", "r2")
 
 
 def _mapping_from_config(value: object) -> Mapping[str, object]:

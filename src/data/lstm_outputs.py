@@ -34,6 +34,9 @@ class ExperimentConfigLike(Protocol):
     n_clusters: int
     algorithm: str
     sigma: float | None
+    manual_clustering_method: str
+    cluster_assignment_method: str
+    cluster_assignment_neighbors: int
     name: str
 
 
@@ -92,23 +95,69 @@ def save_cluster_precipitation_histograms(
     c_test: np.ndarray,
     output_dir: Path,
 ) -> None:
-    """Save one actual-precipitation histogram per cluster."""
+    """Save actual-precipitation histograms as an overview plus per-cluster plots."""
     hist_dir = output_dir / "cluster_precipitation_histograms"
     hist_dir.mkdir(exist_ok=True)
+    individual_dir = hist_dir / "individual"
+    individual_dir.mkdir(exist_ok=True)
+    for stale_path in hist_dir.glob("cluster_*_precipitation_histogram.png"):
+        stale_path.unlink()
+    for stale_path in individual_dir.glob("cluster_*_precipitation_histogram.png"):
+        stale_path.unlink()
 
-    for cluster_id in sorted(np.unique(c_test)):
+    cluster_ids = sorted(np.unique(c_test))
+    if not cluster_ids:
+        return
+
+    bin_edges = precipitation_bin_edges(y_test)
+    n_clusters = len(cluster_ids)
+    n_cols = min(3, n_clusters)
+    n_rows = int(np.ceil(n_clusters / n_cols))
+    overview_fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(5.2 * n_cols, 3.8 * n_rows),
+        squeeze=False,
+    )
+
+    for ax, cluster_id in zip(axes.ravel(), cluster_ids):
         mask = c_test == cluster_id
+        ax.hist(
+            y_test[mask],
+            bins=bin_edges,
+            color="#4C78A8",
+            edgecolor="black",
+            alpha=0.8,
+        )
+        ax.set_title(f"Cluster {int(cluster_id)}")
+        ax.set_xlabel("Precipitation (mm)")
+        ax.set_ylabel("Number of occurrences")
+        ax.grid(True, alpha=0.3, axis="y")
+
         fig, ax = plt.subplots(figsize=(8, 5))
-        ax.hist(y_test[mask], bins=25, color="#4C78A8", edgecolor="black", alpha=0.8)
+        ax.hist(
+            y_test[mask],
+            bins=bin_edges,
+            color="#4C78A8",
+            edgecolor="black",
+            alpha=0.8,
+        )
         ax.set_title(f"Cluster {int(cluster_id)}: Precipitation Occurrences")
         ax.set_xlabel("Precipitation (mm)")
         ax.set_ylabel("Number of occurrences")
         ax.grid(True, alpha=0.3, axis="y")
         fig.tight_layout()
         fig.savefig(
-            hist_dir / f"cluster_{int(cluster_id)}_precipitation_histogram.png",
+            individual_dir / f"cluster_{int(cluster_id)}_precipitation_histogram.png",
         )
         plt.close(fig)
+
+    for ax in axes.ravel()[n_clusters:]:
+        ax.axis("off")
+    overview_fig.suptitle("Precipitation occurrences by cluster", y=1.0)
+    overview_fig.tight_layout()
+    overview_fig.savefig(hist_dir / "all_clusters_precipitation_histograms.png")
+    plt.close(overview_fig)
 
 
 def save_input_precipitation_assignments(
@@ -645,8 +694,9 @@ def save_cluster_prediction_histograms(
     y_pred_test: np.ndarray,
     c_test: np.ndarray,
     output_dir: Path,
+    dataset_label: str = "Test",
 ) -> None:
-    """Save actual, predicted, and residual histograms for each test cluster."""
+    """Save actual, predicted, and residual histograms for each cluster."""
     hist_dir = output_dir / "cluster_prediction_histograms"
     hist_dir.mkdir(exist_ok=True)
 
@@ -654,18 +704,19 @@ def save_cluster_prediction_histograms(
         mask = c_test == cluster_id
         fig, axes = plt.subplots(1, 3, figsize=(15, 4))
         residuals = y_test[mask] - y_pred_test[mask]
+        title_prefix = "" if dataset_label == "Test" else f"{dataset_label} "
 
         axes[0].hist(y_test[mask], bins=25, color="#4C78A8", alpha=0.8)
-        axes[0].set_title(f"Cluster {cluster_id}: Actual")
+        axes[0].set_title(f"Cluster {cluster_id}: {title_prefix}Actual")
         axes[0].set_xlabel("Precipitation (mm)")
 
         axes[1].hist(y_pred_test[mask], bins=25, color="#F58518", alpha=0.8)
-        axes[1].set_title(f"Cluster {cluster_id}: Predicted")
+        axes[1].set_title(f"Cluster {cluster_id}: {title_prefix}Predicted")
         axes[1].set_xlabel("Precipitation (mm)")
 
         axes[2].hist(residuals, bins=25, color="#54A24B", alpha=0.8)
         axes[2].axvline(0, color="black", linestyle="--", linewidth=1)
-        axes[2].set_title(f"Cluster {cluster_id}: Residual")
+        axes[2].set_title(f"Cluster {cluster_id}: {title_prefix}Residual")
         axes[2].set_xlabel("Actual - predicted (mm)")
 
         for ax in axes:
@@ -699,13 +750,14 @@ def save_cluster_prediction_scatters(
     y_pred_test: np.ndarray,
     c_test: np.ndarray,
     output_dir: Path,
+    dataset_label: str = "Test",
 ) -> None:
-    """Save test actual-versus-predicted scatter plots for each model cluster."""
+    """Save actual-versus-predicted scatter plots for each model cluster."""
     y_test = np.asarray(y_test, dtype=float)
     y_pred_test = np.asarray(y_pred_test, dtype=float)
     c_test = np.asarray(c_test)
     if len({len(y_test), len(y_pred_test), len(c_test)}) != 1:
-        raise ValueError("Test actual, predicted, and cluster labels must align.")
+        raise ValueError("Actual, predicted, and cluster labels must align.")
 
     plot_dir = output_dir / "cluster_prediction_scatter"
     plot_dir.mkdir(exist_ok=True)
@@ -735,7 +787,7 @@ def save_cluster_prediction_scatters(
             color="#D62728",
             alpha=0.85,
             linewidths=1.4,
-            label=f"Test (n={len(cluster_actual)})",
+            label=f"{dataset_label} (n={len(cluster_actual)})",
         )
         ax.plot(
             [min_value, max_value],
@@ -748,7 +800,9 @@ def save_cluster_prediction_scatters(
         ax.set_xlim(min_value, max_value)
         ax.set_ylim(min_value, max_value)
         ax.set_aspect("equal", adjustable="box")
-        ax.set_title(f"Cluster {int(cluster_id)}: Test Actual vs Predicted")
+        ax.set_title(
+            f"Cluster {int(cluster_id)}: {dataset_label} Actual vs Predicted"
+        )
         ax.set_xlabel("Actual precipitation (mm)")
         ax.set_ylabel("Predicted precipitation (mm)")
         ax.grid(True, alpha=0.3)
@@ -790,15 +844,16 @@ def save_cluster_prediction_timeseries(
     output_dir: Path,
     test_dates: np.ndarray | None = None,
     max_gap: int = 10,
+    dataset_label: str = "Test",
 ) -> None:
-    """Save actual, predicted, and residual time series for each test cluster."""
+    """Save actual, predicted, and residual time series for each cluster."""
     y_test = np.asarray(y_test, dtype=float)
     y_pred_test = np.asarray(y_pred_test, dtype=float)
     c_test = np.asarray(c_test)
     test_indices = np.asarray(test_indices, dtype=int)
     lengths = {len(y_test), len(y_pred_test), len(c_test), len(test_indices)}
     if len(lengths) != 1:
-        raise ValueError("Test values, labels, predictions, and indices must align.")
+        raise ValueError("Values, labels, predictions, and indices must align.")
     date_labels = _prediction_timeseries_date_labels(
         test_dates,
         n_rows=len(y_test),
@@ -863,7 +918,7 @@ def save_cluster_prediction_timeseries(
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
         axes[0].set_title(
-            f"Cluster {int(cluster_id)} Test Performance | "
+            f"Cluster {int(cluster_id)} {dataset_label} Performance | "
             f"n={len(actual)} | RMSE={metrics['RMSE']:.3f} | "
             f"MAE={metrics['MAE']:.3f} | R2={metrics['R2']:.3f}"
         )
@@ -913,7 +968,8 @@ def save_cluster_prediction_timeseries(
             axes[1].set_xticks(positions[tick_offsets])
             axes[1].set_xticklabels(original_indices[tick_offsets])
             axes[1].set_xlabel(
-                "Compressed test timeline (labels show original window index)"
+                f"Compressed {dataset_label.lower()} timeline "
+                "(labels show original window index)"
             )
             compressed_count = int(compressed_intervals.sum())
             if compressed_count:
@@ -1379,8 +1435,9 @@ def save_prediction_timeseries_splits(
     n_splits: int = 4,
     forecast_horizon: int | None = None,
     test_dates_by_lead_day: np.ndarray | None = None,
+    dataset_label: str = "Test",
 ) -> None:
-    """Save prediction time-series splits for each forecast lead day."""
+    """Save sequential prediction plots for each forecast lead day."""
     plot_dir = output_dir / "prediction_timeseries_splits"
     plot_dir.mkdir(exist_ok=True)
 
@@ -1449,7 +1506,9 @@ def save_prediction_timeseries_splits(
                     transform=ax.transAxes,
                 )
             ax.set_title(
-                f"D+{lead_day}: Predictions vs Actual - "
+                f"D+{lead_day}: "
+                f"{'' if dataset_label == 'Test' else dataset_label + ' '}"
+                "Predictions vs Actual - "
                 f"Split {split_index} of {n_splits}"
             )
             if date_labels_by_lead_day is not None:
@@ -1458,7 +1517,7 @@ def save_prediction_timeseries_splits(
                 ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m/%Y"))
                 fig.autofmt_xdate(rotation=30, ha="right")
             else:
-                ax.set_xlabel("Test Sample Index")
+                ax.set_xlabel(f"{dataset_label} Sample Index")
             ax.set_ylabel("Precipitation (mm)")
             if split_indices.size > 0:
                 ax.legend()
@@ -1627,6 +1686,122 @@ def save_visualizations(
         y_pred_test,
         c_test,
         output_dir,
+    )
+
+
+def save_train_performance_visualizations(
+    y_train: np.ndarray,
+    y_pred_train: np.ndarray,
+    c_train: np.ndarray,
+    train_indices: np.ndarray,
+    train_targets_by_lead_day: np.ndarray,
+    y_pred_train_by_lead_day: np.ndarray,
+    output_dir: Path,
+    forecast_horizon: int,
+    train_target_dates_by_lead_day: np.ndarray | None = None,
+) -> None:
+    """Save train actual-versus-predicted plots under train_performance/."""
+    y_train = np.asarray(y_train, dtype=float)
+    y_pred_train = np.asarray(y_pred_train, dtype=float)
+    c_train = np.asarray(c_train)
+    train_indices = np.asarray(train_indices, dtype=int)
+    targets_by_lead_day = np.asarray(train_targets_by_lead_day, dtype=float)
+    if targets_by_lead_day.ndim == 1:
+        targets_by_lead_day = targets_by_lead_day.reshape(-1, 1)
+    if targets_by_lead_day.ndim != 2:
+        raise ValueError("Training targets by lead day must be two-dimensional.")
+    if targets_by_lead_day.shape[1] != int(forecast_horizon):
+        raise ValueError(
+            "Training target lead-day columns must match forecast_horizon."
+        )
+    lengths = {
+        len(y_train),
+        len(y_pred_train),
+        len(c_train),
+        len(train_indices),
+        len(targets_by_lead_day),
+    }
+    if len(lengths) != 1:
+        raise ValueError("Training values, predictions, labels, and indices must align.")
+
+    predictions_by_lead_day, _ = _lead_day_prediction_matrix(
+        y_pred_train,
+        y_pred_train_by_lead_day,
+        int(targets_by_lead_day.shape[1]),
+        n_rows=len(targets_by_lead_day),
+    )
+    date_labels_by_lead_day = _prediction_timeseries_date_labels(
+        train_target_dates_by_lead_day,
+        n_rows=len(targets_by_lead_day),
+        n_leads=int(targets_by_lead_day.shape[1]),
+    )
+
+    train_output_dir = output_dir / "train_performance"
+    train_output_dir.mkdir(parents=True, exist_ok=True)
+    prediction_rows = pd.DataFrame(
+        {
+            "window_index": train_indices,
+            "cluster": c_train.astype(int),
+            "actual": y_train,
+            "predicted": y_pred_train,
+            "residual": y_train - y_pred_train,
+        }
+    )
+    for lead_offset in range(targets_by_lead_day.shape[1]):
+        lead_day = lead_offset + 1
+        prediction_rows[f"actual_lead_day_{lead_day}"] = (
+            targets_by_lead_day[:, lead_offset]
+        )
+        prediction_rows[f"predicted_lead_day_{lead_day}"] = (
+            predictions_by_lead_day[:, lead_offset]
+        )
+        prediction_rows[f"residual_lead_day_{lead_day}"] = (
+            targets_by_lead_day[:, lead_offset]
+            - predictions_by_lead_day[:, lead_offset]
+        )
+        if date_labels_by_lead_day is not None:
+            prediction_rows[f"target_date_lead_day_{lead_day}"] = (
+                date_labels_by_lead_day[:, lead_offset]
+            )
+    prediction_rows.sort_values("window_index").to_csv(
+        train_output_dir / "train_predictions.csv",
+        index=False,
+    )
+
+    save_prediction_timeseries_splits(
+        targets_by_lead_day,
+        predictions_by_lead_day,
+        train_output_dir,
+        forecast_horizon=forecast_horizon,
+        test_dates_by_lead_day=date_labels_by_lead_day,
+        dataset_label="Training",
+    )
+    save_cluster_prediction_timeseries(
+        y_train,
+        y_pred_train,
+        c_train,
+        train_indices,
+        train_output_dir,
+        test_dates=(
+            date_labels_by_lead_day[:, -1]
+            if date_labels_by_lead_day is not None
+            else None
+        ),
+        dataset_label="Training",
+    )
+    save_cluster_prediction_histograms(
+        y_train,
+        y_pred_train,
+        c_train,
+        train_output_dir,
+        dataset_label="Training",
+    )
+    save_cluster_prediction_scatters(
+        y_train,
+        y_pred_train,
+        c_train,
+        train_output_dir,
+        dataset_label="Training",
     )
 
 
@@ -2235,6 +2410,18 @@ def save_config_summary(
         f.write(f"Forecast horizon: +{forecast_horizon} day(s)\n")
         f.write(f"Number of clusters: {config.n_clusters}\n")
         f.write(f"Clustering algorithm: {config.algorithm}\n")
+        if config.algorithm == "manual":
+            f.write(
+                "Manual clustering method: "
+                f"{getattr(config, 'manual_clustering_method', 'legacy')}\n"
+            )
+        assignment_method = getattr(config, "cluster_assignment_method", "centroid")
+        f.write(f"Cluster assignment method: {assignment_method}\n")
+        if assignment_method == "knn":
+            f.write(
+                "Cluster assignment neighbors: "
+                f"{getattr(config, 'cluster_assignment_neighbors', 5)}\n"
+            )
         f.write(f"Sigma: {config.sigma if config.sigma is not None else 'not used'}\n")
         f.write(
             f"PCA variance threshold: {pca_variance_threshold:.2f}\n"
@@ -2409,6 +2596,18 @@ def save_cluster_only_outputs(
         f.write(f"Window size: {config.window_size}\n")
         f.write(f"Number of clusters: {config.n_clusters}\n")
         f.write(f"Clustering algorithm: {config.algorithm}\n")
+        if config.algorithm == "manual":
+            f.write(
+                "Manual clustering method: "
+                f"{getattr(config, 'manual_clustering_method', 'legacy')}\n"
+            )
+        assignment_method = getattr(config, "cluster_assignment_method", "centroid")
+        f.write(f"Cluster assignment method: {assignment_method}\n")
+        if assignment_method == "knn":
+            f.write(
+                "Cluster assignment neighbors: "
+                f"{getattr(config, 'cluster_assignment_neighbors', 5)}\n"
+            )
         f.write(
             f"Sigma: {config.sigma if config.sigma is not None else 'not used'}\n"
         )
@@ -2430,6 +2629,21 @@ def save_cluster_only_outputs(
         "window_size": config.window_size,
         "n_clusters": config.n_clusters,
         "algorithm": config.algorithm,
+        "manual_clustering_method": (
+            getattr(config, "manual_clustering_method", "legacy")
+            if config.algorithm == "manual"
+            else None
+        ),
+        "cluster_assignment_method": getattr(
+            config,
+            "cluster_assignment_method",
+            "centroid",
+        ),
+        "cluster_assignment_neighbors": getattr(
+            config,
+            "cluster_assignment_neighbors",
+            5,
+        ),
         "sigma": config.sigma,
         "pca_variance_threshold": pca_variance_threshold,
         "pca_for_clustering_only": pca_for_clustering_only,
@@ -2480,6 +2694,10 @@ def save_run_outputs(
     test_target_dates_by_lead_day: np.ndarray | None = None,
     cluster_feature_splits: Mapping[str, tuple[np.ndarray, np.ndarray]] | None = None,
     batch_size: int | None = None,
+    train_targets_by_lead_day: np.ndarray | None = None,
+    y_pred_train_by_lead_day: np.ndarray | None = None,
+    train_target_dates_by_lead_day: np.ndarray | None = None,
+    train_cluster_labels: np.ndarray | None = None,
 ) -> dict[str, float | int | str | None]:
     """Save all artifacts for one run and return one sweep-level result row."""
     train_metrics = calculate_regression_metrics(y_train, y_pred_train)
@@ -2674,6 +2892,26 @@ def save_run_outputs(
         test_target_dates_by_lead_day=test_target_dates_by_lead_day,
         cluster_feature_splits=cluster_feature_splits,
     )
+    if train_cluster_labels is None and cluster_feature_splits is not None:
+        training_split = cluster_feature_splits.get("Training")
+        if training_split is not None:
+            train_cluster_labels = training_split[1]
+    if (
+        train_targets_by_lead_day is not None
+        and y_pred_train_by_lead_day is not None
+        and train_cluster_labels is not None
+    ):
+        save_train_performance_visualizations(
+            y_train,
+            y_pred_train,
+            train_cluster_labels,
+            train_indices,
+            train_targets_by_lead_day,
+            y_pred_train_by_lead_day,
+            output_dir,
+            forecast_horizon=forecast_horizon,
+            train_target_dates_by_lead_day=train_target_dates_by_lead_day,
+        )
     if test_model_selection is not None:
         save_oracle_model_visualizations(
             test_model_selection,
@@ -2702,6 +2940,21 @@ def save_run_outputs(
         "window_size": config.window_size,
         "n_clusters": config.n_clusters,
         "algorithm": config.algorithm,
+        "manual_clustering_method": (
+            getattr(config, "manual_clustering_method", "legacy")
+            if config.algorithm == "manual"
+            else None
+        ),
+        "cluster_assignment_method": getattr(
+            config,
+            "cluster_assignment_method",
+            "centroid",
+        ),
+        "cluster_assignment_neighbors": getattr(
+            config,
+            "cluster_assignment_neighbors",
+            5,
+        ),
         "sigma": config.sigma,
         "pca_variance_threshold": pca_variance_threshold,
         "pca_for_clustering_only": pca_for_clustering_only,
@@ -2895,6 +3148,9 @@ def save_sweep_outputs(
     quantitative_metrics: list[str],
     pca_variance_threshold: float | None = None,
     pca_for_clustering_only: bool = False,
+    cluster_assignment_method: str = "centroid",
+    cluster_assignment_neighbors: int = 5,
+    manual_clustering_method: str = "legacy",
 ) -> None:
     """Save sweep-level CSV, text summary, and LaTeX table."""
     results_df = pd.DataFrame(results).sort_values(["test_rmse", "test_mae"])
@@ -2915,6 +3171,13 @@ def save_sweep_outputs(
         f.write(f"Window sizes: {window_sizes}\n")
         f.write(f"Cluster counts: {n_clusters_list}\n")
         f.write(f"Algorithm: {clustering_algorithm}\n")
+        if clustering_algorithm == "manual":
+            f.write(f"Manual clustering method: {manual_clustering_method}\n")
+        f.write(f"Cluster assignment method: {cluster_assignment_method}\n")
+        if cluster_assignment_method == "knn":
+            f.write(
+                f"Cluster assignment neighbors: {cluster_assignment_neighbors}\n"
+            )
         f.write(
             f"PCA variance threshold: {pca_variance_threshold:.2f}\n"
             if pca_variance_threshold is not None
@@ -2940,6 +3203,9 @@ def save_cluster_sweep_outputs(
     clustering_algorithm: str,
     pca_variance_threshold: float | None = None,
     pca_for_clustering_only: bool = False,
+    cluster_assignment_method: str = "centroid",
+    cluster_assignment_neighbors: int = 5,
+    manual_clustering_method: str = "legacy",
 ) -> None:
     """Save sweep-level artifacts for a clustering-only experiment."""
     results_df = pd.DataFrame(results)
@@ -2961,6 +3227,13 @@ def save_cluster_sweep_outputs(
         f.write(f"Window sizes: {window_sizes}\n")
         f.write(f"Cluster counts: {n_clusters_list}\n")
         f.write(f"Algorithm: {clustering_algorithm}\n")
+        if clustering_algorithm == "manual":
+            f.write(f"Manual clustering method: {manual_clustering_method}\n")
+        f.write(f"Cluster assignment method: {cluster_assignment_method}\n")
+        if cluster_assignment_method == "knn":
+            f.write(
+                f"Cluster assignment neighbors: {cluster_assignment_neighbors}\n"
+            )
         f.write(
             f"PCA variance threshold: {pca_variance_threshold}\n"
             f"PCA mode: {pca_mode_label(pca_variance_threshold, True)}\n\n"

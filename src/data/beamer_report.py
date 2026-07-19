@@ -10,6 +10,8 @@ import re
 import subprocess
 from typing import Sequence
 
+from config import miktex_compile_environment
+
 
 IMAGE_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
 EXCLUDED_IMAGE_NAMES = {"beamer.pdf", "experiment_report.pdf"}
@@ -214,6 +216,7 @@ def compile_beamer_pdf(tex_path: Path, runs: int = 2) -> Path:
 
     log_path = tex_path.with_name(f"{tex_path.stem}_compile.log")
     combined_output: list[str] = []
+    tex_env = miktex_compile_environment()
     for run_index in range(1, runs + 1):
         result = subprocess.run(
             [
@@ -226,6 +229,7 @@ def compile_beamer_pdf(tex_path: Path, runs: int = 2) -> Path:
             text=True,
             capture_output=True,
             check=False,
+            env=tex_env,
         )
         combined_output.extend(
             [

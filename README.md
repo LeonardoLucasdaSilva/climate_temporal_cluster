@@ -58,6 +58,8 @@ climate_temporal_cluster/
 |   |   |-- load_data.py           # INMET CSV loading
 |   |   |-- clean_data.py          # Data cleaning helpers
 |   |   |-- arma_outputs.py        # ARMA baseline output writers
+|   |   |-- lstm_outputs.py        # Per-configuration LSTM output writers
+|   |   |-- lstm_comparative_outputs.py # Sweep comparison writer
 |   |   `-- visualize_data.py      # Starter visualization module
 |   |-- methods/
 |   |   |-- arma/
@@ -112,8 +114,12 @@ CLUSTER_ASSIGNMENT_METHOD = "centroid"  # "centroid" or "knn"
 CLUSTER_ASSIGNMENT_NEIGHBORS = 5  # Used only by "knn"
 FORECAST_HORIZON = 1
 N_SIGMA_VALUES = 5
+LEARNING_RATE: float | list[float] = 0.001
+COMPARATIVE_RUN = True
+PIVOT_PARAMETER = "window_size"  # aliases include "K" and "lr"
 TEST_ALL_MODELS = True
-RUN_ONLY_CLUSTER = True  # False enables the complete LSTM+clustering pipeline
+RUN_ONLY_CLUSTER = False  # Comparative plots require the complete LSTM pipeline
+EARLY_STOPPING_METRIC = "loss"  # "loss", "mse", "mae", or "r2"
 SHOW_CONSOLE_INFO = True
 ```
 
@@ -137,6 +143,40 @@ held-out validation/test assignment. It writes cluster assignments, silhouette
 and distribution diagnostics, and a cluster-only report; LSTM preprocessing,
 training, predictions, and their output folders are skipped.
 
+### Comparative sweep analysis
+
+Set `COMPARATIVE_RUN = True` to create sweep-level plots after every test has
+finished. `PIVOT_PARAMETER` selects the varied parameter shown on metric axes;
+it accepts parameter fields and convenient aliases such as `"K"` for
+`n_clusters` and `"lr"` for `learning_rate`. The pivot must have at least two
+distinct values when the sweep contains multiple tests. The grid varies
+`WINDOW_SIZES`, `N_CLUSTERS_LIST`, and spectral sigma candidates. These numeric
+training settings also accept either a scalar or a list: `LSTM_UNITS`,
+`LSTM_UNITS_2`, `DROPOUT_RATE`, `LEARNING_RATE`, `WEIGHT_DECAY`, `EPOCHS`,
+`BATCH_SIZE`, and `PATIENCE`. `EARLY_STOPPING_METRIC` chooses the validation
+metric used by early stopping: `"loss"`, `"mse"`, and `"mae"` are minimized,
+while `"r2"` is maximized. Multiple lists form a Cartesian product. To compare
+learning rates, configure:
+
+```python
+LEARNING_RATE = [0.0001, 0.0005, 0.001]
+PIVOT_PARAMETER = "learning_rate"
+```
+
+Keep the other sweep dimensions fixed when the goal is to attribute changes to
+one hyperparameter. Every varied numeric training setting receives a stable
+suffix in each configuration folder name. `COMPARATIVE_RUN` cannot be combined with
+`RUN_ONLY_CLUSTER = True`, because predictions and LSTM histories do not exist
+in cluster-only mode.
+
+Comparative time series and scatter plots use same-cluster predictions and the
+intersection of target dates shared by all tests. They never align different
+window sizes by `window_index`. Metrics are recalculated on that common date
+interval, and training histories are aggregated across cluster models using
+each cluster's training-sample count as its weight. Each aggregate curve stops
+at the final epoch shared by every contributing cluster, so early stopping does
+not change the contributing cluster set partway through a line.
+
 For each configuration, the experiment runs these stages:
 
 1. Load daily station data.
@@ -149,9 +189,13 @@ For each configuration, the experiment runs these stages:
    and optional clustering PCA on training rows/windows only, then transform
    validation and test with the training transforms.
 6. Cluster training windows with K-means, spectral, or manual rain clustering,
-   calculate training-cluster centroids, then assign validation and test
-   windows to the nearest existing centroid.
    then assign validation and test windows with `CLUSTER_ASSIGNMENT_METHOD`.
+   For manual runs, `MANUAL_CLUSTERING_METHOD="legacy"` preserves the
+   horizon-target grouping, while `"rain_level"` bins the raw mean input-window
+   precipitation into `K` equal-width training intervals.
+   `"centroid"` uses the nearest training-cluster centroid, preserving the
+   previous behavior. `"knn"` uses a majority vote among the
+   `CLUSTER_ASSIGNMENT_NEIGHBORS` nearest labeled training windows.
    With `PCA_FOR_CLUSTERING_ONLY = True`, clustering uses PCA coordinates while
    each LSTM receives the retained pre-PCA flattened window features.
 7. Create one precipitation target column per lead day from D+1 through the
@@ -169,7 +213,11 @@ For each configuration, the experiment runs these stages:
    selection. The all-model path is an oracle diagnostic: it compares the LSTM
    selected by the assigned test cluster with the best LSTM for that same
    window after observing the target, then writes routing summaries and plots.
-11. Save metrics, reports, predictions, plots, and LaTeX tables.
+11. Save metrics, reports, predictions, plots, and LaTeX tables. Each normal
+    LSTM configuration also writes `train_performance/`, containing the
+    per-cluster training histograms, scatter plots, chronological time series,
+    and `prediction_timeseries_splits/lead_day_XX/` plots for every forecast
+    horizon. Cluster-only runs do not create this folder.
 
 ## ARMA Baseline
 
@@ -225,6 +273,18 @@ df = load_station_daily_data(
 The loader returns a daily dataframe with `Data` plus numeric weather columns
 such as temperature, humidity, pressure, wind, radiation, and
 `PRECIPITACAO_TOTAL`.
+
+For exploratory plots without chronological train/validation/test splitting,
+edit `src/methods/lstm_cluster/data_science_run.py` and run:
+
+```powershell
+.\.venv\Scripts\python.exe src\methods\lstm_cluster\data_science_run.py
+```
+
+That runner uses the same station loader as `run_experiment.py`, saves
+histograms, time series, and pairwise scatter plots for the selected variables,
+and repeats the same plot families on normalized data when `SCALER_TYPE` is
+`"standard"` or `"minmax"`.
 
 Implementation:
 
@@ -444,7 +504,7 @@ For each cluster, the training loop:
 
 1. Selects train/validation/test samples assigned to that cluster.
 2. Builds an LSTM model with two LSTM layers, dropout, and dense layers.
-3. Trains with optional early stopping.
+3. Trains with optional early stopping, monitored by `EARLY_STOPPING_METRIC`.
 4. Writes train and validation predictions back into aggregate arrays.
 5. Evaluates test samples with their own cluster model, or with every trained
    cluster model when `TEST_ALL_MODELS = True`.
@@ -480,6 +540,18 @@ Sweep-level files:
 - `sweep_summary.txt`
 - `overleaf_table.txt`
 - `overleaf_cluster_metric_tables.txt`
+- `comparative_analysis/`, when `COMPARATIVE_RUN = True`
+
+The comparative folder contains one time-series and one scatter panel per lead
+day, `03_training_history_comparison.png`, one metric panel per lead day, and
+machine-readable `test_predictions_comparison.csv`,
+`aligned_test_predictions.csv`, `training_history_comparison.csv`,
+`comparative_metrics.csv`, `comparison_manifest.csv`, and
+`comparison_summary.txt`. The time-series panels show one real curve and one
+prediction curve per test; the scatter panels use shared axes and an identity
+line; the history panel compares cluster-weighted training and validation LOSS,
+MSE, MAE, and R2; and the metric panels compare MSE, RMSE, MAE, and R2 against
+`PIVOT_PARAMETER` on the common-date test interval.
 
 `sweep_summary.txt` records the PCA variance threshold and whether PCA was
 disabled, applied only to clustering, or applied to both clustering and LSTM
@@ -510,6 +582,10 @@ Each configuration folder contains:
   target dates from the source dataset on the x-axis, formatted as `dd/mm/YYYY`
 - cluster silhouette diagnostics under `cluster_diagnostics/`, including
   `08_silhouette_analysis.png` and `silhouette_scores.csv`
+- cluster precipitation histograms now use
+  `cluster_precipitation_histograms/all_clusters_precipitation_histograms.png`
+  for the combined subplot panel and
+  `cluster_precipitation_histograms/individual/` for the per-cluster files
 - `06_cluster_distribution.png` and
   `cluster_training_batch_statistics.csv` under `cluster_diagnostics/`, showing
   train/validation/test counts plus `n_train` and
@@ -611,20 +687,25 @@ CLUSTERING_FEATURE_NORMALIZE = "standard"
 CLUSTERING_PRECIPITATION_NORMALIZE = None
 LSTM_FEATURE_NORMALIZE = "standard"
 LSTM_PRECIPITATION_NORMALIZE = None  # None keeps PRECIPITACAO_TOTAL and targets in mm
-LSTM_LOSS_FUNCTION = "quantile_weighted_mse"
-LOSS_QUANTILES = [0.5, 0.75, 0.9, 0.95]
-LOSS_QUANTILE_WEIGHTS = "auto"
+LSTM_LOSS_FUNCTION = "weighted_mse_loss"
+LOSS_ALPHA = 1.0
 N_SIGMA_VALUES = 1
 EPOCHS = 2
+EARLY_STOPPING_METRIC = "loss"
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True
 ```
 
 Set `LSTM_LOSS_FUNCTION = "mean_squared_error"` to keep the standard MSE
-training objective. Set it to `"quantile_weighted_mse"` to weight each
-cluster-specific LSTM by precipitation quantile bins calculated from that
-cluster's own training rain targets across all lead days, in the active target
-scale. With
+training objective. The default `"weighted_mse_loss"` averages
+`(1 + LOSS_ALPHA * y_real) * |y_real - y_pred|^2`; `LOSS_ALPHA` must be finite
+and greater than zero. Keep the active target scale non-negative when using
+this loss. The default `LSTM_PRECIPITATION_NORMALIZE = None` satisfies that
+condition, while standardization can create negative targets and weights.
+
+Set the loss to `"quantile_weighted_mse"` to weight each cluster-specific LSTM
+by precipitation quantile bins calculated from that cluster's own training rain
+targets across all lead days, in the active target scale. With
 `LOSS_QUANTILE_WEIGHTS = "auto"`, rarer rain-intensity bins receive larger
 weights automatically.
 

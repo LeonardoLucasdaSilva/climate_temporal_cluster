@@ -95,15 +95,23 @@ Change experiment variables in `run_experiment.py`:
   held-out assignment, without LSTM preprocessing, training, prediction, or
   supervised-output folders
 - exported table metrics: `QUANTITATIVE_METRICS`
+- sweep comparison: `COMPARATIVE_RUN` enables the post-sweep comparative
+  analysis and `PIVOT_PARAMETER` selects the varied parameter used on metric
+  axes. Aliases include `K` for `n_clusters` and `lr` for `learning_rate`.
 - model hyperparameters: `LSTM_UNITS`, `LSTM_UNITS_2`, `DROPOUT_RATE`,
   `LEARNING_RATE`, `WEIGHT_DECAY`; the optimizer is AdamW and
-  `WEIGHT_DECAY` controls its decoupled parameter decay
-- LSTM loss: `LSTM_LOSS_FUNCTION`, `LOSS_QUANTILES`,
-  `LOSS_QUANTILE_WEIGHTS`. Use `"quantile_weighted_mse"` to calculate
+  `WEIGHT_DECAY` controls its decoupled parameter decay. Every numeric model or
+  training setting may be a scalar or a list; lists add their values to the
+  Cartesian configuration grid and append stable parameter suffixes to the
+  configuration folder names.
+- LSTM loss: `LSTM_LOSS_FUNCTION`, `LOSS_ALPHA`, `LOSS_QUANTILES`,
+  `LOSS_QUANTILE_WEIGHTS`. The default `"weighted_mse_loss"` minimizes the mean
+  of `(1 + LOSS_ALPHA * y_real) * |y_real - y_pred|^2`, where `LOSS_ALPHA`
+  must be finite and greater than zero. Use `"quantile_weighted_mse"` to calculate
   cluster-specific precipitation thresholds from training-target quantiles in
   the active target scale and weight rarer intensity bins automatically.
 - training settings: `EPOCHS`, `BATCH_SIZE`, `EARLY_STOPPING`, `PATIENCE`,
-  `VERBOSE_TRAINING`, `SHOW_CONSOLE_INFO`
+  `EARLY_STOPPING_METRIC`, `VERBOSE_TRAINING`, `SHOW_CONSOLE_INFO`
 - data split: `TRAIN_RATIO`, `VAL_RATIO`, `RANDOM_STATE`
 - output and plot styling settings: `OUTPUT_CONFIG`, with details in
   `config_output.yaml`
@@ -198,6 +206,48 @@ after the ordinary same-cluster prediction. The best model per sample and
 metric is chosen only for the extra oracle diagnostic; it never changes the
 primary test result.
 
+### Comparative runs
+
+With `COMPARATIVE_RUN = True`, the pipeline retains the ordinary same-cluster
+test predictions, their target dates, and the numeric Keras histories until all
+configurations finish. It then creates a comparison for `PIVOT_PARAMETER`.
+Canonical parameter fields are accepted directly, with aliases such as
+`window`/`window_size`, `K`/`n_clusters`, and `lr`/`learning_rate`. For a sweep
+with multiple tests, the selected pivot must contain at least two distinct
+non-null values; invalid or constant pivots fail before LSTM training begins.
+
+The numeric list-capable settings are `LSTM_UNITS`, `LSTM_UNITS_2`,
+`DROPOUT_RATE`, `LEARNING_RATE`, `WEIGHT_DECAY`, `EPOCHS`, `BATCH_SIZE`, and
+`PATIENCE`. Use a list to vary learning rate inside one sweep:
+
+```python
+LEARNING_RATE = [0.0001, 0.0005, 0.001]
+COMPARATIVE_RUN = True
+PIVOT_PARAMETER = "learning_rate"
+```
+
+For an interpretable hyperparameter comparison, keep all non-pivot grid
+dimensions at one value. `COMPARATIVE_RUN = True` is incompatible with
+`RUN_ONLY_CLUSTER = True` because cluster-only runs do not train models or
+produce histories and predictions.
+
+Different window sizes have different numbers of test windows, so their series
+are aligned by the intersection of source `Target Date` values. They are never
+joined by `window_index`. A duplicated or invalid date, an empty intersection,
+or conflicting real precipitation for the same date and lead day raises a
+clear error instead of producing a misleading plot. Comparison metrics are
+recalculated on the aligned dates. Per-configuration histories are weighted by
+the number of training samples in each cluster before their curves are
+compared and stop at the last epoch shared by all contributing clusters. This
+avoids changing the contributing cluster set when independently trained models
+stop early and avoids treating cluster identifiers as equivalent after K or
+clustering parameters change.
+
+Set `EARLY_STOPPING_METRIC` to `"loss"`, `"mse"`, `"mae"`, or `"r2"` to choose
+the validation metric used by Keras early stopping. Loss, MSE, and MAE are
+minimized; R2 is maximized. The default `"loss"` preserves the previous
+behavior.
+
 ## Outputs
 
 Each run creates a sweep folder under the current daily output folder, usually
@@ -212,9 +262,28 @@ The daily folder is controlled by `group_outputs_by_day` and
 
 The sweep folder contains summary CSV/text files and LaTeX tables. Each
 configuration subfolder contains run metrics, predictions, reports, and plots.
-Output writing is handled by `data.lstm_outputs`.
+Per-configuration output writing is handled by `data.lstm_outputs`; the
+optional sweep comparison is written by `data.lstm_comparative_outputs`.
 The sweep-level `sweep_summary.txt` records the PCA variance threshold and PCA
 mode (`disabled`, `clustering only`, or `clustering and LSTM`) for the run.
+
+When enabled, `comparative_analysis/` is created directly under the sweep
+folder. It contains:
+
+- `01_test_timeseries_comparison_lead_day_XX.png`: four chronological panels
+  with one real curve and one same-cluster prediction curve per test;
+- `02_test_scatter_comparison_lead_day_XX.png`: one shared-scale scatter facet
+  per test with the ideal identity line and aligned-date RMSE/R2;
+- `03_training_history_comparison.png`: cluster-weighted train and validation
+  LOSS, MSE, MAE, and R2 histories;
+- `04_test_metrics_vs_<pivot>_lead_day_XX.png`: common-date MSE, RMSE, MAE, and
+  R2 against the selected pivot;
+- `test_predictions_comparison.csv` and `aligned_test_predictions.csv`: full
+  and common-date prediction rows;
+- `training_history_comparison.csv`, `comparative_metrics.csv`, and
+  `comparison_manifest.csv`: numeric sources for the plots and traceability;
+- `comparison_summary.txt`: alignment policy, common date interval, and the
+  best test for each displayed metric and lead day.
 
 When `TEST_ALL_MODELS = True`, each configuration also includes an
 **Análise de transferência entre clusters**. It is explicitly separated from
@@ -270,8 +339,9 @@ scaler, and target scale for that run. Predictions are inverse-transformed to
 millimeters before metrics and plots. When all-model test selection is enabled,
 this report includes an `Análise de transferência entre clusters` section that
 labels the result as oracle-only and shows the routing matrix. If a local LaTeX
-compiler is available, the pipeline also writes `experiment_report.pdf`; if PDF
-compilation fails, `experiment_report_compile.log` is saved for troubleshooting.
+compiler is available, the pipeline also writes `experiment_report.pdf` using
+the shared MiKTeX state folder at `outputs/.miktex`; if PDF compilation fails,
+`experiment_report_compile.log` is saved for troubleshooting.
 
 Each configuration also groups generated images by purpose. General
 same-cluster prediction plots go under `prediction_overview_same_cluster/`,
@@ -296,6 +366,13 @@ remain in folders such as
 `cluster_prediction_scatter/`. The `cluster_prediction_timeseries/` plots use
 the final forecast-horizon target date on the x-axis, formatted as
 `dd/mm/YYYY`.
+Normal LSTM runs also create `train_performance/` inside each configuration.
+It mirrors `cluster_prediction_histograms/`, `cluster_prediction_timeseries/`,
+`cluster_prediction_scatter/`, and
+`prediction_timeseries_splits/lead_day_XX/` using training targets and
+same-cluster training predictions. The underlying final-horizon and per-lead
+values are exported to `train_performance/train_predictions.csv`. This folder
+is intentionally absent when `RUN_ONLY_CLUSTER = True`.
 The configuration root also contains `cluster_timeline.png`, an XY plot that
 shows the assigned cluster of every window in chronological split order:
 training, validation, and test.
