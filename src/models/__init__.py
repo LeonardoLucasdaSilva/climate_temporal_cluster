@@ -1,5 +1,13 @@
 """Model implementations."""
 
-from models.lstm import LSTMPrecipitationPredictor, prepare_sequences
+from models.lstm import (
+    LSTMPrecipitationPredictor,
+    prepare_sequences,
+    weighted_mse_loss,
+)
 
-__all__ = ["LSTMPrecipitationPredictor", "prepare_sequences"]
+__all__ = [
+    "LSTMPrecipitationPredictor",
+    "prepare_sequences",
+    "weighted_mse_loss",
+]

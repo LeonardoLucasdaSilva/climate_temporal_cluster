@@ -17,8 +17,22 @@ SUPPORTED_LOSS_FUNCTIONS = (
     "mean_absolute_error",
     "mae",
     "huber",
+    "weighted_mse_loss",
     "quantile_weighted_mse",
 )
+SUPPORTED_EARLY_STOPPING_METRICS = ("loss", "mse", "mae", "r2")
+
+
+def early_stopping_monitor(metric: str) -> tuple[str, str]:
+    """Return the validation monitor name and Keras mode for early stopping."""
+    normalized_metric = str(metric).strip().lower()
+    if normalized_metric not in SUPPORTED_EARLY_STOPPING_METRICS:
+        supported = ", ".join(SUPPORTED_EARLY_STOPPING_METRICS)
+        raise ValueError(
+            f"Unsupported early_stopping_metric: {metric!r}. Use one of: {supported}"
+        )
+    mode = "max" if normalized_metric == "r2" else "min"
+    return f"val_{normalized_metric}", mode
 
 
 def r2(y_true, y_pred):
@@ -109,10 +123,60 @@ def quantile_weighted_mse_loss(
     return loss
 
 
+def _validated_weighted_mse_alpha(alpha: float) -> float:
+    """Return alpha as a finite positive float."""
+    if isinstance(alpha, (bool, np.bool_)):
+        raise ValueError("alpha must be a finite positive number.")
+    try:
+        alpha_value = float(alpha)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("alpha must be a finite positive number.") from exc
+    if not np.isfinite(alpha_value) or alpha_value <= 0:
+        raise ValueError("alpha must be a finite positive number.")
+    return alpha_value
+
+
+def _weighted_mse_value(
+    y_real: tf.Tensor | np.ndarray,
+    y_pred: tf.Tensor | np.ndarray,
+    alpha: float,
+) -> tf.Tensor:
+    """Evaluate weighted MSE with an already validated alpha."""
+    y_real_float = tf.cast(y_real, tf.float32)
+    y_pred_float = tf.cast(y_pred, tf.float32)
+    sample_weights = 1.0 + alpha * y_real_float
+    return tf.reduce_mean(
+        sample_weights * tf.square(y_real_float - y_pred_float),
+        axis=-1,
+    )
+
+
+def weighted_mse_loss(
+    y_real: tf.Tensor | np.ndarray,
+    y_pred: tf.Tensor | np.ndarray,
+    alpha: float,
+) -> tf.Tensor:
+    """Return per-sample mean weighted squared errors for a positive alpha."""
+    alpha_value = _validated_weighted_mse_alpha(alpha)
+    return _weighted_mse_value(y_real, y_pred, alpha_value)
+
+
+def _configured_weighted_mse_loss(alpha: float) -> Callable:
+    """Bind alpha to `weighted_mse_loss` for the two-argument Keras API."""
+    alpha_value = _validated_weighted_mse_alpha(alpha)
+
+    def loss(y_real, y_pred):
+        return _weighted_mse_value(y_real, y_pred, alpha_value)
+
+    loss.__name__ = "weighted_mse_loss"
+    return loss
+
+
 def resolve_loss_function(
     loss_function: str,
     quantile_thresholds_mm: Sequence[float] | None = None,
     quantile_weights: Sequence[float] | None = None,
+    weighted_mse_alpha: float | None = None,
 ) -> str | Callable:
     """Return a Keras loss from a configured loss name and optional parameters."""
     normalized_loss = loss_function.lower()
@@ -130,6 +194,10 @@ def resolve_loss_function(
             quantile_thresholds_mm,
             quantile_weights,
         )
+    if normalized_loss == "weighted_mse_loss":
+        if weighted_mse_alpha is None:
+            raise ValueError("weighted_mse_loss requires alpha.")
+        return _configured_weighted_mse_loss(weighted_mse_alpha)
     return normalized_loss
 
 
@@ -159,6 +227,7 @@ class LSTMPrecipitationPredictor:
         loss_quantile_thresholds_mm: Sequence[float] | None = None,
         loss_quantile_weights: Sequence[float] | None = None,
         output_units: int = 1,
+        loss_alpha: float | None = None,
     ):
         """Initialize LSTM model.
 
@@ -170,12 +239,14 @@ class LSTMPrecipitationPredictor:
             learning_rate: Learning rate for optimizer
             weight_decay: Decoupled AdamW weight-decay coefficient
             random_state: Random seed for reproducibility
-            loss_function: Keras loss name or `quantile_weighted_mse`.
+            loss_function: Keras loss name, `weighted_mse_loss`, or
+                `quantile_weighted_mse`.
             loss_quantile_thresholds_mm: Cluster-specific rain thresholds in the
                 same scale as the training target used by `quantile_weighted_mse`.
             loss_quantile_weights: Target-bin weights used by
                 `quantile_weighted_mse`.
             output_units: Number of precipitation target columns to predict.
+            loss_alpha: Positive alpha coefficient used by `weighted_mse_loss`.
         """
         if output_units <= 0:
             raise ValueError("output_units must be positive.")
@@ -191,6 +262,7 @@ class LSTMPrecipitationPredictor:
         self.loss_function = loss_function
         self.loss_quantile_thresholds_mm = loss_quantile_thresholds_mm
         self.loss_quantile_weights = loss_quantile_weights
+        self.loss_alpha = loss_alpha
         self.output_units = output_units
         self.history = None
         self.model = None
@@ -242,6 +314,7 @@ class LSTMPrecipitationPredictor:
             self.loss_function,
             quantile_thresholds_mm=self.loss_quantile_thresholds_mm,
             quantile_weights=self.loss_quantile_weights,
+            weighted_mse_alpha=self.loss_alpha,
         )
         model.compile(
             optimizer=optimizer,
@@ -262,6 +335,7 @@ class LSTMPrecipitationPredictor:
         verbose: int = 0,
         early_stopping: bool = True,
         patience: int = 10,
+        early_stopping_metric: str = "loss",
     ) -> keras.callbacks.History:
         """Train the LSTM model.
 
@@ -276,6 +350,8 @@ class LSTMPrecipitationPredictor:
             verbose: Verbosity level (0, 1, or 2)
             early_stopping: Whether to use early stopping
             patience: Patience for early stopping
+            early_stopping_metric: Validation metric monitored by early stopping.
+                Supported values are "loss", "mse", "mae", and "r2".
 
         Returns:
             History object with training metrics
@@ -287,9 +363,11 @@ class LSTMPrecipitationPredictor:
             validation_data = (X_val, y_val)
 
         if early_stopping and validation_data is not None:
+            monitor, mode = early_stopping_monitor(early_stopping_metric)
             callbacks.append(
                 keras.callbacks.EarlyStopping(
-                    monitor='val_loss',
+                    monitor=monitor,
+                    mode=mode,
                     patience=patience,
                     restore_best_weights=True,
                     verbose=verbose,

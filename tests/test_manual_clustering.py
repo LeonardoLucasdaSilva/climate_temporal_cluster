@@ -10,6 +10,7 @@ import pandas as pd
 from methods.cluster.manual import (
     ManualRainClustering,
     manual_clustering,
+    normalize_manual_clustering_method,
 )
 from methods.cluster.cluster_pipeline import cluster_feature_matrix
 from methods.tools.precipitation_utils import horizon_precipitation
@@ -56,6 +57,35 @@ class ManualRainClusteringTests(unittest.TestCase):
 
         self.assertEqual(labels[-2], 0)
         self.assertEqual(labels[-1], 2)
+
+    def test_rain_level_uses_equal_width_half_open_intervals(self) -> None:
+        features = np.arange(8, dtype=float).reshape(-1, 1)
+        window_mean_rain = np.array([0.0, 1.0, 2.0, 3.5, 4.0, 5.5, 6.0, 8.0])
+
+        model = ManualRainClustering(n_clusters=4, method="rain_level")
+        labels = model.fit_predict(
+            features,
+            None,
+            window_mean_rain=window_mean_rain,
+        )
+
+        np.testing.assert_array_equal(labels, [0, 0, 1, 1, 2, 2, 3, 3])
+        np.testing.assert_allclose(model.thresholds_, [0.0, 2.0, 4.0, 6.0, 8.0])
+        self.assertEqual(model.rain_ranges_[0], (0.0, 1.0))
+        self.assertEqual(model.rain_ranges_[3], (6.0, 8.0))
+
+    def test_rain_level_requires_every_equal_width_bin_to_be_nonempty(self) -> None:
+        with self.assertRaisesRegex(ValueError, "empty training clusters"):
+            ManualRainClustering(n_clusters=3, method="rain_level").fit_predict(
+                np.arange(4, dtype=float).reshape(-1, 1),
+                None,
+                window_mean_rain=np.array([0.0, 0.1, 0.2, 10.0]),
+            )
+
+    def test_manual_clustering_method_is_validated(self) -> None:
+        self.assertEqual(normalize_manual_clustering_method(" RAIN_LEVEL "), "rain_level")
+        with self.assertRaisesRegex(ValueError, "manual_clustering_method"):
+            normalize_manual_clustering_method("unsupported")
 
     def test_horizon_precipitation_supports_future_horizons(self) -> None:
         df = pd.DataFrame({"PRECIPITACAO_TOTAL": [0.0, 1.0, 2.0, 3.0, 4.0]})

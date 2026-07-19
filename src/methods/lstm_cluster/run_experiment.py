@@ -49,6 +49,10 @@ MANUAL_SIGMA_VALUES = [0.1]  # Only used if SIGMA_MODE is "manual"
 # Metrics exported to compact comparison tables
 QUANTITATIVE_METRICS = ["MSE"]
 
+# Sweep-level comparison between the tests produced by this run.
+COMPARATIVE_RUN = False
+PIVOT_PARAMETER = "LSTM_UNITS"  # e.g. "window_size", "learning_rate", "K", "sigma"
+
 # Optional oracle diagnostic: evaluates every test window with every cluster LSTM.
 # It never replaces the same-cluster test metrics or the main plots.
 TEST_ALL_MODELS = True
@@ -61,15 +65,17 @@ LEARNING_RATE: float | list[float] = 1e-3
 WEIGHT_DECAY: float | list[float] = 1e-4  # Decoupled weight decay used by AdamW
 # Supported: "mean_squared_error", "mae", "huber", "weighted_mse_loss",
 # or "quantile_weighted_mse".
-LOSS_QUANTILES = [0.5,0.75,0.95]
+LSTM_LOSS_FUNCTION = "weighted_mse_loss"
+LOSS_ALPHA = 1.0  # Positive coefficient used only by weighted_mse_loss
+LOSS_QUANTILES = [0.95]
 LOSS_QUANTILE_WEIGHTS = "auto"  # "auto" or one positive weight per quantile bin
 
 # Training settings. Numeric settings may also be lists in a comparative grid.
 EPOCHS: int | list[int] = 150
 BATCH_SIZE: int | list[int] = 12
 EARLY_STOPPING = True
-PATIENCE = 251
 PATIENCE: int | list[int] = 20
+EARLY_STOPPING_METRIC = "loss"  # "loss", "mse", "mae", or "r2"
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True
 RUN_ONLY_CLUSTER = False  # Only cluster windows; skip all LSTM training/output.
@@ -122,7 +128,9 @@ def main() -> None:
         batch_size=BATCH_SIZE,
         early_stopping=EARLY_STOPPING,
         patience=PATIENCE,
+        early_stopping_metric=EARLY_STOPPING_METRIC,
         lstm_loss_function=LSTM_LOSS_FUNCTION,
+        loss_alpha=LOSS_ALPHA,
         loss_quantiles=LOSS_QUANTILES,
         loss_quantile_weights=LOSS_QUANTILE_WEIGHTS,
         verbose_training=VERBOSE_TRAINING,
@@ -136,6 +144,8 @@ def main() -> None:
         timestamp_format=str(output_config.get("timestamp_format", "%Y%m%d_%H%M%S")),
         plot_style=output_config.get("plot_style"),
         show_console_info=SHOW_CONSOLE_INFO,
+        comparative_run=COMPARATIVE_RUN,
+        pivot_parameter=PIVOT_PARAMETER,
     )
 
 

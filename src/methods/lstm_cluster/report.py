@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import subprocess
 from dataclasses import asdict, is_dataclass
@@ -11,6 +10,8 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 import pandas as pd
+
+from config import miktex_compile_environment
 
 
 REPORT_TEX_NAME = "experiment_report.tex"
@@ -241,7 +242,17 @@ def config_mapping(config: object | Mapping[str, object] | None) -> dict[str, ob
     else:
         values = {
             key: getattr(config, key)
-            for key in ("state", "station_id", "window_size", "n_clusters", "algorithm", "sigma")
+            for key in (
+                "state",
+                "station_id",
+                "window_size",
+                "n_clusters",
+                "algorithm",
+                "manual_clustering_method",
+                "cluster_assignment_method",
+                "cluster_assignment_neighbors",
+                "sigma",
+            )
             if hasattr(config, key)
         }
     if hasattr(config, "name"):
@@ -258,22 +269,39 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
         ("window_size", "Window Size"),
         ("n_clusters", "Number of Clusters"),
         ("algorithm", "Algorithm"),
+        ("manual_clustering_method", "Manual Clustering Method"),
+        ("cluster_assignment_method", "Cluster Assignment Method"),
         ("sigma", "Sigma"),
     )
-    trailing_labels = (
-        (("manual_zero_tolerance", "Manual Zero Tolerance"),)
-        if config_map.get("run_only_cluster")
-        else (
-            ("forecast_horizon", "Forecast Horizon"),
-            ("manual_zero_tolerance", "Manual Zero Tolerance"),
-            ("test_all_models", "Test Samples on All Models"),
-        )
-    )
+    trailing_labels: list[tuple[str, str]] = []
+    if not config_map.get("run_only_cluster"):
+        trailing_labels.append(("forecast_horizon", "Forecast Horizon"))
+    if (
+        config_map.get("algorithm") == "manual"
+        and config_map.get("manual_clustering_method", "legacy") == "legacy"
+    ):
+        trailing_labels.append(("manual_zero_tolerance", "Manual Zero Tolerance"))
+    if not config_map.get("run_only_cluster"):
+        trailing_labels.append(("test_all_models", "Test Samples on All Models"))
     rows = [
         (label, config_map.get(key))
         for key, label in leading_labels
         if key in config_map
+        and (
+            key != "manual_clustering_method"
+            or config_map.get("algorithm") == "manual"
+        )
     ]
+    if (
+        config_map.get("cluster_assignment_method") == "knn"
+        and "cluster_assignment_neighbors" in config_map
+    ):
+        rows.append(
+            (
+                "Cluster Assignment Neighbors",
+                config_map["cluster_assignment_neighbors"],
+            )
+        )
     if "normalize" in config_map:
         rows.append(("Normalize", config_map.get("normalize")))
     if config_map.get("run_only_cluster"):
@@ -399,8 +427,10 @@ def lstm_configs_list(config: object | Mapping[str, object] | None) -> str:
         ("Batch size", config_map.get("batch_size")),
         ("Early stopping", config_map.get("early_stopping")),
         ("Patience", config_map.get("patience")),
+        ("Early stopping metric", config_map.get("early_stopping_metric")),
         ("Optimizer", config_map.get("optimizer")),
         ("Loss", config_map.get("loss")),
+        ("Loss alpha", config_map.get("loss_alpha")),
         ("Loss quantiles", config_map.get("loss_quantiles")),
         ("Loss quantile weights", config_map.get("loss_quantile_weights")),
         ("Metrics", config_map.get("metrics")),
@@ -730,7 +760,7 @@ def compile_tex(tex_path: Path) -> Path | None:
     """Compile a LaTeX file with the first working local compiler."""
     tex_path = Path(tex_path).resolve()
     compiler_runs = available_compiler_runs()
-    tex_env = tex_compile_environment(tex_path)
+    tex_env = miktex_compile_environment()
     bootstrap_miktex(tex_env, tex_path.parent)
     if not compiler_runs:
         return None
@@ -760,25 +790,6 @@ def compile_tex(tex_path: Path) -> Path | None:
     log_path = tex_path.with_name("experiment_report_compile.log")
     log_path.write_text("\n\n".join(failures), encoding="utf-8")
     return None
-
-
-def tex_compile_environment(tex_path: Path) -> dict[str, str]:
-    """Return an environment with writable MiKTeX user state."""
-    env = os.environ.copy()
-    state_root = tex_path.parent.parent / ".miktex"
-    user_config = state_root / "config"
-    user_data = state_root / "data"
-    user_install = state_root / "install"
-    for directory in (user_config, user_data, user_install):
-        directory.mkdir(parents=True, exist_ok=True)
-    env.update(
-        {
-            "MIKTEX_USERCONFIG": str(user_config),
-            "MIKTEX_USERDATA": str(user_data),
-            "MIKTEX_USERINSTALL": str(user_install),
-        }
-    )
-    return env
 
 
 def bootstrap_miktex(env: Mapping[str, str], cwd: Path) -> None:

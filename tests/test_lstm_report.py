@@ -77,7 +77,11 @@ class LstmReportTests(unittest.TestCase):
                 "station_id": "A801",
                 "window_size": 8,
                 "n_clusters": 3,
-                "algorithm": "kmeans",
+                "algorithm": "manual",
+                "manual_clustering_method": "rain_level",
+                "manual_zero_tolerance": 0.0,
+                "cluster_assignment_method": "knn",
+                "cluster_assignment_neighbors": 7,
                 "forecast_horizon": 2,
                 "clustering_feature_normalize": "standard",
                 "clustering_precipitation_normalize": None,
@@ -85,6 +89,10 @@ class LstmReportTests(unittest.TestCase):
                 "lstm_precipitation_normalize": "standard",
                 "target_scale": "normalized",
                 "optimizer": "AdamW",
+                "loss": "weighted_mse_loss",
+                "loss_alpha": 0.5,
+                "early_stopping": True,
+                "early_stopping_metric": "r2",
                 "weight_decay": 1e-4,
                 "pca_variance_threshold": 0.9,
                 "pca_for_clustering_only": True,
@@ -98,9 +106,16 @@ class LstmReportTests(unittest.TestCase):
         self.assertIn(r"\item \textbf{LSTM Precipitation Scaler:} standard", tex)
         self.assertIn(r"\item \textbf{LSTM Target Scale:} normalized", tex)
         self.assertIn(r"\item \textbf{Optimizer:} AdamW", tex)
+        self.assertIn(r"\item \textbf{Loss:} weighted\_mse\_loss", tex)
+        self.assertIn(r"\item \textbf{Loss alpha:} 0.5", tex)
+        self.assertIn(r"\item \textbf{Early stopping metric:} r2", tex)
         self.assertIn(r"\item \textbf{Weight decay:} 0.0001", tex)
         self.assertIn(r"\item \textbf{PCA Variance Threshold:} 0.9", tex)
         self.assertIn(r"\item \textbf{PCA Mode:} clustering only", tex)
+        self.assertIn(r"\item \textbf{Manual Clustering Method:} rain\_level", tex)
+        self.assertNotIn("Manual Zero Tolerance", tex)
+        self.assertIn(r"\item \textbf{Cluster Assignment Method:} knn", tex)
+        self.assertIn(r"\item \textbf{Cluster Assignment Neighbors:} 7", tex)
 
     def test_config_summary_reports_disabled_and_shared_pca_modes(self) -> None:
         disabled_tex = config_summary_list(

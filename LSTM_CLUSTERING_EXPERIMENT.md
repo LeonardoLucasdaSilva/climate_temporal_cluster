@@ -100,7 +100,9 @@ Dense(1, activation='linear')  ← Precipitation prediction
   - LSTM units: 64 (1st layer), 32 (2nd layer)
   - Dropout rate: 0.2 (regularization)
   - Optimizer: AdamW (learning_rate=0.001, weight_decay=0.0001)
-  - Loss function: Mean Squared Error (MSE)
+  - Default loss function: weighted MSE,
+    `(1 + alpha * y_real) * |y_real - y_pred|^2`, averaged over the targets,
+    with `alpha > 0`
   - Metrics: MAE, MSE
 
 - **Hyperparameters**:

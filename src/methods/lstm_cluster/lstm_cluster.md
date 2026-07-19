@@ -110,6 +110,9 @@ Change experiment variables in `run_experiment.py`:
   must be finite and greater than zero. Use `"quantile_weighted_mse"` to calculate
   cluster-specific precipitation thresholds from training-target quantiles in
   the active target scale and weight rarer intensity bins automatically.
+  Because the new weight is applied in the active target scale, keep targets
+  non-negative (for example, `LSTM_PRECIPITATION_NORMALIZE = None`); standardized
+  negative targets can produce negative weights.
 - training settings: `EPOCHS`, `BATCH_SIZE`, `EARLY_STOPPING`, `PATIENCE`,
   `EARLY_STOPPING_METRIC`, `VERBOSE_TRAINING`, `SHOW_CONSOLE_INFO`
 - data split: `TRAIN_RATIO`, `VAL_RATIO`, `RANDOM_STATE`

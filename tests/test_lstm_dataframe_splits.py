@@ -33,6 +33,8 @@ from methods.lstm_cluster.pipeline import (  # noqa: E402
     create_window_split_data,
     quantile_weighted_mse_config,
     split_daily_dataframe,
+    validate_early_stopping_metric,
+    validate_loss_function,
 )
 
 
@@ -59,6 +61,60 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         self.assertEqual(splits.train["Data"].iloc[-1], pd.Timestamp("2025-01-15"))
         self.assertEqual(splits.val["Data"].iloc[0], pd.Timestamp("2025-01-16"))
         self.assertEqual(splits.test["Data"].iloc[0], pd.Timestamp("2025-01-22"))
+
+    def test_validate_early_stopping_metric_accepts_supported_metrics(self) -> None:
+        for metric in ("loss", "mse", "mae", "r2"):
+            self.assertEqual(validate_early_stopping_metric(metric.upper()), metric)
+
+    def test_validate_early_stopping_metric_rejects_unknown_metric(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unsupported early_stopping_metric"):
+            validate_early_stopping_metric("rmse")
+
+    def test_validate_loss_function_accepts_weighted_mse_loss(self) -> None:
+        self.assertEqual(
+            validate_loss_function("WEIGHTED_MSE_LOSS"),
+            "weighted_mse_loss",
+        )
+
+    def test_rain_level_manual_clustering_uses_raw_mean_of_full_input_window(self) -> None:
+        df = pd.DataFrame(
+            {
+                "Data": pd.date_range("2025-01-01", periods=30),
+                "TEMPERATURA_MAXIMA": np.arange(30, dtype=float),
+                "PRECIPITACAO_TOTAL": np.arange(30, dtype=float),
+            }
+        )
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=3,
+            n_clusters=3,
+            algorithm="manual",
+            sigma=None,
+            manual_clustering_method="rain_level",
+        )
+
+        split_data, _splits = create_window_split_data(
+            df,
+            config,
+            ["TEMPERATURA_MAXIMA", "PRECIPITACAO_TOTAL"],
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize="standard",
+            variance_threshold=None,
+            forecast_horizon=1,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+            run_only_cluster=True,
+        )
+
+        # Training window means are 1..12 mm. Equal-width thresholds are
+        # [0, 4, 8, 12], with internal upper bounds assigned to the next bin.
+        np.testing.assert_array_equal(
+            split_data.c_train,
+            [0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2],
+        )
 
     def test_window_splits_do_not_share_raw_rows(self) -> None:
         config = ExperimentConfig(
@@ -365,6 +421,24 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             ],
         )
         np.testing.assert_array_equal(
+            split_data.train_target_dates_by_lead_day,
+            np.array(
+                [
+                    ["2025-01-05", "2025-01-06"],
+                    ["2025-01-06", "2025-01-07"],
+                    ["2025-01-07", "2025-01-08"],
+                    ["2025-01-08", "2025-01-09"],
+                    ["2025-01-09", "2025-01-10"],
+                    ["2025-01-10", "2025-01-11"],
+                    ["2025-01-11", "2025-01-12"],
+                    ["2025-01-12", "2025-01-13"],
+                    ["2025-01-13", "2025-01-14"],
+                    ["2025-01-14", "2025-01-15"],
+                ],
+                dtype="datetime64[ns]",
+            ),
+        )
+        np.testing.assert_array_equal(
             split_data.test_target_dates_by_lead_day,
             np.array(
                 [
@@ -464,6 +538,84 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
 
         np.testing.assert_array_equal(c_val, nearest_labels(X_val))
         np.testing.assert_array_equal(c_test, nearest_labels(X_test))
+
+    def test_held_out_windows_can_use_knn_assignment(self) -> None:
+        X_train = np.array(
+            [
+                [0.0, 0.0],
+                [0.1, 0.0],
+                [100.0, 0.0],
+                [10.0, 0.0],
+                [10.1, 0.0],
+                [10.2, 0.0],
+            ]
+        )
+        X_val = np.array([[0.2, 0.0]])
+        X_test = np.array([[10.15, 0.0]])
+        y_train = np.array([0.0, 0.0, 0.0, 1.0, 2.0, 3.0])
+        base_config = {
+            "state": "RS",
+            "station_id": "A801",
+            "window_size": 2,
+            "n_clusters": 2,
+            "algorithm": "manual",
+            "sigma": None,
+            "cluster_assignment_neighbors": 3,
+        }
+
+        _, centroid_val, _ = _cluster_window_splits(
+            ExperimentConfig(
+                **base_config,
+                cluster_assignment_method="centroid",
+            ),
+            X_train,
+            X_val,
+            X_test,
+            y_train,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+        )
+        _, knn_val, knn_test = _cluster_window_splits(
+            ExperimentConfig(
+                **base_config,
+                cluster_assignment_method="knn",
+            ),
+            X_train,
+            X_val,
+            X_test,
+            y_train,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+        )
+
+        np.testing.assert_array_equal(centroid_val, [1])
+        np.testing.assert_array_equal(knn_val, [0])
+        np.testing.assert_array_equal(knn_test, [1])
+
+    def test_cluster_assignment_method_is_validated(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=2,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+            cluster_assignment_method="unsupported",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported cluster_assignment_method",
+        ):
+            _cluster_window_splits(
+                config,
+                np.array([[0.0], [0.1], [10.0], [10.1]]),
+                np.array([[0.2]]),
+                np.array([[9.9]]),
+                np.array([0.0, 0.0, 1.0, 1.0]),
+                random_state=42,
+                manual_zero_tolerance=0.0,
+            )
 
     def test_pca_can_be_limited_to_clustering_features(self) -> None:
         config = ExperimentConfig(

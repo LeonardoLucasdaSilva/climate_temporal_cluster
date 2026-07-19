@@ -16,6 +16,7 @@ import pandas as pd
 from data.lstm_outputs import (
     compressed_time_positions,
     save_cluster_distribution_plot,
+    save_cluster_precipitation_histograms,
     save_cluster_timeline_plot,
     pca_mode_label,
     save_cluster_silhouette_plot,
@@ -30,6 +31,7 @@ from data.lstm_outputs import (
     save_prediction_timeseries_splits,
     save_test_model_selection_report,
     save_sweep_outputs,
+    save_train_performance_visualizations,
     save_training_history_plots,
 )
 
@@ -38,6 +40,139 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class LstmOutputTests(unittest.TestCase):
+    def test_cluster_precipitation_histograms_write_overview_and_individuals(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_precipitation_histograms_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+        hist_dir = output_dir / "cluster_precipitation_histograms"
+        individual_dir = hist_dir / "individual"
+        individual_dir.mkdir(parents=True)
+        (hist_dir / "cluster_9_precipitation_histogram.png").write_bytes(b"stale")
+        (individual_dir / "cluster_9_precipitation_histogram.png").write_bytes(b"stale")
+
+        def fake_savefig(
+            _figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            Path(path).write_bytes(b"plot")
+
+        try:
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                save_cluster_precipitation_histograms(
+                    y_test=np.array([0.0, 1.0, 2.0, 8.0, 9.0]),
+                    c_test=np.array([0, 0, 1, 1, 1]),
+                    output_dir=output_dir,
+                )
+
+            self.assertTrue(
+                (hist_dir / "all_clusters_precipitation_histograms.png").exists()
+            )
+            self.assertTrue(
+                (individual_dir / "cluster_0_precipitation_histogram.png").exists()
+            )
+            self.assertTrue(
+                (individual_dir / "cluster_1_precipitation_histogram.png").exists()
+            )
+            self.assertFalse(
+                (hist_dir / "cluster_0_precipitation_histogram.png").exists()
+            )
+            self.assertFalse(
+                (hist_dir / "cluster_9_precipitation_histogram.png").exists()
+            )
+            self.assertFalse(
+                (individual_dir / "cluster_9_precipitation_histogram.png").exists()
+            )
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_train_performance_writes_cluster_and_horizon_plot_tree(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_train_performance_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+        y_train_by_lead_day = np.array(
+            [
+                [0.0, 1.0],
+                [1.0, 2.0],
+                [2.0, 3.0],
+                [3.0, 4.0],
+            ]
+        )
+        y_pred_train_by_lead_day = y_train_by_lead_day + 0.1
+        train_dates_by_lead_day = np.array(
+            [
+                ["2025-01-05", "2025-01-06"],
+                ["2025-01-06", "2025-01-07"],
+                ["2025-01-07", "2025-01-08"],
+                ["2025-01-08", "2025-01-09"],
+            ],
+            dtype="datetime64[ns]",
+        )
+
+        def fake_savefig(
+            _figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            Path(path).write_bytes(b"plot")
+
+        try:
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                save_train_performance_visualizations(
+                    y_train=y_train_by_lead_day[:, -1],
+                    y_pred_train=y_pred_train_by_lead_day[:, -1],
+                    c_train=np.array([0, 0, 1, 1]),
+                    train_indices=np.array([10, 11, 12, 13]),
+                    train_targets_by_lead_day=y_train_by_lead_day,
+                    y_pred_train_by_lead_day=y_pred_train_by_lead_day,
+                    output_dir=output_dir,
+                    forecast_horizon=2,
+                    train_target_dates_by_lead_day=train_dates_by_lead_day,
+                )
+
+            train_dir = output_dir / "train_performance"
+            self.assertTrue((train_dir / "train_predictions.csv").exists())
+            for cluster_id in (0, 1):
+                self.assertTrue(
+                    (
+                        train_dir
+                        / "cluster_prediction_histograms"
+                        / f"cluster_{cluster_id}_prediction_histograms.png"
+                    ).exists()
+                )
+                self.assertTrue(
+                    (
+                        train_dir
+                        / "cluster_prediction_scatter"
+                        / f"cluster_{cluster_id}_predicted_vs_actual_scatter.png"
+                    ).exists()
+                )
+                self.assertTrue(
+                    (
+                        train_dir
+                        / "cluster_prediction_timeseries"
+                        / f"cluster_{cluster_id}_prediction_timeseries.png"
+                    ).exists()
+                )
+            for lead_day in (1, 2):
+                lead_dir = (
+                    train_dir
+                    / "prediction_timeseries_splits"
+                    / f"lead_day_{lead_day:02d}"
+                )
+                self.assertTrue(lead_dir.is_dir())
+                self.assertEqual(len(list(lead_dir.glob("*.png"))), 4)
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
     def test_cluster_only_outputs_skip_supervised_artifacts(self) -> None:
         output_dir = (
             PROJECT_ROOT
@@ -49,6 +184,8 @@ class LstmOutputTests(unittest.TestCase):
             window_size=3,
             n_clusters=2,
             algorithm="kmeans",
+            cluster_assignment_method="knn",
+            cluster_assignment_neighbors=3,
             sigma=None,
         )
         c_train = np.array([0, 1, 0, 1])
@@ -96,6 +233,8 @@ class LstmOutputTests(unittest.TestCase):
             )
 
             self.assertEqual(result["run_name"], "cluster_only_test")
+            self.assertEqual(result["cluster_assignment_method"], "knn")
+            self.assertEqual(result["cluster_assignment_neighbors"], 3)
             self.assertTrue((output_dir / "cluster_assignments.csv").exists())
             self.assertTrue((output_dir / "cluster_summary.csv").exists())
             self.assertTrue(
@@ -107,6 +246,7 @@ class LstmOutputTests(unittest.TestCase):
                 "residual_diagnostics",
                 "forecast_horizon_diagnostics",
                 "oracle_model",
+                "train_performance",
             ):
                 self.assertFalse((output_dir / forbidden_dir).exists())
         finally:
@@ -456,7 +596,10 @@ class LstmOutputTests(unittest.TestCase):
                     station_id="A801",
                     window_sizes=[15],
                     n_clusters_list=[3],
-                    clustering_algorithm="kmeans",
+                    clustering_algorithm="manual",
+                    manual_clustering_method="rain_level",
+                    cluster_assignment_method="knn",
+                    cluster_assignment_neighbors=7,
                     pca_variance_threshold=0.9,
                     pca_for_clustering_only=True,
                     quantitative_metrics=["MSE"],
@@ -465,6 +608,9 @@ class LstmOutputTests(unittest.TestCase):
             summary = (output_dir / "sweep_summary.txt").read_text(encoding="utf-8")
             self.assertIn("PCA variance threshold: 0.90", summary)
             self.assertIn("PCA mode: clustering only", summary)
+            self.assertIn("Manual clustering method: rain_level", summary)
+            self.assertIn("Cluster assignment method: knn", summary)
+            self.assertIn("Cluster assignment neighbors: 7", summary)
             self.assertIn("pca_for_clustering_only", summary)
             self.assertIn("pca_mode", summary)
         finally:

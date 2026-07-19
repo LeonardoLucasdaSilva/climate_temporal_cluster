@@ -231,6 +231,118 @@ def _normalize_precipitation_scaler_type(scaler_type: str | None) -> str | None:
     )
 
 
+def _normalize_cluster_assignment_method(method: str) -> str:
+    """Return a supported held-out cluster-assignment method."""
+    normalized = str(method).strip().lower()
+    if normalized in SUPPORTED_CLUSTER_ASSIGNMENT_METHODS:
+        return normalized
+
+    supported = ", ".join(SUPPORTED_CLUSTER_ASSIGNMENT_METHODS)
+    raise ValueError(
+        f"Unsupported cluster_assignment_method: {method!r}. "
+        f"Use one of: {supported}"
+    )
+
+
+def _validate_cluster_assignment_neighbors(n_neighbors: int) -> int:
+    """Return a positive integer K for KNN cluster assignment."""
+    if isinstance(n_neighbors, bool) or not isinstance(
+        n_neighbors,
+        (int, np.integer),
+    ):
+        raise ValueError("cluster_assignment_neighbors must be a positive integer.")
+    normalized = int(n_neighbors)
+    if normalized <= 0:
+        raise ValueError("cluster_assignment_neighbors must be a positive integer.")
+    return normalized
+
+
+def _normalize_numeric_sweep_values(
+    value: int | float | Sequence[int | float],
+    *,
+    setting_name: str,
+    integer: bool,
+    minimum: float,
+    minimum_inclusive: bool,
+    maximum: float | None = None,
+    maximum_inclusive: bool = True,
+) -> list[int | float]:
+    """Return validated, unique scalar values for one numeric sweep setting."""
+    if isinstance(value, (str, bytes)) or np.isscalar(value):
+        raw_values = [value]
+    else:
+        raw_values = list(value)
+    if not raw_values:
+        raise ValueError(f"{setting_name} must contain at least one value.")
+
+    values: list[int | float] = []
+    for raw_value in raw_values:
+        if isinstance(raw_value, (bool, np.bool_)):
+            raise ValueError(f"Every {setting_name} value must be numeric.")
+        try:
+            numeric_value = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Every {setting_name} value must be numeric.") from exc
+        if not np.isfinite(numeric_value):
+            raise ValueError(f"Every {setting_name} value must be finite.")
+        if integer and not numeric_value.is_integer():
+            raise ValueError(f"Every {setting_name} value must be an integer.")
+        if (
+            numeric_value < minimum
+            if minimum_inclusive
+            else numeric_value <= minimum
+        ):
+            operator = ">=" if minimum_inclusive else ">"
+            raise ValueError(
+                f"Every {setting_name} value must be {operator} {minimum:g}."
+            )
+        if maximum is not None and (
+            numeric_value > maximum
+            if maximum_inclusive
+            else numeric_value >= maximum
+        ):
+            operator = "<=" if maximum_inclusive else "<"
+            raise ValueError(
+                f"Every {setting_name} value must be {operator} {maximum:g}."
+            )
+        values.append(int(numeric_value) if integer else numeric_value)
+    if len(set(values)) != len(values):
+        raise ValueError(f"{setting_name} cannot contain duplicate values.")
+    return values
+
+
+def _normalize_learning_rate_values(
+    learning_rate: float | Sequence[float],
+) -> list[float]:
+    """Return one or more positive learning rates for the sweep."""
+    return [
+        float(value)
+        for value in _normalize_numeric_sweep_values(
+            learning_rate,
+            setting_name="learning_rate",
+            integer=False,
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
+    ]
+
+
+def _variant_parameter_slug(parameter: str) -> str:
+    """Return a compact output-folder token for a varied parameter."""
+    return VARIANT_PARAMETER_SLUGS.get(parameter, parameter)
+
+
+def _variant_value_slug(value: int | float) -> str:
+    """Return a stable filename-safe scalar token without rounding collisions."""
+    numeric_value = float(value)
+    text = (
+        str(int(numeric_value))
+        if np.isfinite(numeric_value) and numeric_value.is_integer()
+        else repr(numeric_value)
+    )
+    return text.replace("-", "m").replace(".", "p").replace("+", "")
+
+
 def _transform_precipitation_values(
     values: np.ndarray,
     scaler: FeatureScaler | None,
@@ -263,6 +375,18 @@ def validate_loss_function(loss_function: str) -> str:
             f"Use one of: {supported}"
         )
     return loss_function
+
+
+def validate_early_stopping_metric(metric: str) -> str:
+    """Return a normalized early-stopping metric name after validation."""
+    metric = str(metric).strip().lower()
+    if metric not in SUPPORTED_EARLY_STOPPING_METRICS:
+        supported = ", ".join(SUPPORTED_EARLY_STOPPING_METRICS)
+        raise ValueError(
+            f"Unsupported early_stopping_metric: {metric!r}. "
+            f"Use one of: {supported}"
+        )
+    return metric
 
 
 def quantile_weighted_mse_config(
@@ -1369,6 +1493,7 @@ def train_cluster_models(
     batch_size: int,
     early_stopping: bool,
     patience: int,
+    early_stopping_metric: str,
     lstm_loss_function: str,
     loss_quantiles: Sequence[float],
     loss_quantile_weights: Sequence[float] | str,
@@ -1377,7 +1502,9 @@ def train_cluster_models(
     show_console_info: bool,
     test_all_models: bool,
     target_scaler: FeatureScaler | None = None,
+    loss_alpha: float = 1.0,
 ) -> tuple[
+    np.ndarray,
     np.ndarray,
     np.ndarray,
     np.ndarray,
@@ -1424,6 +1551,7 @@ def train_cluster_models(
         raise ValueError("Lead-day target matrices must have the same horizon width.")
 
     y_pred_train = np.zeros_like(y_train, dtype=float)
+    y_pred_train_by_lead_day = np.zeros_like(y_train_by_lead_day, dtype=float)
     y_pred_val = np.zeros_like(y_val, dtype=float)
     y_pred_test = np.zeros_like(y_test, dtype=float)
     y_pred_test_by_lead_day = np.zeros_like(y_test_by_lead_day, dtype=float)
@@ -1467,6 +1595,7 @@ def train_cluster_models(
             weight_decay=weight_decay,
             random_state=random_state,
             loss_function=lstm_loss_function,
+            loss_alpha=loss_alpha,
             loss_quantile_thresholds_mm=loss_thresholds,
             loss_quantile_weights=loss_weights,
             output_units=n_outputs,
@@ -1481,14 +1610,16 @@ def train_cluster_models(
             verbose=verbose_training if show_console_info else 0,
             early_stopping=early_stopping and n_va > 0,
             patience=patience,
+            early_stopping_metric=early_stopping_metric,
         )
 
-        y_pred_train_by_lead_day = clipped_predictions(
+        cluster_y_pred_train_by_lead_day = clipped_predictions(
             model,
             X_train_lstm[tr_mask],
             target_scaler,
         )
-        y_pred_train[tr_mask] = y_pred_train_by_lead_day[:, -1]
+        y_pred_train_by_lead_day[tr_mask] = cluster_y_pred_train_by_lead_day
+        y_pred_train[tr_mask] = cluster_y_pred_train_by_lead_day[:, -1]
         if n_va > 0:
             y_pred_val_by_lead_day = clipped_predictions(
                 model,
@@ -1515,6 +1646,7 @@ def train_cluster_models(
     if not test_all_models:
         return (
             y_pred_train,
+            y_pred_train_by_lead_day,
             y_pred_val,
             y_pred_test,
             y_pred_test_by_lead_day,
@@ -1549,6 +1681,7 @@ def train_cluster_models(
 
     return (
         y_pred_train,
+        y_pred_train_by_lead_day,
         y_pred_val,
         y_pred_test,
         y_pred_test_by_lead_day,
@@ -1583,6 +1716,7 @@ def run_configuration(
     batch_size: int,
     early_stopping: bool,
     patience: int,
+    early_stopping_metric: str,
     lstm_loss_function: str,
     loss_quantiles: Sequence[float],
     loss_quantile_weights: Sequence[float] | str,
@@ -1591,8 +1725,15 @@ def run_configuration(
     test_all_models: bool,
     pca_for_clustering_only: bool = False,
     run_only_cluster: bool = False,
+    run_parameters: Mapping[str, object] | None = None,
+    comparative_runs: list[ComparativeRunData] | None = None,
+    loss_alpha: float = 1.0,
 ) -> dict[str, float | int | str | None]:
     """Run one sweep configuration and save its artifacts."""
+    if run_only_cluster and comparative_runs is not None:
+        raise ValueError(
+            "Comparative LSTM outputs are unavailable when run_only_cluster=True."
+        )
     clustering_feature_normalize = _normalize_optional_scaler_type(
         clustering_feature_normalize,
         setting_name="clustering_feature_normalize",
@@ -1708,11 +1849,15 @@ def run_configuration(
         "batch_size": batch_size,
         "early_stopping": early_stopping,
         "patience": patience,
+        "early_stopping_metric": early_stopping_metric,
         "optimizer": "AdamW",
         "loss": lstm_loss_function,
+        "loss_alpha": (
+            loss_alpha if lstm_loss_function == "weighted_mse_loss" else None
+        ),
         "loss_quantiles": list(loss_quantiles),
         "loss_quantile_weights": loss_quantile_weights,
-        "metrics": ["mae", "mse"],
+        "metrics": ["mae", "mse", "r2"],
         "test_all_models": test_all_models,
         "run_only_cluster": run_only_cluster,
     }
@@ -1761,6 +1906,7 @@ def run_configuration(
 
     (
         y_pred_train,
+        y_pred_train_by_lead_day,
         y_pred_val,
         y_pred_test,
         y_pred_test_by_lead_day,
@@ -1791,7 +1937,9 @@ def run_configuration(
         batch_size=batch_size,
         early_stopping=early_stopping,
         patience=patience,
+        early_stopping_metric=early_stopping_metric,
         lstm_loss_function=lstm_loss_function,
+        loss_alpha=loss_alpha,
         loss_quantiles=loss_quantiles,
         loss_quantile_weights=loss_quantile_weights,
         verbose_training=verbose_training,
@@ -1838,7 +1986,33 @@ def run_configuration(
             "Test": (split_data.cluster_X_test, c_test),
         },
         batch_size=batch_size,
+        train_targets_by_lead_day=split_data.y_train_by_lead_day,
+        y_pred_train_by_lead_day=y_pred_train_by_lead_day,
+        train_target_dates_by_lead_day=(
+            split_data.train_target_dates_by_lead_day
+        ),
+        train_cluster_labels=c_train,
     )
+    if run_parameters is not None:
+        result.update(run_parameters)
+    if comparative_runs is not None:
+        comparative_runs.append(
+            build_comparative_run_data(
+                run_name=config.name,
+                parameters=run_parameters or {
+                    "window_size": config.window_size,
+                    "n_clusters": config.n_clusters,
+                    "sigma": config.sigma,
+                    "learning_rate": learning_rate,
+                },
+                result_metrics=result,
+                actual_by_lead_day=split_data.test_targets_by_lead_day,
+                predicted_by_lead_day=y_pred_test_by_lead_day,
+                target_dates_by_lead_day=split_data.test_target_dates_by_lead_day,
+                histories_by_cluster=histories_by_cluster,
+                cluster_train_labels=c_train,
+            )
+        )
     tex_path, pdf_path = generate_config_report(output_dir, report_config)
     print_info(f"  Report: {tex_path.name}", show_console_info)
     if pdf_path is not None:
@@ -1865,14 +2039,14 @@ def run_experiment(
     n_sigma_values: int,
     use_all_features: bool,
     quantitative_metrics: list[str],
-    lstm_units: int,
-    lstm_units_2: int,
-    dropout_rate: float,
-    learning_rate: float,
-    epochs: int,
-    batch_size: int,
+    lstm_units: int | Sequence[int],
+    lstm_units_2: int | Sequence[int],
+    dropout_rate: float | Sequence[float],
+    learning_rate: float | Sequence[float],
+    epochs: int | Sequence[int],
+    batch_size: int | Sequence[int],
     early_stopping: bool,
-    patience: int,
+    patience: int | Sequence[int],
     lstm_loss_function: str,
     loss_quantiles: Sequence[float],
     loss_quantile_weights: Sequence[float] | str,
@@ -1892,11 +2066,15 @@ def run_experiment(
     manual_zero_tolerance: float = 0.0,
     manual_clustering_method: str = "legacy",
     test_all_models: bool = True,
-    weight_decay: float = 0.0,
+    weight_decay: float | Sequence[float] = 0.0,
     pca_for_clustering_only: bool = False,
     run_only_cluster: bool = False,
     cluster_assignment_method: str = "centroid",
     cluster_assignment_neighbors: int = 5,
+    comparative_run: bool = False,
+    pivot_parameter: str = "window_size",
+    early_stopping_metric: str = "loss",
+    loss_alpha: float = 1.0,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
     clustering_algorithm = clustering_algorithm.lower()
@@ -1984,6 +2162,20 @@ def run_experiment(
             setting_name="lstm_precipitation_normalize",
         )
         lstm_loss_function = validate_loss_function(lstm_loss_function)
+        early_stopping_metric = validate_early_stopping_metric(
+            early_stopping_metric
+        )
+        if lstm_loss_function == "weighted_mse_loss":
+            if isinstance(loss_alpha, (bool, np.bool_)):
+                raise ValueError("loss_alpha must be a finite positive number.")
+            try:
+                loss_alpha = float(loss_alpha)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "loss_alpha must be a finite positive number."
+                ) from exc
+            if not np.isfinite(loss_alpha) or loss_alpha <= 0:
+                raise ValueError("loss_alpha must be a finite positive number.")
     if clustering_algorithm not in SUPPORTED_CLUSTERING_ALGORITHMS:
         supported = ", ".join(SUPPORTED_CLUSTERING_ALGORITHMS)
         raise ValueError(
@@ -1994,10 +2186,16 @@ def run_experiment(
         raise ValueError("forecast_horizon must be positive.")
     if manual_zero_tolerance < 0:
         raise ValueError("manual_zero_tolerance cannot be negative.")
-    if not run_only_cluster and batch_size <= 0:
-        raise ValueError("batch_size must be positive.")
-    if not run_only_cluster and (not np.isfinite(weight_decay) or weight_decay < 0):
-        raise ValueError("weight_decay must be a finite non-negative value.")
+    if comparative_run and run_only_cluster:
+        raise ValueError(
+            "COMPARATIVE_RUN requires RUN_ONLY_CLUSTER=False because model "
+            "predictions and training histories are required."
+        )
+    if run_only_cluster:
+        training_parameter_values = {
+            parameter: [values[0]]
+            for parameter, values in training_parameter_values.items()
+        }
 
     timestamp = datetime.now().strftime(timestamp_format)
     if sweep_name is None:
@@ -2166,11 +2364,44 @@ def run_experiment(
             show_console_info,
         )
         print_info(f"LSTM loss: {lstm_loss_function}", show_console_info)
+        if lstm_loss_function == "weighted_mse_loss":
+            print_info(f"Loss alpha: {loss_alpha:g}", show_console_info)
         print_info(
-            f"Optimizer: AdamW (learning_rate={learning_rate:g}, "
-            f"weight_decay={weight_decay:g})",
+            f"Early stopping metric: {early_stopping_metric}",
             show_console_info,
         )
+        learning_rate_values = training_parameter_values["learning_rate"]
+        weight_decay_values = training_parameter_values["weight_decay"]
+        learning_rate_text = (
+            f"{learning_rate_values[0]:g}"
+            if len(learning_rate_values) == 1
+            else str(learning_rate_values)
+        )
+        weight_decay_text = (
+            f"{weight_decay_values[0]:g}"
+            if len(weight_decay_values) == 1
+            else str(weight_decay_values)
+        )
+        print_info(
+            f"Optimizer: AdamW (learning_rate={learning_rate_text}, "
+            f"weight_decay={weight_decay_text})",
+            show_console_info,
+        )
+        varied_training_parameters = {
+            parameter: values
+            for parameter, values in training_parameter_values.items()
+            if len(values) > 1
+        }
+        if varied_training_parameters:
+            print_info(
+                f"Training-parameter grid: {varied_training_parameters}",
+                show_console_info,
+            )
+        if comparative_run:
+            print_info(
+                f"Comparative analysis: enabled (pivot={resolved_pivot_parameter})",
+                show_console_info,
+            )
     if variance_threshold is not None:
         pca_scope = (
             "clustering only"
@@ -2186,7 +2417,16 @@ def run_experiment(
         print_info(f"  - {config.name}: {asdict(config)}", show_console_info)
 
     results = []
-    for index, config in enumerate(configurations, start=1):
+    comparative_runs: list[ComparativeRunData] | None = (
+        [] if comparative_run else None
+    )
+    persist_run_parameters = comparative_run or any(
+        len(values) > 1 for values in training_parameter_values.values()
+    )
+    for index, (config, run_parameters) in enumerate(
+        zip(configurations, run_parameter_rows),
+        start=1,
+    ):
         print_info(f"\nConfiguration {index}/{len(configurations)}", show_console_info)
         results.append(
             run_configuration(
@@ -2205,16 +2445,18 @@ def run_experiment(
                 train_ratio=train_ratio,
                 val_ratio=val_ratio,
                 random_state=random_state,
-                lstm_units=lstm_units,
-                lstm_units_2=lstm_units_2,
-                dropout_rate=dropout_rate,
-                learning_rate=learning_rate,
-                weight_decay=weight_decay,
-                epochs=epochs,
-                batch_size=batch_size,
+                lstm_units=int(run_parameters["lstm_units"]),
+                lstm_units_2=int(run_parameters["lstm_units_2"]),
+                dropout_rate=float(run_parameters["dropout_rate"]),
+                learning_rate=float(run_parameters["learning_rate"]),
+                weight_decay=float(run_parameters["weight_decay"]),
+                epochs=int(run_parameters["epochs"]),
+                batch_size=int(run_parameters["batch_size"]),
                 early_stopping=early_stopping,
-                patience=patience,
+                patience=int(run_parameters["patience"]),
+                early_stopping_metric=early_stopping_metric,
                 lstm_loss_function=lstm_loss_function,
+                loss_alpha=loss_alpha,
                 loss_quantiles=loss_quantiles,
                 loss_quantile_weights=loss_quantile_weights,
                 verbose_training=verbose_training,
@@ -2222,6 +2464,8 @@ def run_experiment(
                 test_all_models=test_all_models,
                 pca_for_clustering_only=pca_for_clustering_only,
                 run_only_cluster=run_only_cluster,
+                run_parameters=(run_parameters if persist_run_parameters else None),
+                comparative_runs=comparative_runs,
             )
         )
 
@@ -2256,6 +2500,16 @@ def run_experiment(
             pca_for_clustering_only=pca_for_clustering_only,
             quantitative_metrics=quantitative_metrics,
         )
+        if comparative_run:
+            comparison_dir = save_comparative_outputs(
+                comparative_runs or [],
+                sweep_dir,
+                resolved_pivot_parameter or pivot_parameter,
+            )
+            print_info(
+                f"Comparative plots: {comparison_dir}",
+                show_console_info,
+            )
 
     print_section("Sweep Complete", show_console_info)
     print_info(f"Results folder: {sweep_dir}", show_console_info)
@@ -2272,6 +2526,8 @@ def run_experiment(
         print_info("  - sweep_summary.txt", show_console_info)
         print_info("  - overleaf_table.txt", show_console_info)
         print_info("  - overleaf_cluster_metric_tables.txt", show_console_info)
+        if comparative_run:
+            print_info("  - comparative_analysis/", show_console_info)
         print_info(
             "Each configuration folder contains metrics, reports, predictions, and plots.",
             show_console_info,
