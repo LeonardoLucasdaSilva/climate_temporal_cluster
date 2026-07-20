@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.distance import pdist, squareform
 
-from methods.tools.sliding_windows import create_windows
+from methods.tools.sliding_windows import create_windows, validate_window_stride
 
 
 SIGMA_WINDOW_SIZE = 5
@@ -113,6 +113,7 @@ def calculate_sigma_values(
     normalize: bool = True,
     lower_quantile: float = SIGMA_LOWER_QUANTILE,
     upper_quantile: float = SIGMA_UPPER_QUANTILE,
+    window_stride: int = 1,
 ) -> np.ndarray:
     """Calculate distance-based sigma candidates for spectral clustering.
 
@@ -123,12 +124,15 @@ def calculate_sigma_values(
         normalize: Whether to standardize feature columns before windowing.
         lower_quantile: Lower distance quantile used as the first sigma.
         upper_quantile: Upper distance quantile used as the last sigma.
+        window_stride: Days between consecutive window starts included in the
+            pairwise distance distribution.
 
     Returns:
         Array of sigma candidates for spectral clustering.
     """
     windows, _ = create_windows(df, window_size=window_size, normalize=normalize)
-    windows_flat = windows.reshape(windows.shape[0], -1)
+    window_stride = validate_window_stride(window_stride)
+    windows_flat = windows.reshape(windows.shape[0], -1)[::window_stride]
     distances = euclidian_distances(windows_flat)
     return sigma_values_from_distance_distribution(
         distances,

@@ -16,6 +16,19 @@ from methods.tools.dimensionality_reduction_tools import (
 )
 
 
+def validate_window_stride(window_stride: int) -> int:
+    """Return a positive number of days between consecutive window starts."""
+    if isinstance(window_stride, bool) or not isinstance(
+        window_stride,
+        (int, np.integer),
+    ):
+        raise ValueError("window_stride must be a positive integer.")
+    normalized = int(window_stride)
+    if normalized <= 0:
+        raise ValueError("window_stride must be a positive integer.")
+    return normalized
+
+
 def create_windows(
     df: pd.DataFrame,
     window_size: int = 4,

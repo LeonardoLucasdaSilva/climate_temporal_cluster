@@ -59,7 +59,7 @@ from methods.tools.precipitation_utils import (
     DEFAULT_PRECIPITATION_COLUMN,
     precipitation_targets,
 )
-from methods.tools.sliding_windows import create_windows
+from methods.tools.sliding_windows import create_windows, validate_window_stride
 from methods.tools.sigma_choosing import calculate_sigma_values
 
 
@@ -73,6 +73,7 @@ class ExperimentConfig:
     n_clusters: int
     algorithm: str
     sigma: float | None
+    window_stride: int = 1
     manual_clustering_method: str = "legacy"
     cluster_assignment_method: str = "centroid"
     cluster_assignment_neighbors: int = 5
@@ -89,8 +90,11 @@ class ExperimentConfig:
             f"_{_variant_parameter_slug(parameter)}_{_variant_value_slug(value)}"
             for parameter, value in self.variant_parameters
         )
+        stride_part = (
+            "" if self.window_stride == 1 else f"_s{self.window_stride:02d}"
+        )
         return (
-            f"{self.state}_{self.station_id}_w{self.window_size:02d}_"
+            f"{self.state}_{self.station_id}_w{self.window_size:02d}{stride_part}_"
             f"k{self.n_clusters:02d}_{self.algorithm}_{sigma_part}"
             f"{variant_part}"
         ).replace(".", "p")
@@ -475,6 +479,7 @@ def build_configurations(
     window_sizes: list[int],
     n_clusters_list: list[int],
     clustering_algorithm: str,
+    window_stride: int = 1,
     manual_clustering_method: str = "legacy",
     cluster_assignment_method: str = "centroid",
     cluster_assignment_neighbors: int = 5,
@@ -484,6 +489,7 @@ def build_configurations(
     ] | None = None,
 ) -> list[ExperimentConfig]:
     """Return every clustering and numeric training-parameter combination."""
+    window_stride = validate_window_stride(window_stride)
     training_parameter_values = dict(training_parameter_values or {})
     unsupported_parameters = sorted(
         set(training_parameter_values) - set(VARIANT_PARAMETER_SLUGS)
@@ -515,6 +521,7 @@ def build_configurations(
             n_clusters=n_clusters,
             algorithm=clustering_algorithm.lower(),
             sigma=sigma,
+            window_stride=window_stride,
             manual_clustering_method=manual_clustering_method,
             cluster_assignment_method=cluster_assignment_method,
             cluster_assignment_neighbors=cluster_assignment_neighbors,
@@ -590,6 +597,7 @@ def _split_feature_matrix(
     fit_scaler: bool,
     fit_pca: bool,
     variance_threshold: float | None,
+    window_stride: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, FeatureScalingState, PCA | None]:
     values_df, fitted_scalers = scale_weather_features(
         df,
@@ -605,8 +613,12 @@ def _split_feature_matrix(
     windows_flat = flatten_windows(windows)
 
     if fit_pca and variance_threshold is not None:
-        n_components = determine_pca_components(windows_flat, variance_threshold)
-        pca = PCA(n_components=n_components).fit(windows_flat)
+        pca_fit_features = windows_flat[::validate_window_stride(window_stride)]
+        n_components = determine_pca_components(
+            pca_fit_features,
+            variance_threshold,
+        )
+        pca = PCA(n_components=n_components).fit(pca_fit_features)
     if pca is not None:
         windows_flat = pca.transform(windows_flat)
 
@@ -624,13 +636,16 @@ def _valid_supervised_windows(
     window_size: int,
     horizon: int,
     offset: int,
+    window_stride: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    window_stride = validate_window_stride(window_stride)
     valid_indices, _targets = precipitation_targets(
         df,
         window_size,
         len(windows_flat),
         horizon=horizon,
     )
+    valid_indices = valid_indices[valid_indices % window_stride == 0]
     targets_by_lead_day = _lead_day_targets(
         df,
         valid_indices,
@@ -885,6 +900,7 @@ def create_window_split_data(
     assign clusters while the LSTM feature matrices retain their pre-PCA
     dimensionality. PCA is still fitted only on training windows.
     """
+    window_stride = validate_window_stride(config.window_stride)
     if (
         normalize is not None
         or scaler_type is not None
@@ -939,6 +955,7 @@ def create_window_split_data(
         fit_scaler=True,
         fit_pca=True,
         variance_threshold=variance_threshold,
+        window_stride=window_stride,
     )
     cluster_val_windows, cluster_val_flat, _, _ = _split_feature_matrix(
         splits.val,
@@ -1019,6 +1036,7 @@ def create_window_split_data(
         config.window_size,
         forecast_horizon,
         splits.train_offset,
+        window_stride,
     )
     (
         cluster_X_val,
@@ -1033,6 +1051,7 @@ def create_window_split_data(
         config.window_size,
         forecast_horizon,
         splits.val_offset,
+        window_stride,
     )
     (
         cluster_X_test,
@@ -1047,6 +1066,7 @@ def create_window_split_data(
         config.window_size,
         forecast_horizon,
         splits.test_offset,
+        window_stride,
     )
     train_local_indices = i_train - splits.train_offset
     val_local_indices = i_val - splits.val_offset
@@ -1129,9 +1149,9 @@ def create_window_split_data(
             test_target_dates_by_lead_day=test_target_dates_by_lead_day,
             target_scaler=target_scaler,
             n_windows=(
-                len(cluster_train_windows)
-                + len(cluster_val_windows)
-                + len(cluster_test_windows)
+                len(cluster_train_windows[::window_stride])
+                + len(cluster_val_windows[::window_stride])
+                + len(cluster_test_windows[::window_stride])
             ),
         ),
         splits,
@@ -2075,6 +2095,7 @@ def run_experiment(
     pivot_parameter: str = "window_size",
     early_stopping_metric: str = "loss",
     loss_alpha: float = 1.0,
+    window_stride: int = 1,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
     clustering_algorithm = clustering_algorithm.lower()
@@ -2087,6 +2108,7 @@ def run_experiment(
     cluster_assignment_neighbors = _validate_cluster_assignment_neighbors(
         cluster_assignment_neighbors
     )
+    window_stride = validate_window_stride(window_stride)
     training_parameter_values: dict[str, list[int | float]] = {
         "lstm_units": _normalize_numeric_sweep_values(
             lstm_units,
@@ -2221,6 +2243,7 @@ def run_experiment(
             selected_sigma_values = calculate_sigma_values(
                 df,
                 n_values=n_sigma_values,
+                window_stride=window_stride,
             ).tolist()
             print_info(
                 f"Generated {len(selected_sigma_values)} sigma values: "
@@ -2257,6 +2280,7 @@ def run_experiment(
         window_sizes=window_sizes,
         n_clusters_list=n_clusters_list,
         clustering_algorithm=clustering_algorithm,
+        window_stride=window_stride,
         manual_clustering_method=manual_clustering_method,
         cluster_assignment_method=cluster_assignment_method,
         cluster_assignment_neighbors=cluster_assignment_neighbors,
@@ -2291,6 +2315,7 @@ def run_experiment(
         run_parameter_rows.append(
             {
                 "window_size": config.window_size,
+                "window_stride": config.window_stride,
                 "n_clusters": config.n_clusters,
                 "algorithm": config.algorithm,
                 "sigma": config.sigma,
@@ -2329,6 +2354,7 @@ def run_experiment(
         show_console_info,
     )
     print_info(f"Station: {state}/{station_id}", show_console_info)
+    print_info(f"Window stride: {window_stride} day(s)", show_console_info)
     print_info(f"Output directory: {sweep_dir}", show_console_info)
     print_info(
         "Clustering normalization: "
@@ -2481,6 +2507,7 @@ def run_experiment(
             manual_clustering_method=manual_clustering_method,
             cluster_assignment_method=cluster_assignment_method,
             cluster_assignment_neighbors=cluster_assignment_neighbors,
+            window_stride=window_stride,
             pca_variance_threshold=variance_threshold,
             pca_for_clustering_only=pca_for_clustering_only,
         )
@@ -2496,6 +2523,7 @@ def run_experiment(
             manual_clustering_method=manual_clustering_method,
             cluster_assignment_method=cluster_assignment_method,
             cluster_assignment_neighbors=cluster_assignment_neighbors,
+            window_stride=window_stride,
             pca_variance_threshold=variance_threshold,
             pca_for_clustering_only=pca_for_clustering_only,
             quantitative_metrics=quantitative_metrics,

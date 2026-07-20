@@ -10,6 +10,10 @@ windows are created, so raw daily observations are not shared across splits.
 
 - `run_experiment.py`: user-facing experiment runner. Edit station, sweep,
   training, split, and console settings here.
+- `data_science_run.py`: exploratory data runner for one full station dataset.
+  It loads INMET daily data without train/validation/test splits, then writes
+  histograms, time-series plots, and pairwise scatter plots for raw values and
+  optional normalized values.
 - `pipeline.py`: library functions that load data, build windows, cluster,
   train models, and save one full sweep. It should not contain experiment
   constants or a script entry point.
@@ -35,13 +39,21 @@ Or use the root launcher:
 .\.venv\Scripts\python.exe run_experiments.py
 ```
 
+For split-free exploratory plots, edit the station, variable list, and
+`SCALER_TYPE` at the top of `data_science_run.py`, then run:
+
+```powershell
+.\.venv\Scripts\python.exe src\methods\lstm_cluster\data_science_run.py
+```
+
 ## Main Flow
 
 1. Load daily station data.
 2. Select numeric climate features.
 3. Split the daily dataframe chronologically into train, validation, and test
    blocks.
-4. Build sliding windows independently inside each split.
+4. Build sliding windows independently inside each split and retain starts at
+   the configured `WINDOW_STRIDE`. A stride of `1` keeps every daily start.
 5. Fit the clustering covariate and precipitation normalizers
    (`CLUSTERING_FEATURE_NORMALIZE` and
    `CLUSTERING_PRECIPITATION_NORMALIZE`) plus optional PCA on training
@@ -76,6 +88,8 @@ Or use the root launcher:
 Change experiment variables in `run_experiment.py`:
 
 - station and data: `STATE`, `STATION_ID`
+- window sampling: `WINDOW_STRIDE` is the positive number of days between
+  consecutive window starts and defaults to `1`
 - clustering sweep: `WINDOW_SIZES`, `N_CLUSTERS_LIST`,
   `CLUSTERING_ALGORITHM`, `MANUAL_CLUSTERING_METHOD`, `FORECAST_HORIZON`,
   `MANUAL_ZERO_TOLERANCE`, `SIGMA_MODE`, `N_SIGMA_VALUES`,
@@ -379,6 +393,11 @@ is intentionally absent when `RUN_ONLY_CLUSTER = True`.
 The configuration root also contains `cluster_timeline.png`, an XY plot that
 shows the assigned cluster of every window in chronological split order:
 training, validation, and test.
+
+Every configuration records `WINDOW_STRIDE` in its report and summary files.
+When the stride is greater than `1`, the configuration folder name includes an
+`sXX` component. Window indices and target dates continue to refer to their
+original positions in the station timeline.
 
 Each configuration also saves
 `input_forecast_horizon_precipitation_by_cluster.csv`, which assigns the

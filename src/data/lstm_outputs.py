@@ -31,6 +31,7 @@ class ExperimentConfigLike(Protocol):
     """Fields required from an experiment configuration."""
 
     window_size: int
+    window_stride: int
     n_clusters: int
     algorithm: str
     sigma: float | None
@@ -2407,6 +2408,7 @@ def save_config_summary(
         f.write(f"Run folder: {config.name}\n")
         f.write(f"Station: {state}/{station_id}\n")
         f.write(f"Window size: {config.window_size}\n")
+        f.write(f"Window stride: {getattr(config, 'window_stride', 1)} day(s)\n")
         f.write(f"Forecast horizon: +{forecast_horizon} day(s)\n")
         f.write(f"Number of clusters: {config.n_clusters}\n")
         f.write(f"Clustering algorithm: {config.algorithm}\n")
@@ -2594,6 +2596,7 @@ def save_cluster_only_outputs(
         f.write(f"Run folder: {config.name}\n")
         f.write(f"Station: {state}/{station_id}\n")
         f.write(f"Window size: {config.window_size}\n")
+        f.write(f"Window stride: {getattr(config, 'window_stride', 1)} day(s)\n")
         f.write(f"Number of clusters: {config.n_clusters}\n")
         f.write(f"Clustering algorithm: {config.algorithm}\n")
         if config.algorithm == "manual":
@@ -2627,6 +2630,7 @@ def save_cluster_only_outputs(
     return {
         "run_name": config.name,
         "window_size": config.window_size,
+        "window_stride": getattr(config, "window_stride", 1),
         "n_clusters": config.n_clusters,
         "algorithm": config.algorithm,
         "manual_clustering_method": (
@@ -2938,6 +2942,7 @@ def save_run_outputs(
     result = {
         "run_name": config.name,
         "window_size": config.window_size,
+        "window_stride": getattr(config, "window_stride", 1),
         "n_clusters": config.n_clusters,
         "algorithm": config.algorithm,
         "manual_clustering_method": (
@@ -3151,6 +3156,7 @@ def save_sweep_outputs(
     cluster_assignment_method: str = "centroid",
     cluster_assignment_neighbors: int = 5,
     manual_clustering_method: str = "legacy",
+    window_stride: int = 1,
 ) -> None:
     """Save sweep-level CSV, text summary, and LaTeX table."""
     results_df = pd.DataFrame(results).sort_values(["test_rmse", "test_mae"])
@@ -3169,6 +3175,7 @@ def save_sweep_outputs(
         f.write(f"Station: {state}/{station_id}\n")
         f.write(f"Configurations: {len(results_df)}\n")
         f.write(f"Window sizes: {window_sizes}\n")
+        f.write(f"Window stride: {window_stride} day(s)\n")
         f.write(f"Cluster counts: {n_clusters_list}\n")
         f.write(f"Algorithm: {clustering_algorithm}\n")
         if clustering_algorithm == "manual":
@@ -3206,6 +3213,7 @@ def save_cluster_sweep_outputs(
     cluster_assignment_method: str = "centroid",
     cluster_assignment_neighbors: int = 5,
     manual_clustering_method: str = "legacy",
+    window_stride: int = 1,
 ) -> None:
     """Save sweep-level artifacts for a clustering-only experiment."""
     results_df = pd.DataFrame(results)
@@ -3225,6 +3233,7 @@ def save_cluster_sweep_outputs(
         f.write(f"Station: {state}/{station_id}\n")
         f.write(f"Configurations: {len(results_df)}\n")
         f.write(f"Window sizes: {window_sizes}\n")
+        f.write(f"Window stride: {window_stride} day(s)\n")
         f.write(f"Cluster counts: {n_clusters_list}\n")
         f.write(f"Algorithm: {clustering_algorithm}\n")
         if clustering_algorithm == "manual":

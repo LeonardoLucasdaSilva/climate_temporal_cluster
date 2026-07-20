@@ -162,6 +162,66 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         self.assertFalse(train_rows & test_rows)
         self.assertFalse(val_rows & test_rows)
 
+    def test_window_stride_preserves_original_indices_and_target_alignment(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            window_stride=2,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+        self.assertIn("_w04_s02_k02_", config.name)
+
+        split_data, _splits = create_window_split_data(
+            self.df,
+            config,
+            ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize="standard",
+            lstm_feature_normalize="standard",
+            lstm_precipitation_normalize=None,
+            variance_threshold=None,
+            forecast_horizon=1,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+        )
+
+        self.assertEqual(split_data.i_train.tolist(), [0, 2, 4, 6, 8, 10])
+        self.assertEqual(split_data.i_val.tolist(), [15])
+        self.assertEqual(split_data.i_test.tolist(), [21, 23, 25])
+        np.testing.assert_array_equal(split_data.y_train, [4, 1, 3, 0, 2, 4])
+        np.testing.assert_array_equal(
+            split_data.train_target_dates_by_lead_day[:, 0],
+            pd.date_range("2025-01-05", periods=6, freq="2D").to_numpy(),
+        )
+        self.assertEqual(split_data.n_windows, 11)
+
+    def test_window_stride_must_be_a_positive_integer(self) -> None:
+        for invalid_stride in (0, -1, 1.5, True):
+            with self.subTest(window_stride=invalid_stride):
+                config = ExperimentConfig(
+                    state="RS",
+                    station_id="A801",
+                    window_size=4,
+                    window_stride=invalid_stride,  # type: ignore[arg-type]
+                    n_clusters=2,
+                    algorithm="kmeans",
+                    sigma=None,
+                )
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "window_stride must be a positive integer",
+                ):
+                    create_window_split_data(
+                        self.df,
+                        config,
+                        ["TEMPERATURA_MAXIMA", "PRECIPITACAO_TOTAL"],
+                    )
+
     def test_minmax_scaler_is_fit_only_on_training_rows(self) -> None:
         config = ExperimentConfig(
             state="RS",
@@ -622,6 +682,7 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             state="RS",
             station_id="A801",
             window_size=4,
+            window_stride=2,
             n_clusters=2,
             algorithm="kmeans",
             sigma=None,
@@ -645,6 +706,7 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         )
 
         original_feature_count = config.window_size * 3
+        self.assertEqual(split_data.i_train.tolist(), [0, 2, 4, 6, 8, 10])
         self.assertEqual(split_data.X_train.shape[1], original_feature_count)
         self.assertEqual(split_data.X_val.shape[1], original_feature_count)
         self.assertEqual(split_data.X_test.shape[1], original_feature_count)

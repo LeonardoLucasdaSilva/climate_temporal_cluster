@@ -76,6 +76,7 @@ class LstmReportTests(unittest.TestCase):
                 "state": "RS",
                 "station_id": "A801",
                 "window_size": 8,
+                "window_stride": 3,
                 "n_clusters": 3,
                 "algorithm": "manual",
                 "manual_clustering_method": "rain_level",
@@ -100,6 +101,7 @@ class LstmReportTests(unittest.TestCase):
         )
 
         self.assertIn(r"\section*{Configuration}", tex)
+        self.assertIn(r"\item \textbf{Window Stride:} 3", tex)
         self.assertIn(r"\item \textbf{Clustering Feature Scaler:} standard", tex)
         self.assertIn(r"\item \textbf{Clustering Precipitation Scaler:} none", tex)
         self.assertIn(r"\item \textbf{LSTM Feature Scaler:} minmax", tex)

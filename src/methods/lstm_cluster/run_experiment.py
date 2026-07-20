@@ -15,7 +15,8 @@ STATE = "RS"
 STATION_ID = "A801"
 
 # Data setting
-WINDOW_SIZES = [15]
+WINDOW_SIZES = [25]
+WINDOW_STRIDE = 10  # Days between consecutive window starts;
 FORECAST_HORIZON = 5
 USE_ALL_FEATURES = True
 
@@ -42,7 +43,7 @@ CLUSTER_ASSIGNMENT_METHOD = "knn"  # "centroid" or "knn"
 CLUSTER_ASSIGNMENT_NEIGHBORS = 5  # Used only when assignment method is "knn"
 N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"  # "auto" or "manual"
-MANUAL_SIGMA_VALUES = [0.1]  # Only used if SIGMA_MODE is "manual"
+MANUAL_SIGMA_VALUES = [0.1,0.3,0.5,1,5,10,100]  # Only used if SIGMA_MODE is "manual"
 
 
 
@@ -66,7 +67,7 @@ WEIGHT_DECAY: float | list[float] = 1e-4  # Decoupled weight decay used by AdamW
 # Supported: "mean_squared_error", "mae", "huber", "weighted_mse_loss",
 # or "quantile_weighted_mse".
 LSTM_LOSS_FUNCTION = "weighted_mse_loss"
-LOSS_ALPHA = 1.0  # Positive coefficient used only by weighted_mse_loss
+LOSS_ALPHA = 1e-2  # Positive coefficient used only by weighted_mse_loss
 LOSS_QUANTILES = [0.95]
 LOSS_QUANTILE_WEIGHTS = "auto"  # "auto" or one positive weight per quantile bin
 
@@ -78,7 +79,7 @@ PATIENCE: int | list[int] = 20
 EARLY_STOPPING_METRIC = "loss"  # "loss", "mse", "mae", or "r2"
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True
-RUN_ONLY_CLUSTER = False  # Only cluster windows; skip all LSTM training/output.
+RUN_ONLY_CLUSTER = True  # Only cluster windows; skip all LSTM training/output.
 
 # Train/validation/test split
 TRAIN_RATIO = 0.6
@@ -100,6 +101,7 @@ def main() -> None:
         state=STATE,
         station_id=STATION_ID,
         window_sizes=WINDOW_SIZES,
+        window_stride=WINDOW_STRIDE,
         clustering_feature_normalize=CLUSTERING_FEATURE_NORMALIZE,
         clustering_precipitation_normalize=CLUSTERING_PRECIPITATION_NORMALIZE,
         lstm_feature_normalize=LSTM_FEATURE_NORMALIZE,

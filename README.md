@@ -104,6 +104,7 @@ styling live in `src/methods/lstm_cluster/config_output.yaml`.
 STATE = "RS"
 STATION_ID = "A801"
 WINDOW_SIZES = [8, 12, 16, 20, 24, 28]
+WINDOW_STRIDE = 1  # Days between consecutive window starts
 N_CLUSTERS_LIST = [3, 4, 5]
 PCA_VARIANCE_THRESHOLD = 0.90  # None disables PCA
 PCA_FOR_CLUSTERING_ONLY = True
@@ -183,7 +184,9 @@ For each configuration, the experiment runs these stages:
 2. Select numeric climate features.
 3. Split the daily dataframe chronologically into train, validation, and test
    blocks.
-4. Build sliding windows independently inside each dataframe split.
+4. Build sliding windows independently inside each dataframe split, retaining
+   one start every `WINDOW_STRIDE` days. The default stride of `1` retains the
+   previous daily-window behavior.
 5. Fit the selected clustering normalizers
    (`CLUSTERING_FEATURE_NORMALIZE` and `CLUSTERING_PRECIPITATION_NORMALIZE`)
    and optional clustering PCA on training rows/windows only, then transform
@@ -296,6 +299,12 @@ Implementation:
 
 Sliding windows convert daily rows into temporal samples. Each sample contains
 `window_size` consecutive days and all selected feature columns.
+
+In the LSTM+Cluster experiment, `WINDOW_STRIDE` controls the distance in days
+between consecutive window starts inside each chronological split. A value of
+`1` keeps every possible window, `2` keeps starts `0, 2, 4, ...`, and a value
+equal to `window_size` creates non-overlapping windows. Original start indices,
+target dates, and forecast-horizon alignment are preserved.
 
 ```python
 from methods.tools.sliding_windows import create_windows

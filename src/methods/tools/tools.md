@@ -11,7 +11,8 @@ and experiments.
 - `sigma_choosing.py`: helpers for spectral-clustering sigma selection.
   Use `euclidian_distances` to build a pairwise distance matrix and
   `take_sigma` or `calculate_sigma_values` to generate candidate sigma values
-  from that distribution.
+  from that distribution. `calculate_sigma_values` can retain window starts at
+  a configured `window_stride` before calculating pairwise distances.
 - `precipitation_utils.py`: precipitation-specific helpers. Use
   `horizon_precipitation` to align forecast-horizon precipitation targets with
   sliding windows, `precipitation_targets` to return only finite supervised
@@ -21,7 +22,9 @@ and experiments.
 - `sliding_windows.py`: sliding-window construction for daily climate station
   data, with optional normalization and PCA. Use `create_windows` to build
   window tensors and `windows_to_dataframe` to convert 3D windows back to a
-  flat dataframe for inspection or export.
+  flat dataframe for inspection or export. `validate_window_stride` provides
+  the shared positive-integer validation used by the LSTM+cluster pipeline and
+  sigma selection.
 
 Typical usage:
 
