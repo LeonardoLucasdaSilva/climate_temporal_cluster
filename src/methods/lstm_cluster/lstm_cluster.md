@@ -60,9 +60,15 @@ For split-free exploratory plots, edit the station, variable list, and
    rows/windows only, then transform validation and test with those training
    transforms. With `PCA_FOR_CLUSTERING_ONLY = True`, use PCA coordinates only
    for cluster fitting and held-out cluster assignment.
-6. Cluster training windows with K-means, spectral, or manual rain clustering,
+6. Cluster training windows with K-means, K-Shape, spectral, or manual rain
+   clustering,
    then assign validation and test windows with the configured cluster
-   assignment method. `"centroid"` uses the nearest training-cluster centroid;
+   assignment method. Euclidean uses flattened windows. DTW retains the day
+   and feature axes and builds a dense pairwise distance matrix for spectral
+   clustering. K-Shape retains those axes too, z-normalizes each window feature,
+   aligns shapes by normalized cross-correlation, and routes held-out windows
+   with learned shape centroids. `"centroid"` uses the nearest training-cluster
+   centroid;
    `"knn"` uses the nearest labeled training windows.
 7. Build one target column for each lead day from D+1 through the configured
    forecast horizon inside each split. The final D+`FORECAST_HORIZON` column is
@@ -91,7 +97,8 @@ Change experiment variables in `run_experiment.py`:
 - window sampling: `WINDOW_STRIDE` is the positive number of days between
   consecutive window starts and defaults to `1`
 - clustering sweep: `WINDOW_SIZES`, `N_CLUSTERS_LIST`,
-  `CLUSTERING_ALGORITHM`, `MANUAL_CLUSTERING_METHOD`, `FORECAST_HORIZON`,
+  `CLUSTERING_ALGORITHM`, `CLUSTER_DISSIMILARITY_METRIC`,
+  `MANUAL_CLUSTERING_METHOD`, `FORECAST_HORIZON`,
   `MANUAL_ZERO_TOLERANCE`, `SIGMA_MODE`, `N_SIGMA_VALUES`,
   `MANUAL_SIGMA_VALUES`, `USE_ALL_FEATURES`
 - held-out cluster assignment: `CLUSTER_ASSIGNMENT_METHOD` supports
@@ -117,7 +124,8 @@ Change experiment variables in `run_experiment.py`:
   `WEIGHT_DECAY` controls its decoupled parameter decay. Every numeric model or
   training setting may be a scalar or a list; lists add their values to the
   Cartesian configuration grid and append stable parameter suffixes to the
-  configuration folder names.
+  configuration folder names. Set `LSTM_UNITS_2 = None` to use only one LSTM
+  layer with `LSTM_UNITS` units.
 - LSTM loss: `LSTM_LOSS_FUNCTION`, `LOSS_ALPHA`, `LOSS_QUANTILES`,
   `LOSS_QUANTILE_WEIGHTS`. The default `"weighted_mse_loss"` minimizes the mean
   of `(1 + LOSS_ALPHA * y_real) * |y_real - y_pred|^2`, where `LOSS_ALPHA`
@@ -128,7 +136,8 @@ Change experiment variables in `run_experiment.py`:
   non-negative (for example, `LSTM_PRECIPITATION_NORMALIZE = None`); standardized
   negative targets can produce negative weights.
 - training settings: `EPOCHS`, `BATCH_SIZE`, `EARLY_STOPPING`, `PATIENCE`,
-  `EARLY_STOPPING_METRIC`, `VERBOSE_TRAINING`, `SHOW_CONSOLE_INFO`
+  `EARLY_STOPPING_METRIC`, `VERBOSE_TRAINING`, `SHOW_CONSOLE_INFO`,
+  `PARALEL`, `CREATE_REPORT`
 - data split: `TRAIN_RATIO`, `VAL_RATIO`, `RANDOM_STATE`
 - output and plot styling settings: `OUTPUT_CONFIG`, with details in
   `config_output.yaml`
@@ -176,7 +185,11 @@ For spectral clustering, set `SIGMA_MODE = "auto"` to generate
 `SIGMA_MODE = "manual"` to run the exact positive values listed in
 `MANUAL_SIGMA_VALUES`.
 
-Set `CLUSTERING_ALGORITHM` to `"kmeans"`, `"spectral"`, or `"manual"`.
+Set `CLUSTERING_ALGORITHM` to `"kmeans"`, `"kshape"`, `"spectral"`, or
+`"manual"`. K-Shape uses the original temporal window tensors and therefore
+requires `PCA_VARIANCE_THRESHOLD = None`. It has no sigma parameter and assigns
+validation/test windows directly to its learned shape centroids, independently
+of `CLUSTER_ASSIGNMENT_METHOD`.
 For manual clustering, `MANUAL_CLUSTERING_METHOD = "legacy"` preserves the
 original behavior: label `0` is reserved for known zero-rain targets and known
 positive targets are split into ordered lower-to-heavier rain groups.
@@ -198,13 +211,26 @@ to train the LSTM on every lead day from D+1 through that horizon. This horizon
 changes legacy labels but does not change `rain_level` labels, which depend only
 on the input window.
 
-`CLUSTERING_ALGORITHM` and `CLUSTER_ASSIGNMENT_METHOD` have separate roles.
-The clustering algorithm fits labels using training windows only. Validation
-and test are never refitted: `CLUSTER_ASSIGNMENT_METHOD = "centroid"` assigns
+`CLUSTERING_ALGORITHM` and `CLUSTER_ASSIGNMENT_METHOD` have separate roles for
+K-means, spectral, and manual clustering. The clustering algorithm fits labels
+using training windows only. Validation and test are never refitted:
+`CLUSTER_ASSIGNMENT_METHOD = "centroid"` assigns
 each held-out window to the closest training-cluster mean by Euclidean
 distance, while `"knn"` uses majority voting among the configured number of
 nearest training windows. If K is larger than the number of training windows,
 the pipeline safely uses all available training windows.
+
+`CLUSTER_DISSIMILARITY_METRIC` accepts `"euclidean"` and `"dtw"`.
+`"dwt"` is also accepted case-insensitively as a compatibility alias and is
+stored as `"dtw"`. DTW is the exact dependent multivariate variant: the local
+cost is squared Euclidean distance across all scaled weather variables, with
+one temporal warping path shared by those variables. It currently requires
+`CLUSTERING_ALGORITHM = "spectral"` or `"manual"`,
+`CLUSTER_ASSIGNMENT_METHOD = "knn"`, and `PCA_VARIANCE_THRESHOLD = None`.
+Validation and test routing then uses DTW distance to the training windows.
+Because the pairwise matrix is dense and exact DTW also compares the days
+inside every pair, increasing `WINDOW_STRIDE` can materially reduce runtime
+and memory use.
 
 Forecast-horizon precipitation alignment is handled by
 `methods.tools.precipitation_utils`. The LSTM pipeline uses the configured
@@ -216,6 +242,14 @@ partial or NaN target row.
 Set `SHOW_CONSOLE_INFO = False` to hide pipeline progress messages and Keras
 training output. The root `run_experiments.py` launcher has the same setting and
 passes it to this runner through `LSTM_CLUSTER_SHOW_CONSOLE_INFO`.
+
+Set `PARALEL = True` to use a process pool. With `RUN_ONLY_CLUSTER = True`,
+independent sweep configurations run simultaneously, using at most the number
+of configurations or available CPU cores; each process writes only to its
+configuration folder, and sweep results retain configuration order. In a full
+LSTM run, cluster-specific LSTMs are parallelized within each configuration,
+and TensorFlow threads are limited inside each worker to reduce
+oversubscription. Set `PARALEL = False` for serial execution.
 
 Set `TEST_ALL_MODELS = False` to skip the additional transfer analysis. Set
 `TEST_ALL_MODELS = True` to evaluate every test sample with every trained LSTM
@@ -235,7 +269,9 @@ non-null values; invalid or constant pivots fail before LSTM training begins.
 
 The numeric list-capable settings are `LSTM_UNITS`, `LSTM_UNITS_2`,
 `DROPOUT_RATE`, `LEARNING_RATE`, `WEIGHT_DECAY`, `EPOCHS`, `BATCH_SIZE`, and
-`PATIENCE`. Use a list to vary learning rate inside one sweep:
+`PATIENCE`. `LSTM_UNITS_2` also accepts `None`, including in a list such as
+`[None, 64]`, to compare one-layer and two-layer LSTMs. Use a list to vary
+learning rate inside one sweep:
 
 ```python
 LEARNING_RATE = [0.0001, 0.0005, 0.001]
@@ -281,8 +317,11 @@ The sweep folder contains summary CSV/text files and LaTeX tables. Each
 configuration subfolder contains run metrics, predictions, reports, and plots.
 Per-configuration output writing is handled by `data.lstm_outputs`; the
 optional sweep comparison is written by `data.lstm_comparative_outputs`.
-The sweep-level `sweep_summary.txt` records the PCA variance threshold and PCA
-mode (`disabled`, `clustering only`, or `clustering and LSTM`) for the run.
+Configuration folder names include `sigma_<value>` only for spectral
+clustering runs; `kmeans` and `kshape` names omit the sigma component.
+The sweep-level `sweep_summary.txt` records the PCA variance threshold, PCA
+mode (`disabled`, `clustering only`, or `clustering and LSTM`), and cluster
+dissimilarity metric for the run.
 
 When enabled, `comparative_analysis/` is created directly under the sweep
 folder. It contains:
@@ -355,10 +394,11 @@ clustering precipitation scaler, LSTM feature scaler, LSTM precipitation
 scaler, and target scale for that run. Predictions are inverse-transformed to
 millimeters before metrics and plots. When all-model test selection is enabled,
 this report includes an `Análise de transferência entre clusters` section that
-labels the result as oracle-only and shows the routing matrix. If a local LaTeX
-compiler is available, the pipeline also writes `experiment_report.pdf` using
-the shared MiKTeX state folder at `outputs/.miktex`; if PDF compilation fails,
-`experiment_report_compile.log` is saved for troubleshooting.
+labels the result as oracle-only and shows the routing matrix. The pipeline only
+compiles `experiment_report.pdf` when `CREATE_REPORT = True`; with
+`CREATE_REPORT = False`, it still writes the `.tex` file and skips the slow
+LaTeX compilation. If PDF compilation fails, `experiment_report_compile.log` is
+saved for troubleshooting.
 
 Each configuration also groups generated images by purpose. General
 same-cluster prediction plots go under `prediction_overview_same_cluster/`,
@@ -372,11 +412,18 @@ residual/error plots under `residual_diagnostics/`, cluster diagnostics under
 `cluster_diagnostics/`, and training curves under
 `model_fit/`. The cluster diagnostics include `08_silhouette_analysis.png` and
 `silhouette_scores.csv`, computed from the same split feature matrices and
-cluster labels used by the current pipeline. The
+cluster labels used by the current pipeline. With DTW, silhouette uses a
+precomputed DTW distance matrix and records the canonical metric name. The
 `06_cluster_distribution.png` diagnostic compares train, validation, and test
 sample counts and displays `n_train` plus `ceil(n_train / batch_size)` for each
 cluster; exact values are also written to
-`cluster_training_batch_statistics.csv`. Existing per-cluster collections
+`cluster_training_batch_statistics.csv`. With `RUN_ONLY_CLUSTER = True`, the
+same PNG retains all three grouped split bars, while the LSTM-specific workload
+table and batch-statistics CSV are omitted. The
+`07_precipitation_distribution_by_cluster.png` diagnostic shows side-by-side
+boxplots for forecast-target precipitation and mean precipitation across the
+input-window days, using the same training, validation, and test split colors
+as `06_cluster_distribution.png`. Existing per-cluster collections
 remain in folders such as
 `cluster_precipitation_histograms/`,
 `cluster_prediction_histograms/`, `cluster_prediction_timeseries/`, and
@@ -390,9 +437,9 @@ It mirrors `cluster_prediction_histograms/`, `cluster_prediction_timeseries/`,
 same-cluster training predictions. The underlying final-horizon and per-lead
 values are exported to `train_performance/train_predictions.csv`. This folder
 is intentionally absent when `RUN_ONLY_CLUSTER = True`.
-The configuration root also contains `cluster_timeline.png`, an XY plot that
-shows the assigned cluster of every window in chronological split order:
-training, validation, and test.
+The `cluster_diagnostics/` folder also contains `cluster_timeline.png`, an XY
+plot that shows the assigned cluster of every window in chronological split
+order: training, validation, and test.
 
 Every configuration records `WINDOW_STRIDE` in its report and summary files.
 When the stride is greater than `1`, the configuration folder name includes an

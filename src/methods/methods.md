@@ -3,9 +3,9 @@
 This package holds reusable method implementations that are not tied to a
 single experiment.
 
-- `cluster/`: clustering algorithms, including the custom spectral clustering
-  implementation, standalone eigengap analysis, and horizon-rain-guided manual
-  clustering.
+- `cluster/`: clustering algorithms, including local K-Shape and spectral
+  implementations, multivariate DTW window distances, standalone eigengap
+  analysis, and horizon-rain-guided manual clustering.
 - `arma/`: univariate ARMA precipitation baseline used for comparison with
   LSTM+cluster runs. It keeps chronological split and lead-day target alignment
   compatible with the main experiment and writes outputs under
@@ -20,6 +20,7 @@ Use these modules from experiments or pipelines, for example:
 
 ```python
 from methods.cluster.ng import spectral_clustering
+from methods.cluster.kshape import KShape
 from methods.cluster.manual import manual_clustering
 from methods.arma.pipeline import run_arma_experiment
 from methods.tools.sliding_windows import create_windows

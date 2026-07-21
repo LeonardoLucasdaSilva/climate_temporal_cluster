@@ -15,74 +15,74 @@ STATE = "RS"
 STATION_ID = "A801"
 
 # Data setting
-WINDOW_SIZES = [25]
-WINDOW_STRIDE = 10  # Days between consecutive window starts;
+WINDOW_SIZES = [10]
+WINDOW_STRIDE = 10                                # Days between consecutive window starts;
 FORECAST_HORIZON = 5
 USE_ALL_FEATURES = True
 
 
-#PCA settings
+# PCA settings
 PCA_VARIANCE_THRESHOLD = None
-PCA_FOR_CLUSTERING_ONLY = True  # Keep pre-PCA window features as LSTM inputs
+PCA_FOR_CLUSTERING_ONLY = True                   # Keep pre-PCA window features as LSTM inputs
 
 
-#Normalization settings
-CLUSTERING_FEATURE_NORMALIZE = 'minmax'  # "standard", "minmax", or None
-CLUSTERING_PRECIPITATION_NORMALIZE = None  # "standard", "minmax", or None
-LSTM_FEATURE_NORMALIZE = "minmax"  # "standard", "minmax", or None
-LSTM_PRECIPITATION_NORMALIZE = None  # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
+# Normalization settings
+CLUSTERING_FEATURE_NORMALIZE = 'standard'         # "standard", "minmax", or None
+CLUSTERING_PRECIPITATION_NORMALIZE = 'standard'  # "standard", "minmax", or None
+LSTM_FEATURE_NORMALIZE = "standard"              # "standard", "minmax", or None
+LSTM_PRECIPITATION_NORMALIZE = None              # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
 
 
 
-# Clustering setting
-N_CLUSTERS_LIST = [3]
-CLUSTERING_ALGORITHM = "spectral"  # "kmeans", "spectral", or "manual"
-MANUAL_CLUSTERING_METHOD = "rain_level"  # "legacy" or "rain_level"
-MANUAL_ZERO_TOLERANCE = 0.0  # Used only by legacy manual clustering
-CLUSTER_ASSIGNMENT_METHOD = "knn"  # "centroid" or "knn"
-CLUSTER_ASSIGNMENT_NEIGHBORS = 5  # Used only when assignment method is "knn"
+# Clustering parameters
+N_CLUSTERS_LIST = [5]
+CLUSTERING_ALGORITHM = "kshape"                  # "kmeans", "kshape", "spectral", or "manual"
+CLUSTER_DISSIMILARITY_METRIC = "euclidean"       # "euclidean" or "dtw"
+MANUAL_CLUSTERING_METHOD = "rain_level"          # "legacy" or "rain_level"
+MANUAL_ZERO_TOLERANCE = 0.0                      # Used only by legacy manual clustering
+CLUSTER_ASSIGNMENT_METHOD = "centroid"                # "centroid" or "knn"
+CLUSTER_ASSIGNMENT_NEIGHBORS = 3                 # Used only when assignment method is "knn"
 N_SIGMA_VALUES = 5
-SIGMA_MODE = "manual"  # "auto" or "manual"
-MANUAL_SIGMA_VALUES = [0.1,0.3,0.5,1,5,10,100]  # Only used if SIGMA_MODE is "manual"
+SIGMA_MODE = "manual"                            # "auto" or "manual"
+MANUAL_SIGMA_VALUES = [0.3]                      # Only used if SIGMA_MODE is "manual"
+RUN_ONLY_CLUSTER = False
 
-
+# Model hyperparameters. Use LSTM_UNITS_2=None for a single LSTM layer.
+LSTM_UNITS: int | list[int] = 32
+LSTM_UNITS_2: int | None | list[int | None] = None
+DROPOUT_RATE: float | list[float] = 0.0
+LEARNING_RATE: float | list[float] = 1e-3
+WEIGHT_DECAY: float | list[float] = 1e-3         # Decoupled weight decay used by AdamW
 
 # Metrics exported to compact comparison tables
 QUANTITATIVE_METRICS = ["MSE"]
 
-# Sweep-level comparison between the tests produced by this run.
-COMPARATIVE_RUN = False
-PIVOT_PARAMETER = "LSTM_UNITS"  # e.g. "window_size", "learning_rate", "K", "sigma"
-
 # Optional oracle diagnostic: evaluates every test window with every cluster LSTM.
-# It never replaces the same-cluster test metrics or the main plots.
 TEST_ALL_MODELS = True
 
-# Model hyperparameters. Each numeric setting accepts one scalar or a sweep list.
-LSTM_UNITS: int | list[int] = 64
-LSTM_UNITS_2: int | list[int] = 32
-DROPOUT_RATE: float | list[float] = 0.3
-LEARNING_RATE: float | list[float] = 1e-3
-WEIGHT_DECAY: float | list[float] = 1e-4  # Decoupled weight decay used by AdamW
-# Supported: "mean_squared_error", "mae", "huber", "weighted_mse_loss",
-# or "quantile_weighted_mse".
-LSTM_LOSS_FUNCTION = "weighted_mse_loss"
-LOSS_ALPHA = 1e-2  # Positive coefficient used only by weighted_mse_loss
-LOSS_QUANTILES = [0.95]
-LOSS_QUANTILE_WEIGHTS = "auto"  # "auto" or one positive weight per quantile bin
+# LSTM Loss and metrics
+LSTM_LOSS_FUNCTION = "quantile_weighted_mse"     # Supported: "mean_squared_error", "mae", "huber", "weighted_mse_loss", "quantile_weighted_mse"
+LOSS_ALPHA = 1e-2                                # Positive coefficient used only by weighted_mse_loss
+LOSS_QUANTILES = [0.85]
+LOSS_QUANTILE_WEIGHTS = "auto"                   # "auto" or one positive weight per quantile bin
 
 # Training settings. Numeric settings may also be lists in a comparative grid.
 EPOCHS: int | list[int] = 150
-BATCH_SIZE: int | list[int] = 12
+BATCH_SIZE: int | list[int] = 4
 EARLY_STOPPING = True
 PATIENCE: int | list[int] = 20
-EARLY_STOPPING_METRIC = "loss"  # "loss", "mse", "mae", or "r2"
+EARLY_STOPPING_METRIC = "loss"                   # "loss", "mse", "mae", or "r2"
 VERBOSE_TRAINING = 1
-SHOW_CONSOLE_INFO = True
-RUN_ONLY_CLUSTER = True  # Only cluster windows; skip all LSTM training/output.
+SHOW_CONSOLE_INFO = True                         # Only cluster windows; skip all LSTM training/output.
+PARALEL = True                                   # Parallelize cluster-only configs or cluster LSTMs.
+CREATE_REPORT = False                            # Compile experiment_report.pdf; .tex is always written.
+
+# Sweep-level comparison between the tests produced by this run.
+COMPARATIVE_RUN = False
+PIVOT_PARAMETER = "LSTM_UNITS"                   # e.g. "window_size", "learning_rate", "K", "sigma"
 
 # Train/validation/test split
-TRAIN_RATIO = 0.6
+TRAIN_RATIO = 0.75
 VAL_RATIO = 0.1
 RANDOM_STATE = 42
 
@@ -111,6 +111,7 @@ def main() -> None:
         run_only_cluster=RUN_ONLY_CLUSTER,
         n_clusters_list=N_CLUSTERS_LIST,
         clustering_algorithm=CLUSTERING_ALGORITHM,
+        cluster_dissimilarity_metric=CLUSTER_DISSIMILARITY_METRIC,
         manual_clustering_method=MANUAL_CLUSTERING_METHOD,
         manual_zero_tolerance=MANUAL_ZERO_TOLERANCE,
         cluster_assignment_method=CLUSTER_ASSIGNMENT_METHOD,
@@ -148,6 +149,8 @@ def main() -> None:
         show_console_info=SHOW_CONSOLE_INFO,
         comparative_run=COMPARATIVE_RUN,
         pivot_parameter=PIVOT_PARAMETER,
+        parallel_training=PARALEL,
+        create_report=False,
     )
 
 

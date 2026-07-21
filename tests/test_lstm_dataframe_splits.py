@@ -28,6 +28,7 @@ sys.modules["models.lstm"] = stub_lstm
 
 from methods.lstm_cluster.pipeline import (  # noqa: E402
     ExperimentConfig,
+    _assign_held_out_cluster_labels,
     _cluster_window_splits,
     _normalize_precipitation_scaler_type,
     create_window_split_data,
@@ -450,6 +451,15 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         np.testing.assert_allclose(split_data.current_val, [3.0])
         np.testing.assert_allclose(split_data.current_test, [4.0, 0.0, 1.0, 2.0])
         np.testing.assert_allclose(
+            split_data.input_window_mean_train,
+            [1.5, 2.5, 2.25, 2.0, 1.75, 1.5, 2.5, 2.25, 2.0, 1.75],
+        )
+        np.testing.assert_allclose(split_data.input_window_mean_val, [1.5])
+        np.testing.assert_allclose(
+            split_data.input_window_mean_test,
+            [2.5, 2.25, 2.0, 1.75],
+        )
+        np.testing.assert_allclose(
             split_data.y_train,
             [0.0, 1.0, 2.0, 3.0, 4.0, 0.0, 1.0, 2.0, 3.0, 4.0],
         )
@@ -513,6 +523,26 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         np.testing.assert_allclose(
             split_data.all_current_precipitation,
             [3.0, 4.0, 0.0, 1.0, 2.0, 3.0, 4.0, 0.0, 1.0, 2.0, 3.0, 4.0, 0.0, 1.0, 2.0],
+        )
+        np.testing.assert_allclose(
+            split_data.all_input_window_mean_precipitation,
+            [
+                1.5,
+                2.5,
+                2.25,
+                2.0,
+                1.75,
+                1.5,
+                2.5,
+                2.25,
+                2.0,
+                1.75,
+                1.5,
+                2.5,
+                2.25,
+                2.0,
+                1.75,
+            ],
         )
         np.testing.assert_allclose(
             split_data.test_targets_by_lead_day,
@@ -651,6 +681,117 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         np.testing.assert_array_equal(centroid_val, [1])
         np.testing.assert_array_equal(knn_val, [0])
         np.testing.assert_array_equal(knn_test, [1])
+
+    def test_held_out_windows_can_use_dtw_knn_assignment(self) -> None:
+        train_windows = np.array(
+            [
+                [[0.0], [0.0], [1.0]],
+                [[5.0], [5.0], [5.0]],
+            ]
+        )
+        held_out_windows = np.array([[[0.0], [1.0], [1.0]]])
+
+        labels = _assign_held_out_cluster_labels(
+            train_windows.reshape(2, -1),
+            np.array([0, 1]),
+            held_out_windows.reshape(1, -1),
+            method="knn",
+            n_clusters=2,
+            n_neighbors=1,
+            dissimilarity_metric="DWT",
+            train_windows=train_windows,
+            held_out_windows=held_out_windows,
+        )
+
+        np.testing.assert_array_equal(labels, [0])
+
+    def test_dtw_configuration_rejects_pca(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="spectral",
+            sigma=1.0,
+            cluster_dissimilarity_metric="dtw",
+            cluster_assignment_method="knn",
+        )
+
+        with self.assertRaisesRegex(ValueError, "PCA must be disabled"):
+            create_window_split_data(
+                self.df,
+                config,
+                ["TEMPERATURA_MAXIMA", "PRECIPITACAO_TOTAL"],
+                variance_threshold=0.9,
+            )
+
+    def test_spectral_pipeline_uses_dtw_windows_and_knn_routing(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=3,
+            window_stride=2,
+            n_clusters=2,
+            algorithm="spectral",
+            sigma=1.0,
+            cluster_dissimilarity_metric="DWT",
+            cluster_assignment_method="knn",
+            cluster_assignment_neighbors=1,
+        )
+
+        split_data, _splits = create_window_split_data(
+            self.df,
+            config,
+            ["TEMPERATURA_MAXIMA", "PRECIPITACAO_TOTAL"],
+            clustering_feature_normalize="minmax",
+            clustering_precipitation_normalize="minmax",
+            variance_threshold=None,
+            forecast_horizon=1,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            run_only_cluster=True,
+        )
+
+        self.assertEqual(split_data.cluster_windows_train.ndim, 3)
+        self.assertEqual(split_data.cluster_windows_train.shape[1:], (3, 2))
+        self.assertEqual(len(split_data.c_train), len(split_data.i_train))
+        self.assertEqual(len(split_data.c_val), len(split_data.i_val))
+        self.assertEqual(len(split_data.c_test), len(split_data.i_test))
+
+    def test_dtw_configuration_rejects_kmeans(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=2,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+            cluster_dissimilarity_metric="dtw",
+            cluster_assignment_method="knn",
+        )
+        windows = np.array(
+            [
+                [[0.0], [0.0]],
+                [[0.0], [1.0]],
+                [[5.0], [5.0]],
+                [[5.0], [6.0]],
+            ]
+        )
+
+        with self.assertRaisesRegex(ValueError, "kmeans.*does not support"):
+            _cluster_window_splits(
+                config,
+                windows.reshape(4, -1),
+                windows[:1].reshape(1, -1),
+                windows[:1].reshape(1, -1),
+                np.array([0.0, 0.0, 1.0, 1.0]),
+                random_state=42,
+                manual_zero_tolerance=0.0,
+                train_windows=windows,
+                val_windows=windows[:1],
+                test_windows=windows[:1],
+            )
 
     def test_cluster_assignment_method_is_validated(self) -> None:
         config = ExperimentConfig(

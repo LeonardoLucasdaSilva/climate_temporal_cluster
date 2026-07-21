@@ -22,7 +22,7 @@ Create a presentation from one saved configuration run by editing the block at
 the top of `create_beamer_report.py`:
 
 ```python
-RUN_DIR = PROJECT_ROOT / "outputs" / "lstm_cluster_sweep_RS_A801_YYYYMMDD_HHMMSS" / "RS_A801_w15_k03_kmeans_sigma_na"
+RUN_DIR = PROJECT_ROOT / "outputs" / "lstm_cluster_sweep_RS_A801_YYYYMMDD_HHMMSS" / "RS_A801_w15_k03_kmeans"
 SELECTED_PLOTS = [
     "prediction_overview/02_predictions_vs_actual.png",
     "cluster_prediction_scatter/*.png",

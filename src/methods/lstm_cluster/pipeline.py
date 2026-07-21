@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from itertools import product
@@ -30,10 +32,16 @@ from data.lstm_outputs import (
     save_sweep_outputs,
 )
 from evaluation.metrics import calculate_regression_metrics
+from methods.cluster.dtw import (
+    cross_dtw_distances,
+    normalize_dissimilarity_metric,
+    pairwise_dtw_distances,
+)
 from methods.cluster.manual import (
     ManualRainClustering,
     normalize_manual_clustering_method,
 )
+from methods.cluster.kshape import KShape
 from methods.cluster.ng import spectral_clustering
 from methods.cluster.cluster_pipeline import (
     KMEANS_N_INIT,
@@ -74,18 +82,25 @@ class ExperimentConfig:
     algorithm: str
     sigma: float | None
     window_stride: int = 1
+    cluster_dissimilarity_metric: str = "euclidean"
     manual_clustering_method: str = "legacy"
     cluster_assignment_method: str = "centroid"
     cluster_assignment_neighbors: int = 5
-    variant_parameters: tuple[tuple[str, int | float], ...] = ()
+    variant_parameters: tuple[tuple[str, int | float | None], ...] = ()
 
     @property
     def name(self) -> str:
-        sigma_part = (
-            "sigma_na"
-            if self.sigma is None
-            else f"sigma_{_variant_value_slug(self.sigma)}"
+        dissimilarity_metric = normalize_dissimilarity_metric(
+            self.cluster_dissimilarity_metric
         )
+        sigma_part = ""
+        if self.algorithm == "spectral":
+            sigma_value = (
+                "na"
+                if self.sigma is None
+                else _variant_value_slug(self.sigma)
+            )
+            sigma_part = f"_sigma_{sigma_value}"
         variant_part = "".join(
             f"_{_variant_parameter_slug(parameter)}_{_variant_value_slug(value)}"
             for parameter, value in self.variant_parameters
@@ -93,9 +108,15 @@ class ExperimentConfig:
         stride_part = (
             "" if self.window_stride == 1 else f"_s{self.window_stride:02d}"
         )
+        metric_part = (
+            ""
+            if dissimilarity_metric == "euclidean"
+            else f"_{dissimilarity_metric}"
+        )
         return (
-            f"{self.state}_{self.station_id}_w{self.window_size:02d}{stride_part}_"
-            f"k{self.n_clusters:02d}_{self.algorithm}_{sigma_part}"
+            f"{self.state}_{self.station_id}_w{self.window_size:02d}"
+            f"{stride_part}{metric_part}_"
+            f"k{self.n_clusters:02d}_{self.algorithm}{sigma_part}"
             f"{variant_part}"
         ).replace(".", "p")
 
@@ -122,6 +143,9 @@ class WindowSplitData:
     cluster_X_train: np.ndarray
     cluster_X_val: np.ndarray
     cluster_X_test: np.ndarray
+    cluster_windows_train: np.ndarray
+    cluster_windows_val: np.ndarray
+    cluster_windows_test: np.ndarray
     y_train: np.ndarray
     y_val: np.ndarray
     y_test: np.ndarray
@@ -133,6 +157,9 @@ class WindowSplitData:
     current_train: np.ndarray
     current_val: np.ndarray
     current_test: np.ndarray
+    input_window_mean_train: np.ndarray
+    input_window_mean_val: np.ndarray
+    input_window_mean_test: np.ndarray
     c_train: np.ndarray
     c_val: np.ndarray
     c_test: np.ndarray
@@ -141,6 +168,7 @@ class WindowSplitData:
     i_test: np.ndarray
     all_targets: np.ndarray
     all_current_precipitation: np.ndarray
+    all_input_window_mean_precipitation: np.ndarray
     all_cluster_labels: np.ndarray
     train_target_dates_by_lead_day: np.ndarray
     test_targets_by_lead_day: np.ndarray
@@ -162,6 +190,22 @@ class WindowSplitData:
     def X_cluster_test(self) -> np.ndarray:
         """Compatibility alias for the test matrix used by clustering."""
         return self.cluster_X_test
+
+
+@dataclass(frozen=True)
+class ClusterTrainingResult:
+    """Serializable outputs from one cluster-specific LSTM training job."""
+
+    cluster_id: int
+    train_mask: np.ndarray
+    val_mask: np.ndarray
+    test_mask: np.ndarray
+    train_predictions_scaled: np.ndarray
+    val_predictions_scaled: np.ndarray | None
+    test_predictions_scaled: np.ndarray | None
+    all_test_predictions_scaled: np.ndarray | None
+    history: dict[str, list[float]]
+    test_metrics: dict[str, float] | None
 
 
 DEFAULT_PLOT_STYLE: dict[str, object] = {
@@ -331,13 +375,47 @@ def _normalize_learning_rate_values(
     ]
 
 
+def _normalize_optional_integer_sweep_values(
+    value: int | None | Sequence[int | None],
+    *,
+    setting_name: str,
+    minimum: int = 1,
+) -> list[int | None]:
+    """Return validated, unique positive integers, allowing `None` as a value."""
+    if value is None or isinstance(value, (str, bytes)) or np.isscalar(value):
+        raw_values = [value]
+    else:
+        raw_values = list(value)
+    if not raw_values:
+        raise ValueError(f"{setting_name} must contain at least one value.")
+
+    values: list[int | None] = []
+    for raw_value in raw_values:
+        if raw_value is None:
+            values.append(None)
+            continue
+        normalized = _normalize_numeric_sweep_values(
+            raw_value,
+            setting_name=setting_name,
+            integer=True,
+            minimum=float(minimum),
+            minimum_inclusive=True,
+        )[0]
+        values.append(int(normalized))
+    if len(set(values)) != len(values):
+        raise ValueError(f"{setting_name} cannot contain duplicate values.")
+    return values
+
+
 def _variant_parameter_slug(parameter: str) -> str:
     """Return a compact output-folder token for a varied parameter."""
     return VARIANT_PARAMETER_SLUGS.get(parameter, parameter)
 
 
-def _variant_value_slug(value: int | float) -> str:
+def _variant_value_slug(value: int | float | None) -> str:
     """Return a stable filename-safe scalar token without rounding collisions."""
+    if value is None:
+        return "none"
     numeric_value = float(value)
     text = (
         str(int(numeric_value))
@@ -480,16 +558,20 @@ def build_configurations(
     n_clusters_list: list[int],
     clustering_algorithm: str,
     window_stride: int = 1,
+    cluster_dissimilarity_metric: str = "euclidean",
     manual_clustering_method: str = "legacy",
     cluster_assignment_method: str = "centroid",
     cluster_assignment_neighbors: int = 5,
     training_parameter_values: Mapping[
         str,
-        Sequence[int | float],
+        Sequence[int | float | None],
     ] | None = None,
 ) -> list[ExperimentConfig]:
     """Return every clustering and numeric training-parameter combination."""
     window_stride = validate_window_stride(window_stride)
+    cluster_dissimilarity_metric = normalize_dissimilarity_metric(
+        cluster_dissimilarity_metric
+    )
     training_parameter_values = dict(training_parameter_values or {})
     unsupported_parameters = sorted(
         set(training_parameter_values) - set(VARIANT_PARAMETER_SLUGS)
@@ -522,6 +604,7 @@ def build_configurations(
             algorithm=clustering_algorithm.lower(),
             sigma=sigma,
             window_stride=window_stride,
+            cluster_dissimilarity_metric=cluster_dissimilarity_metric,
             manual_clustering_method=manual_clustering_method,
             cluster_assignment_method=cluster_assignment_method,
             cluster_assignment_neighbors=cluster_assignment_neighbors,
@@ -778,10 +861,37 @@ def _assign_held_out_cluster_labels(
     method: str,
     n_clusters: int,
     n_neighbors: int,
+    dissimilarity_metric: str = "euclidean",
+    train_windows: np.ndarray | None = None,
+    held_out_windows: np.ndarray | None = None,
 ) -> np.ndarray:
     """Assign held-out windows from fixed training features and labels."""
     if len(X_held_out) == 0:
         return np.array([], dtype=int)
+
+    dissimilarity_metric = normalize_dissimilarity_metric(dissimilarity_metric)
+    if dissimilarity_metric == "dtw":
+        if method != "knn":
+            raise ValueError(
+                "cluster_assignment_method='knn' is required when "
+                "cluster_dissimilarity_metric='dtw'."
+            )
+        if train_windows is None or held_out_windows is None:
+            raise ValueError("DTW cluster assignment requires window tensors.")
+        effective_neighbors = min(n_neighbors, len(X_train))
+        distances = cross_dtw_distances(held_out_windows, train_windows)
+        labels = np.empty(len(held_out_windows), dtype=int)
+        for sample_index, sample_distances in enumerate(distances):
+            neighbor_indices = np.argsort(
+                sample_distances,
+                kind="stable",
+            )[:effective_neighbors]
+            vote_counts = np.bincount(
+                np.asarray(c_train, dtype=int)[neighbor_indices],
+                minlength=n_clusters,
+            )
+            labels[sample_index] = int(np.argmax(vote_counts))
+        return labels
 
     if method == "centroid":
         centroids = _training_cluster_centroids(X_train, c_train, n_clusters)
@@ -802,6 +912,9 @@ def _cluster_window_splits(
     random_state: int,
     manual_zero_tolerance: float,
     manual_window_mean_rain: np.ndarray | None = None,
+    train_windows: np.ndarray | None = None,
+    val_windows: np.ndarray | None = None,
+    test_windows: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Fit cluster assignments on training windows and infer held-out labels."""
     if len(X_train) < config.n_clusters:
@@ -816,6 +929,23 @@ def _cluster_window_splits(
     assignment_neighbors = _validate_cluster_assignment_neighbors(
         config.cluster_assignment_neighbors
     )
+    dissimilarity_metric = normalize_dissimilarity_metric(
+        config.cluster_dissimilarity_metric
+    )
+    if dissimilarity_metric == "dtw" and config.algorithm in {"kmeans", "kshape"}:
+        raise ValueError(
+            f"algorithm={config.algorithm!r} does not support "
+            "cluster_dissimilarity_metric='dtw'; use 'spectral' or 'manual'."
+        )
+    if dissimilarity_metric == "dtw" and assignment_method != "knn":
+        raise ValueError(
+            "cluster_assignment_method='knn' is required when "
+            "cluster_dissimilarity_metric='dtw'."
+        )
+    if dissimilarity_metric == "dtw" and (
+        train_windows is None or val_windows is None or test_windows is None
+    ):
+        raise ValueError("DTW clustering requires train/validation/test windows.")
 
     if config.algorithm == "kmeans":
         model = KMeans(
@@ -823,6 +953,14 @@ def _cluster_window_splits(
             random_state=random_state,
             n_init=KMEANS_N_INIT,
         ).fit(X_train)
+        c_train = model.labels_
+    elif config.algorithm == "kshape":
+        if train_windows is None or val_windows is None or test_windows is None:
+            raise ValueError("K-Shape clustering requires temporal window tensors.")
+        model = KShape(
+            n_clusters=config.n_clusters,
+            random_state=random_state,
+        ).fit(train_windows)
         c_train = model.labels_
     elif config.algorithm == "manual":
         model = ManualRainClustering(
@@ -838,11 +976,17 @@ def _cluster_window_splits(
     elif config.algorithm == "spectral":
         if config.sigma is None:
             raise ValueError("sigma must be provided when algorithm='spectral'")
+        distance_matrix = (
+            pairwise_dtw_distances(train_windows)
+            if dissimilarity_metric == "dtw" and train_windows is not None
+            else None
+        )
         c_train = spectral_clustering(
             X_train,
             sigma=config.sigma,
             k=config.n_clusters,
             random_state=random_state,
+            distance_matrix=distance_matrix,
         )
     else:
         supported = ", ".join(SUPPORTED_CLUSTERING_ALGORITHMS)
@@ -852,10 +996,18 @@ def _cluster_window_splits(
         )
 
     _training_cluster_centroids(X_train, c_train, config.n_clusters)
+    if config.algorithm == "kshape":
+        return (
+            np.asarray(c_train, dtype=int),
+            model.predict(val_windows),
+            model.predict(test_windows),
+        )
+
     assignment_kwargs = {
         "method": assignment_method,
         "n_clusters": config.n_clusters,
         "n_neighbors": assignment_neighbors,
+        "dissimilarity_metric": dissimilarity_metric,
     }
     return (
         np.asarray(c_train, dtype=int),
@@ -863,12 +1015,16 @@ def _cluster_window_splits(
             X_train,
             c_train,
             X_val,
+            train_windows=train_windows,
+            held_out_windows=val_windows,
             **assignment_kwargs,
         ),
         _assign_held_out_cluster_labels(
             X_train,
             c_train,
             X_test,
+            train_windows=train_windows,
+            held_out_windows=test_windows,
             **assignment_kwargs,
         ),
     )
@@ -901,6 +1057,21 @@ def create_window_split_data(
     dimensionality. PCA is still fitted only on training windows.
     """
     window_stride = validate_window_stride(config.window_stride)
+    cluster_dissimilarity_metric = normalize_dissimilarity_metric(
+        config.cluster_dissimilarity_metric
+    )
+    if (
+        cluster_dissimilarity_metric == "dtw" or config.algorithm == "kshape"
+    ) and variance_threshold is not None:
+        reason = (
+            "cluster_dissimilarity_metric='dtw'"
+            if cluster_dissimilarity_metric == "dtw"
+            else "algorithm='kshape'"
+        )
+        raise ValueError(
+            f"PCA must be disabled when {reason} because temporal clustering "
+            "requires the original window time axis."
+        )
     if (
         normalize is not None
         or scaler_type is not None
@@ -1071,6 +1242,24 @@ def create_window_split_data(
     train_local_indices = i_train - splits.train_offset
     val_local_indices = i_val - splits.val_offset
     test_local_indices = i_test - splits.test_offset
+    cluster_windows_train = cluster_train_windows[train_local_indices]
+    cluster_windows_val = cluster_val_windows[val_local_indices]
+    cluster_windows_test = cluster_test_windows[test_local_indices]
+    input_window_mean_train = _mean_input_window_precipitation(
+        splits.train,
+        train_local_indices,
+        config.window_size,
+    )
+    input_window_mean_val = _mean_input_window_precipitation(
+        splits.val,
+        val_local_indices,
+        config.window_size,
+    )
+    input_window_mean_test = _mean_input_window_precipitation(
+        splits.test,
+        test_local_indices,
+        config.window_size,
+    )
     manual_window_mean_rain = None
     if (
         config.algorithm == "manual"
@@ -1113,6 +1302,9 @@ def create_window_split_data(
         random_state=random_state,
         manual_zero_tolerance=manual_zero_tolerance,
         manual_window_mean_rain=manual_window_mean_rain,
+        train_windows=cluster_windows_train,
+        val_windows=cluster_windows_val,
+        test_windows=cluster_windows_test,
     )
     return (
         WindowSplitData(
@@ -1122,6 +1314,9 @@ def create_window_split_data(
             cluster_X_train=cluster_X_train,
             cluster_X_val=cluster_X_val,
             cluster_X_test=cluster_X_test,
+            cluster_windows_train=cluster_windows_train,
+            cluster_windows_val=cluster_windows_val,
+            cluster_windows_test=cluster_windows_test,
             y_train=y_train,
             y_val=y_val,
             y_test=y_test,
@@ -1133,6 +1328,9 @@ def create_window_split_data(
             current_train=current_train,
             current_val=current_val,
             current_test=current_test,
+            input_window_mean_train=input_window_mean_train,
+            input_window_mean_val=input_window_mean_val,
+            input_window_mean_test=input_window_mean_test,
             c_train=c_train,
             c_val=c_val,
             c_test=c_test,
@@ -1142,6 +1340,13 @@ def create_window_split_data(
             all_targets=np.concatenate([y_train, y_val, y_test]),
             all_current_precipitation=np.concatenate(
                 [current_train, current_val, current_test]
+            ),
+            all_input_window_mean_precipitation=np.concatenate(
+                [
+                    input_window_mean_train,
+                    input_window_mean_val,
+                    input_window_mean_test,
+                ]
             ),
             all_cluster_labels=np.concatenate([c_train, c_val, c_test]),
             train_target_dates_by_lead_day=train_target_dates_by_lead_day,
@@ -1161,6 +1366,27 @@ def create_window_split_data(
 def to_lstm_shape(X: np.ndarray) -> np.ndarray:
     """Represent each flattened window as a one-step LSTM sequence."""
     return X.reshape(X.shape[0], 1, X.shape[1])
+
+
+def _cluster_diagnostic_feature_splits(
+    split_data: WindowSplitData,
+    config: ExperimentConfig,
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Return split features in the representation used by the cluster metric."""
+    if (
+        normalize_dissimilarity_metric(config.cluster_dissimilarity_metric)
+        == "dtw"
+    ):
+        return {
+            "Training": (split_data.cluster_windows_train, split_data.c_train),
+            "Validation": (split_data.cluster_windows_val, split_data.c_val),
+            "Test": (split_data.cluster_windows_test, split_data.c_test),
+        }
+    return {
+        "Training": (split_data.cluster_X_train, split_data.c_train),
+        "Validation": (split_data.cluster_X_val, split_data.c_val),
+        "Test": (split_data.cluster_X_test, split_data.c_test),
+    }
 
 
 def clipped_predictions(
@@ -1489,6 +1715,431 @@ def evaluate_test_samples_with_all_models(
     )
 
 
+def evaluate_test_predictions_with_all_models(
+    y_pred_by_model_by_lead_day: np.ndarray,
+    model_cluster_ids: Sequence[int],
+    y_test: np.ndarray,
+    c_test: np.ndarray,
+    original_y_pred_test: np.ndarray,
+    random_state: int,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    dict[int, dict[str, float]],
+    dict[str, object],
+]:
+    """Select the best trained LSTM per test sample from precomputed predictions."""
+    model_cluster_ids = np.asarray(model_cluster_ids, dtype=int)
+    y_pred_by_model_by_lead_day = np.asarray(
+        y_pred_by_model_by_lead_day,
+        dtype=float,
+    )
+    if y_pred_by_model_by_lead_day.ndim != 3:
+        raise ValueError("All-model predictions must be a 3D array.")
+    if y_pred_by_model_by_lead_day.shape[1] != len(model_cluster_ids):
+        raise ValueError("Model prediction columns must match model cluster ids.")
+
+    y_pred_by_model = y_pred_by_model_by_lead_day[:, :, -1]
+    original_model_by_sample = np.asarray(c_test, dtype=int)
+    primary_metric = "RMSE"
+
+    per_metric_errors = {
+        "MSE": (y_test[:, None] - y_pred_by_model) ** 2,
+        "RMSE": (y_test[:, None] - y_pred_by_model) ** 2,
+        "MAE": np.abs(y_test[:, None] - y_pred_by_model),
+        "RMSLE": (
+            np.log1p(np.maximum(y_test[:, None], 0.0))
+            - np.log1p(np.maximum(y_pred_by_model, 0.0))
+        )
+        ** 2,
+    }
+    mape_report_errors = np.full_like(y_pred_by_model, np.nan, dtype=float)
+    mape_selection_errors = per_metric_errors["MAE"].copy()
+    nonzero_target = y_test != 0
+    mape_report_errors[nonzero_target] = (
+        np.abs(
+            (y_test[nonzero_target, None] - y_pred_by_model[nonzero_target])
+            / y_test[nonzero_target, None]
+        )
+        * 100.0
+    )
+    mape_selection_errors[nonzero_target] = mape_report_errors[nonzero_target]
+    per_metric_errors["MAPE"] = mape_selection_errors
+
+    y_pred_selected_by_metric: dict[str, np.ndarray] = {}
+    y_pred_selected_by_lead_day_by_metric: dict[str, np.ndarray] = {}
+    selected_model_by_metric: dict[str, np.ndarray] = {}
+    for metric_name, errors in per_metric_errors.items():
+        comparable_errors = np.where(np.isfinite(errors), errors, np.inf)
+        best_offsets = np.argmin(comparable_errors, axis=1)
+        y_pred_selected_by_metric[metric_name] = y_pred_by_model[
+            np.arange(len(y_test)),
+            best_offsets,
+        ]
+        y_pred_selected_by_lead_day_by_metric[metric_name] = (
+            y_pred_by_model_by_lead_day[np.arange(len(y_test)), best_offsets, :]
+        )
+        selected_model_by_metric[metric_name] = model_cluster_ids[best_offsets]
+
+    y_pred_selected = y_pred_selected_by_metric[primary_metric]
+    y_pred_selected_by_lead_day = y_pred_selected_by_lead_day_by_metric[
+        primary_metric
+    ]
+    selected_model_by_sample = selected_model_by_metric[primary_metric].astype(float)
+    comparison_rows: list[dict[str, float | int | bool]] = []
+    selection_rows: list[dict[str, float | int | str | bool]] = []
+    metric_summary_rows: list[dict[str, float | int | str]] = []
+    metrics_by_test_cluster: dict[int, dict[str, float]] = {}
+
+    for sample_index, (actual, test_cluster_id) in enumerate(zip(y_test, c_test)):
+        for model_offset, model_cluster_id in enumerate(model_cluster_ids):
+            comparison_rows.append(
+                {
+                    "sample_index": sample_index,
+                    "test_cluster": int(test_cluster_id),
+                    "model_cluster": int(model_cluster_id),
+                    "is_same_cluster_model": int(model_cluster_id)
+                    == int(test_cluster_id),
+                    "actual": float(actual),
+                    "predicted": float(y_pred_by_model[sample_index, model_offset]),
+                    "squared_error": float(
+                        per_metric_errors["MSE"][sample_index, model_offset]
+                    ),
+                    "absolute_error": float(
+                        per_metric_errors["MAE"][sample_index, model_offset]
+                    ),
+                    "squared_log_error": float(
+                        per_metric_errors["RMSLE"][sample_index, model_offset]
+                    ),
+                    "absolute_percentage_error": float(
+                        mape_report_errors[sample_index, model_offset]
+                    ),
+                }
+            )
+
+        for metric_name in per_metric_errors:
+            selected_model = int(selected_model_by_metric[metric_name][sample_index])
+            selected_prediction = float(
+                y_pred_selected_by_metric[metric_name][sample_index]
+            )
+            original_prediction = float(original_y_pred_test[sample_index])
+            selection_rows.append(
+                {
+                    "sample_index": sample_index,
+                    "test_cluster": int(test_cluster_id),
+                    "metric": metric_name,
+                    "selected_model_cluster": selected_model,
+                    "selected_is_same_cluster": selected_model
+                    == int(test_cluster_id),
+                    "actual": float(actual),
+                    "selected_prediction": selected_prediction,
+                    "same_cluster_prediction": original_prediction,
+                    "selected_absolute_error": abs(float(actual) - selected_prediction),
+                    "same_cluster_absolute_error": abs(
+                        float(actual) - original_prediction
+                    ),
+                }
+            )
+
+    original_metrics = calculate_regression_metrics(y_test, original_y_pred_test)
+    for metric_name, selected_predictions in y_pred_selected_by_metric.items():
+        selected_metrics = calculate_regression_metrics(y_test, selected_predictions)
+        selected_models = selected_model_by_metric[metric_name]
+        metric_summary_rows.append(
+            {
+                "metric_selection": metric_name,
+                "original_mse": float(original_metrics["MSE"]),
+                "selected_mse": float(selected_metrics["MSE"]),
+                "mse_improvement": float(
+                    original_metrics["MSE"] - selected_metrics["MSE"]
+                ),
+                "mse_improvement_percent": float(
+                    (
+                        (original_metrics["MSE"] - selected_metrics["MSE"])
+                        / original_metrics["MSE"]
+                        * 100.0
+                    )
+                    if original_metrics["MSE"] != 0
+                    else np.nan
+                ),
+                "original_rmse": float(original_metrics["RMSE"]),
+                "selected_rmse": float(selected_metrics["RMSE"]),
+                "rmse_improvement": float(
+                    original_metrics["RMSE"] - selected_metrics["RMSE"]
+                ),
+                "rmse_improvement_percent": float(
+                    (
+                        (original_metrics["RMSE"] - selected_metrics["RMSE"])
+                        / original_metrics["RMSE"]
+                        * 100.0
+                    )
+                    if original_metrics["RMSE"] != 0
+                    else np.nan
+                ),
+                "original_mae": float(original_metrics["MAE"]),
+                "selected_mae": float(selected_metrics["MAE"]),
+                "mae_improvement": float(
+                    original_metrics["MAE"] - selected_metrics["MAE"]
+                ),
+                "mae_improvement_percent": float(
+                    (
+                        (original_metrics["MAE"] - selected_metrics["MAE"])
+                        / original_metrics["MAE"]
+                        * 100.0
+                    )
+                    if original_metrics["MAE"] != 0
+                    else np.nan
+                ),
+                "original_rmsle": float(original_metrics["RMSLE"]),
+                "selected_rmsle": float(selected_metrics["RMSLE"]),
+                "rmsle_improvement": float(
+                    original_metrics["RMSLE"] - selected_metrics["RMSLE"]
+                ),
+                "rmsle_improvement_percent": float(
+                    (
+                        (original_metrics["RMSLE"] - selected_metrics["RMSLE"])
+                        / original_metrics["RMSLE"]
+                        * 100.0
+                    )
+                    if original_metrics["RMSLE"] != 0
+                    else np.nan
+                ),
+                "original_r2": float(original_metrics["R2"]),
+                "selected_r2": float(selected_metrics["R2"]),
+                "r2_improvement": float(
+                    selected_metrics["R2"] - original_metrics["R2"]
+                ),
+                "original_mape": float(original_metrics["MAPE"]),
+                "selected_mape": float(selected_metrics["MAPE"]),
+                "mape_improvement": float(
+                    original_metrics["MAPE"] - selected_metrics["MAPE"]
+                ),
+                "mape_improvement_percent": float(
+                    (
+                        (original_metrics["MAPE"] - selected_metrics["MAPE"])
+                        / original_metrics["MAPE"]
+                        * 100.0
+                    )
+                    if np.isfinite(original_metrics["MAPE"])
+                    and original_metrics["MAPE"] != 0
+                    else np.nan
+                ),
+                "switched_samples": int(
+                    np.sum(selected_models != original_model_by_sample)
+                ),
+                "n_test": int(len(y_test)),
+                "switched_samples_percent": float(
+                    np.mean(selected_models != original_model_by_sample) * 100.0
+                ),
+            }
+        )
+
+    for test_cluster_id in sorted(np.unique(c_test)):
+        mask = c_test == test_cluster_id
+        metrics_by_test_cluster[int(test_cluster_id)] = calculate_regression_metrics(
+            y_test[mask],
+            y_pred_selected[mask],
+        )
+
+    selected_metrics = calculate_regression_metrics(y_test, y_pred_selected)
+    squared_error_improvement = (
+        (y_test - original_y_pred_test) ** 2 - (y_test - y_pred_selected) ** 2
+    )
+    ci_low, ci_high, improvement_probability = bootstrap_mean_ci(
+        squared_error_improvement,
+        random_state=random_state,
+    )
+    switched_samples = int(selected_model_by_sample.astype(int).size) - int(
+        np.sum(selected_model_by_sample.astype(int) == original_model_by_sample)
+    )
+    summary = {
+        "primary_metric": primary_metric,
+        "original_mse": float(original_metrics["MSE"]),
+        "selected_mse": float(selected_metrics["MSE"]),
+        "mse_improvement": float(original_metrics["MSE"] - selected_metrics["MSE"]),
+        "original_rmse": float(original_metrics["RMSE"]),
+        "selected_rmse": float(selected_metrics["RMSE"]),
+        "rmse_improvement": float(original_metrics["RMSE"] - selected_metrics["RMSE"]),
+        "original_mae": float(original_metrics["MAE"]),
+        "selected_mae": float(selected_metrics["MAE"]),
+        "mae_improvement": float(original_metrics["MAE"] - selected_metrics["MAE"]),
+        "mse_improvement_ci_low": ci_low,
+        "mse_improvement_ci_high": ci_high,
+        "mse_improvement_probability": improvement_probability,
+        "n_test_clusters": int(len(np.unique(c_test))),
+        "n_test_samples": int(len(y_test)),
+        "switched_samples": switched_samples,
+    }
+    test_model_selection = {
+        "comparison_rows": comparison_rows,
+        "selection_rows": selection_rows,
+        "metric_summary_rows": metric_summary_rows,
+        "summary": summary,
+        "selected_model_by_sample": selected_model_by_sample,
+        "original_prediction_by_sample": original_y_pred_test,
+        "selected_prediction_by_metric": y_pred_selected_by_metric,
+        "selected_prediction_by_lead_day": y_pred_selected_by_lead_day,
+        "selected_prediction_by_lead_day_by_metric": (
+            y_pred_selected_by_lead_day_by_metric
+        ),
+        "selected_model_by_metric": selected_model_by_metric,
+    }
+    return (
+        y_pred_selected,
+        y_pred_selected_by_lead_day,
+        metrics_by_test_cluster,
+        test_model_selection,
+    )
+
+
+def _history_dict(history: object) -> dict[str, list[float]]:
+    """Return a plain serializable mapping from a Keras History-like object."""
+    raw_history = getattr(history, "history", history)
+    return {
+        str(metric_name): np.asarray(values, dtype=float).reshape(-1).tolist()
+        for metric_name, values in dict(raw_history).items()
+    }
+
+
+def _set_tensorflow_worker_threads(worker_count: int) -> None:
+    """Limit each TensorFlow worker enough to avoid CPU oversubscription."""
+    per_worker_threads = max(1, (os.cpu_count() or 1) // max(1, worker_count))
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+    os.environ.setdefault("OMP_NUM_THREADS", str(per_worker_threads))
+    os.environ.setdefault("TF_NUM_INTRAOP_THREADS", str(per_worker_threads))
+    os.environ.setdefault("TF_NUM_INTEROP_THREADS", "1")
+    try:
+        import tensorflow as tf
+
+        tf.config.threading.set_intra_op_parallelism_threads(per_worker_threads)
+        tf.config.threading.set_inter_op_parallelism_threads(1)
+    except RuntimeError:
+        pass
+
+
+def _train_single_cluster_model(
+    *,
+    cluster_id: int,
+    X_train_lstm: np.ndarray,
+    X_val_lstm: np.ndarray,
+    X_test_lstm: np.ndarray,
+    y_train: np.ndarray,
+    y_test: np.ndarray,
+    y_train_by_lead_day_scaled: np.ndarray,
+    y_val_by_lead_day_scaled: np.ndarray,
+    c_train: np.ndarray,
+    c_val: np.ndarray,
+    c_test: np.ndarray,
+    lstm_units: int,
+    lstm_units_2: int | None,
+    dropout_rate: float,
+    learning_rate: float,
+    weight_decay: float,
+    epochs: int,
+    batch_size: int,
+    early_stopping: bool,
+    patience: int,
+    early_stopping_metric: str,
+    lstm_loss_function: str,
+    loss_quantiles: Sequence[float],
+    loss_quantile_weights: Sequence[float] | str,
+    verbose_training: int,
+    random_state: int,
+    test_all_models: bool,
+    loss_alpha: float,
+    tensorflow_worker_count: int = 1,
+) -> ClusterTrainingResult:
+    """Train one cluster LSTM and return serializable predictions/history."""
+    _set_tensorflow_worker_threads(tensorflow_worker_count)
+    from models.lstm import LSTMPrecipitationPredictor
+
+    tr_mask = c_train == cluster_id
+    va_mask = c_val == cluster_id
+    te_mask = c_test == cluster_id
+
+    loss_thresholds = None
+    loss_weights = None
+    if lstm_loss_function == "quantile_weighted_mse":
+        loss_thresholds, loss_weights = quantile_weighted_mse_config(
+            y_train_by_lead_day_scaled[tr_mask].ravel(),
+            quantiles=loss_quantiles,
+            weights=loss_quantile_weights,
+        )
+
+    model = LSTMPrecipitationPredictor(
+        input_shape=(1, X_train_lstm.shape[2]),
+        lstm_units=lstm_units,
+        lstm_units_2=lstm_units_2,
+        dropout_rate=dropout_rate,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        random_state=random_state,
+        loss_function=lstm_loss_function,
+        loss_alpha=loss_alpha,
+        loss_quantile_thresholds_mm=loss_thresholds,
+        loss_quantile_weights=loss_weights,
+        output_units=int(y_train_by_lead_day_scaled.shape[1]),
+    )
+    history = model.fit(
+        X_train_lstm[tr_mask],
+        y_train_by_lead_day_scaled[tr_mask],
+        X_val=X_val_lstm[va_mask] if np.any(va_mask) else None,
+        y_val=y_val_by_lead_day_scaled[va_mask] if np.any(va_mask) else None,
+        epochs=epochs,
+        batch_size=batch_size,
+        verbose=verbose_training,
+        early_stopping=early_stopping and np.any(va_mask),
+        patience=patience,
+        early_stopping_metric=early_stopping_metric,
+    )
+
+    train_predictions_scaled = np.asarray(
+        model.predict(X_train_lstm[tr_mask]),
+        dtype=float,
+    )
+    val_predictions_scaled = (
+        np.asarray(model.predict(X_val_lstm[va_mask]), dtype=float)
+        if np.any(va_mask)
+        else None
+    )
+    test_predictions_scaled = (
+        np.asarray(model.predict(X_test_lstm[te_mask]), dtype=float)
+        if np.any(te_mask)
+        else None
+    )
+    all_test_predictions_scaled = (
+        np.asarray(model.predict(X_test_lstm), dtype=float)
+        if test_all_models
+        else None
+    )
+    test_metrics = None
+    if test_predictions_scaled is not None:
+        test_predictions = np.maximum(test_predictions_scaled, 0.0)
+        test_metrics = calculate_regression_metrics(
+            y_test[te_mask],
+            test_predictions[:, -1],
+        )
+
+    return ClusterTrainingResult(
+        cluster_id=int(cluster_id),
+        train_mask=tr_mask,
+        val_mask=va_mask,
+        test_mask=te_mask,
+        train_predictions_scaled=train_predictions_scaled,
+        val_predictions_scaled=val_predictions_scaled,
+        test_predictions_scaled=test_predictions_scaled,
+        all_test_predictions_scaled=all_test_predictions_scaled,
+        history=_history_dict(history),
+        test_metrics=test_metrics,
+    )
+
+
+def _parallel_worker_count(n_jobs: int) -> int:
+    """Return the maximum useful number of workers for independent jobs."""
+    return max(1, min(int(n_jobs), os.cpu_count() or 1))
+
+
 def train_cluster_models(
     X_train: np.ndarray,
     X_val: np.ndarray,
@@ -1505,7 +2156,7 @@ def train_cluster_models(
     c_val: np.ndarray,
     c_test: np.ndarray,
     lstm_units: int,
-    lstm_units_2: int,
+    lstm_units_2: int | None,
     dropout_rate: float,
     learning_rate: float,
     weight_decay: float,
@@ -1521,6 +2172,7 @@ def train_cluster_models(
     random_state: int,
     show_console_info: bool,
     test_all_models: bool,
+    parallel_training: bool = False,
     target_scaler: FeatureScaler | None = None,
     loss_alpha: float = 1.0,
 ) -> tuple[
@@ -1534,7 +2186,6 @@ def train_cluster_models(
     dict[str, object] | None,
 ]:
     """Train cluster-specific LSTMs and merge their predictions."""
-    from models.lstm import LSTMPrecipitationPredictor
 
     X_train_lstm = to_lstm_shape(X_train)
     X_val_lstm = to_lstm_shape(X_val)
@@ -1577,26 +2228,20 @@ def train_cluster_models(
     y_pred_test_by_lead_day = np.zeros_like(y_test_by_lead_day, dtype=float)
     histories_by_cluster: dict[int, object] = {}
     metrics_by_cluster: dict[int, dict[str, float]] = {}
-    models_by_cluster: dict[int, LSTMPrecipitationPredictor] = {}
 
-    for cluster_id in sorted(np.unique(c_train)):
-        tr_mask = c_train == cluster_id
-        va_mask = c_val == cluster_id
-        te_mask = c_test == cluster_id
-        n_tr, n_va, n_te = tr_mask.sum(), va_mask.sum(), te_mask.sum()
+    train_cluster_ids = sorted(int(cluster_id) for cluster_id in np.unique(c_train))
+    for cluster_id in train_cluster_ids:
+        n_tr = int(np.sum(c_train == cluster_id))
+        n_va = int(np.sum(c_val == cluster_id))
+        n_te = int(np.sum(c_test == cluster_id))
 
         print_info(
             f"  Cluster {cluster_id}: train={n_tr}, val={n_va}, test={n_te}",
             show_console_info,
         )
-        if n_tr == 0:
-            continue
-
-        loss_thresholds = None
-        loss_weights = None
         if lstm_loss_function == "quantile_weighted_mse":
             loss_thresholds, loss_weights = quantile_weighted_mse_config(
-                y_train_by_lead_day_scaled[tr_mask].ravel(),
+                y_train_by_lead_day_scaled[c_train == cluster_id].ravel(),
                 quantiles=loss_quantiles,
                 weights=loss_quantile_weights,
             )
@@ -1606,62 +2251,120 @@ def train_cluster_models(
                 show_console_info,
             )
 
-        model = LSTMPrecipitationPredictor(
-            input_shape=(1, X_train_lstm.shape[2]),
-            lstm_units=lstm_units,
-            lstm_units_2=lstm_units_2,
-            dropout_rate=dropout_rate,
-            learning_rate=learning_rate,
-            weight_decay=weight_decay,
-            random_state=random_state,
-            loss_function=lstm_loss_function,
-            loss_alpha=loss_alpha,
-            loss_quantile_thresholds_mm=loss_thresholds,
-            loss_quantile_weights=loss_weights,
-            output_units=n_outputs,
+    worker_count = _parallel_worker_count(len(train_cluster_ids))
+    use_parallel = parallel_training and worker_count > 1
+    if use_parallel:
+        print_info(
+            f"  Parallel LSTM training: enabled ({worker_count} workers)",
+            show_console_info,
         )
-        history = model.fit(
-            X_train_lstm[tr_mask],
-            y_train_by_lead_day_scaled[tr_mask],
-            X_val=X_val_lstm[va_mask] if n_va > 0 else None,
-            y_val=y_val_by_lead_day_scaled[va_mask] if n_va > 0 else None,
-            epochs=epochs,
-            batch_size=batch_size,
-            verbose=verbose_training if show_console_info else 0,
-            early_stopping=early_stopping and n_va > 0,
-            patience=patience,
-            early_stopping_metric=early_stopping_metric,
-        )
+    else:
+        print_info("  Parallel LSTM training: disabled", show_console_info)
 
-        cluster_y_pred_train_by_lead_day = clipped_predictions(
-            model,
-            X_train_lstm[tr_mask],
-            target_scaler,
+    common_job_arguments = {
+        "X_train_lstm": X_train_lstm,
+        "X_val_lstm": X_val_lstm,
+        "X_test_lstm": X_test_lstm,
+        "y_train": y_train,
+        "y_test": y_test,
+        "y_train_by_lead_day_scaled": y_train_by_lead_day_scaled,
+        "y_val_by_lead_day_scaled": y_val_by_lead_day_scaled,
+        "c_train": c_train,
+        "c_val": c_val,
+        "c_test": c_test,
+        "lstm_units": lstm_units,
+        "lstm_units_2": lstm_units_2,
+        "dropout_rate": dropout_rate,
+        "learning_rate": learning_rate,
+        "weight_decay": weight_decay,
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "early_stopping": early_stopping,
+        "patience": patience,
+        "early_stopping_metric": early_stopping_metric,
+        "lstm_loss_function": lstm_loss_function,
+        "loss_quantiles": loss_quantiles,
+        "loss_quantile_weights": loss_quantile_weights,
+        "verbose_training": verbose_training if show_console_info and not use_parallel else 0,
+        "random_state": random_state,
+        "test_all_models": test_all_models,
+        "loss_alpha": loss_alpha,
+        "tensorflow_worker_count": worker_count if use_parallel else 1,
+    }
+    if use_parallel:
+        results_by_cluster: dict[int, ClusterTrainingResult] = {}
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(
+                    _train_single_cluster_model,
+                    cluster_id=cluster_id,
+                    **common_job_arguments,
+                ): cluster_id
+                for cluster_id in train_cluster_ids
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                results_by_cluster[result.cluster_id] = result
+                print_info(
+                    f"  Cluster {result.cluster_id}: training complete",
+                    show_console_info,
+                )
+        cluster_results = [
+            results_by_cluster[cluster_id] for cluster_id in train_cluster_ids
+        ]
+    else:
+        cluster_results = [
+            _train_single_cluster_model(
+                cluster_id=cluster_id,
+                **common_job_arguments,
+            )
+            for cluster_id in train_cluster_ids
+        ]
+
+    all_test_predictions_by_cluster: dict[int, np.ndarray] = {}
+    for result in cluster_results:
+        cluster_y_pred_train_by_lead_day = np.maximum(
+            _inverse_transform_precipitation_values(
+                result.train_predictions_scaled,
+                target_scaler,
+            ),
+            0.0,
         )
-        y_pred_train_by_lead_day[tr_mask] = cluster_y_pred_train_by_lead_day
-        y_pred_train[tr_mask] = cluster_y_pred_train_by_lead_day[:, -1]
-        if n_va > 0:
-            y_pred_val_by_lead_day = clipped_predictions(
-                model,
-                X_val_lstm[va_mask],
-                target_scaler,
+        y_pred_train_by_lead_day[result.train_mask] = cluster_y_pred_train_by_lead_day
+        y_pred_train[result.train_mask] = cluster_y_pred_train_by_lead_day[:, -1]
+        if result.val_predictions_scaled is not None:
+            y_pred_val_by_lead_day = np.maximum(
+                _inverse_transform_precipitation_values(
+                    result.val_predictions_scaled,
+                    target_scaler,
+                ),
+                0.0,
             )
-            y_pred_val[va_mask] = y_pred_val_by_lead_day[:, -1]
-        if n_te > 0:
-            cluster_y_pred_test_by_lead_day = clipped_predictions(
-                model,
-                X_test_lstm[te_mask],
-                target_scaler,
+            y_pred_val[result.val_mask] = y_pred_val_by_lead_day[:, -1]
+        if result.test_predictions_scaled is not None:
+            cluster_y_pred_test_by_lead_day = np.maximum(
+                _inverse_transform_precipitation_values(
+                    result.test_predictions_scaled,
+                    target_scaler,
+                ),
+                0.0,
             )
-            y_pred_test_by_lead_day[te_mask] = cluster_y_pred_test_by_lead_day
-            y_pred_test[te_mask] = cluster_y_pred_test_by_lead_day[:, -1]
-            metrics_by_cluster[int(cluster_id)] = calculate_regression_metrics(
-                y_test[te_mask],
-                y_pred_test[te_mask],
+            y_pred_test_by_lead_day[result.test_mask] = cluster_y_pred_test_by_lead_day
+            y_pred_test[result.test_mask] = cluster_y_pred_test_by_lead_day[:, -1]
+            metrics_by_cluster[result.cluster_id] = calculate_regression_metrics(
+                y_test[result.test_mask],
+                y_pred_test[result.test_mask],
             )
 
-        histories_by_cluster[int(cluster_id)] = history
-        models_by_cluster[int(cluster_id)] = model
+        histories_by_cluster[result.cluster_id] = result.history
+        if result.all_test_predictions_scaled is not None:
+            all_test_predictions_by_cluster[result.cluster_id] = np.maximum(
+                _inverse_transform_precipitation_values(
+                    result.all_test_predictions_scaled,
+                    target_scaler,
+                ),
+                0.0,
+            )
 
     if not test_all_models:
         return (
@@ -1675,19 +2378,26 @@ def train_cluster_models(
             None,
         )
 
+    all_model_cluster_ids = sorted(all_test_predictions_by_cluster)
+    y_pred_by_model_by_lead_day = np.stack(
+        [
+            all_test_predictions_by_cluster[cluster_id]
+            for cluster_id in all_model_cluster_ids
+        ],
+        axis=1,
+    )
     (
         _y_pred_test_selected,
         _y_pred_test_by_lead_day_selected,
         _selected_metrics_by_cluster,
         test_model_selection,
-    ) = evaluate_test_samples_with_all_models(
-        models_by_cluster,
-        X_test_lstm,
+    ) = evaluate_test_predictions_with_all_models(
+        y_pred_by_model_by_lead_day,
+        all_model_cluster_ids,
         y_test,
         c_test,
         original_y_pred_test=y_pred_test.copy(),
         random_state=random_state,
-        target_scaler=target_scaler,
     )
 
     selection_summary = dict(test_model_selection["summary"])
@@ -1728,7 +2438,7 @@ def run_configuration(
     val_ratio: float,
     random_state: int,
     lstm_units: int,
-    lstm_units_2: int,
+    lstm_units_2: int | None,
     dropout_rate: float,
     learning_rate: float,
     weight_decay: float,
@@ -1748,6 +2458,8 @@ def run_configuration(
     run_parameters: Mapping[str, object] | None = None,
     comparative_runs: list[ComparativeRunData] | None = None,
     loss_alpha: float = 1.0,
+    parallel_training: bool = False,
+    create_report: bool = True,
 ) -> dict[str, float | int | str | None]:
     """Run one sweep configuration and save its artifacts."""
     if run_only_cluster and comparative_runs is not None:
@@ -1880,14 +2592,11 @@ def run_configuration(
         "metrics": ["mae", "mse", "r2"],
         "test_all_models": test_all_models,
         "run_only_cluster": run_only_cluster,
+        "parallel_training": parallel_training,
     }
 
+    cluster_feature_splits = _cluster_diagnostic_feature_splits(split_data, config)
     if run_only_cluster:
-        cluster_feature_splits = {
-            "Training": (split_data.cluster_X_train, c_train),
-            "Validation": (split_data.cluster_X_val, c_val),
-            "Test": (split_data.cluster_X_test, c_test),
-        }
         result = save_cluster_only_outputs(
             config,
             output_dir,
@@ -1913,8 +2622,19 @@ def run_configuration(
             pca_for_clustering_only=pca_for_clustering_only,
             forecast_horizon=forecast_horizon,
             cluster_feature_splits=cluster_feature_splits,
+            input_window_mean_precipitation_train=(
+                split_data.input_window_mean_train
+            ),
+            input_window_mean_precipitation_val=split_data.input_window_mean_val,
+            input_window_mean_precipitation_test=(
+                split_data.input_window_mean_test
+            ),
         )
-        tex_path, pdf_path = generate_config_report(output_dir, report_config)
+        tex_path, pdf_path = generate_config_report(
+            output_dir,
+            report_config,
+            compile_pdf=create_report,
+        )
         print_info(f"  Cluster report: {tex_path.name}", show_console_info)
         if pdf_path is not None:
             print_info(f"  Cluster report PDF: {pdf_path.name}", show_console_info)
@@ -1966,6 +2686,7 @@ def run_configuration(
         random_state=random_state,
         show_console_info=show_console_info,
         test_all_models=test_all_models,
+        parallel_training=parallel_training,
         target_scaler=split_data.target_scaler,
     )
 
@@ -2000,11 +2721,7 @@ def run_configuration(
         y_pred_test_by_lead_day=y_pred_test_by_lead_day,
         test_target_dates_by_lead_day=split_data.test_target_dates_by_lead_day,
         test_model_selection=test_model_selection,
-        cluster_feature_splits={
-            "Training": (split_data.cluster_X_train, c_train),
-            "Validation": (split_data.cluster_X_val, c_val),
-            "Test": (split_data.cluster_X_test, c_test),
-        },
+        cluster_feature_splits=cluster_feature_splits,
         batch_size=batch_size,
         train_targets_by_lead_day=split_data.y_train_by_lead_day,
         y_pred_train_by_lead_day=y_pred_train_by_lead_day,
@@ -2012,6 +2729,9 @@ def run_configuration(
             split_data.train_target_dates_by_lead_day
         ),
         train_cluster_labels=c_train,
+        input_window_mean_precipitation_train=split_data.input_window_mean_train,
+        input_window_mean_precipitation_val=split_data.input_window_mean_val,
+        input_window_mean_precipitation_test=split_data.input_window_mean_test,
     )
     if run_parameters is not None:
         result.update(run_parameters)
@@ -2033,7 +2753,11 @@ def run_configuration(
                 cluster_train_labels=c_train,
             )
         )
-    tex_path, pdf_path = generate_config_report(output_dir, report_config)
+    tex_path, pdf_path = generate_config_report(
+        output_dir,
+        report_config,
+        compile_pdf=create_report,
+    )
     print_info(f"  Report: {tex_path.name}", show_console_info)
     if pdf_path is not None:
         print_info(f"  Report PDF: {pdf_path.name}", show_console_info)
@@ -2043,6 +2767,63 @@ def run_configuration(
         show_console_info,
     )
     return result
+
+
+def _run_configuration_process(
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+    plot_style: Mapping[str, object] | None,
+) -> dict[str, float | int | str | None]:
+    """Initialize process-local plotting and run one sweep configuration."""
+    setup_styling(plot_style)
+    return run_configuration(*args, **kwargs)
+
+
+def _execute_configuration_jobs(
+    jobs: Sequence[tuple[tuple[object, ...], dict[str, object]]],
+    *,
+    parallel: bool,
+    show_console_info: bool,
+    plot_style: Mapping[str, object] | None = None,
+) -> list[dict[str, float | int | str | None]]:
+    """Execute independent sweep configurations and preserve their input order."""
+    if not parallel:
+        results = []
+        for index, (args, kwargs) in enumerate(jobs, start=1):
+            print_info(
+                f"\nConfiguration {index}/{len(jobs)}",
+                show_console_info,
+            )
+            results.append(run_configuration(*args, **kwargs))
+        return results
+
+    worker_count = _parallel_worker_count(len(jobs))
+    print_info(
+        f"Parallel cluster configurations: enabled ({worker_count} workers)",
+        show_console_info,
+    )
+    results_by_index: dict[int, dict[str, float | int | str | None]] = {}
+    with ProcessPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(
+                _run_configuration_process,
+                args,
+                kwargs,
+                plot_style,
+            ): index
+            for index, (args, kwargs) in enumerate(jobs)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            result = future.result()
+            results_by_index[index] = result
+            config = jobs[index][0][1]
+            print_info(
+                f"  Configuration {index + 1}/{len(jobs)} complete: "
+                f"{getattr(config, 'name', index + 1)}",
+                show_console_info,
+            )
+    return [results_by_index[index] for index in range(len(jobs))]
 
 
 def run_experiment(
@@ -2060,7 +2841,7 @@ def run_experiment(
     use_all_features: bool,
     quantitative_metrics: list[str],
     lstm_units: int | Sequence[int],
-    lstm_units_2: int | Sequence[int],
+    lstm_units_2: int | None | Sequence[int | None],
     dropout_rate: float | Sequence[float],
     learning_rate: float | Sequence[float],
     epochs: int | Sequence[int],
@@ -2096,6 +2877,9 @@ def run_experiment(
     early_stopping_metric: str = "loss",
     loss_alpha: float = 1.0,
     window_stride: int = 1,
+    cluster_dissimilarity_metric: str = "euclidean",
+    parallel_training: bool = False,
+    create_report: bool = True,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
     clustering_algorithm = clustering_algorithm.lower()
@@ -2109,7 +2893,10 @@ def run_experiment(
         cluster_assignment_neighbors
     )
     window_stride = validate_window_stride(window_stride)
-    training_parameter_values: dict[str, list[int | float]] = {
+    cluster_dissimilarity_metric = normalize_dissimilarity_metric(
+        cluster_dissimilarity_metric
+    )
+    training_parameter_values: dict[str, list[int | float | None]] = {
         "lstm_units": _normalize_numeric_sweep_values(
             lstm_units,
             setting_name="lstm_units",
@@ -2117,12 +2904,9 @@ def run_experiment(
             minimum=1.0,
             minimum_inclusive=True,
         ),
-        "lstm_units_2": _normalize_numeric_sweep_values(
+        "lstm_units_2": _normalize_optional_integer_sweep_values(
             lstm_units_2,
             setting_name="lstm_units_2",
-            integer=True,
-            minimum=1.0,
-            minimum_inclusive=True,
         ),
         "dropout_rate": _normalize_numeric_sweep_values(
             dropout_rate,
@@ -2204,6 +2988,25 @@ def run_experiment(
             f"Unsupported clustering algorithm: {clustering_algorithm!r}. "
             f"Use one of: {supported}"
         )
+    if cluster_dissimilarity_metric == "dtw":
+        if clustering_algorithm in {"kmeans", "kshape"}:
+            raise ValueError(
+                f"CLUSTERING_ALGORITHM={clustering_algorithm!r} does not support "
+                "DTW; "
+                "use 'spectral' or 'manual'."
+            )
+        if cluster_assignment_method != "knn":
+            raise ValueError(
+                "CLUSTER_ASSIGNMENT_METHOD='knn' is required when using DTW."
+            )
+        if variance_threshold is not None:
+            raise ValueError(
+                "PCA_VARIANCE_THRESHOLD must be None when using DTW."
+            )
+    if clustering_algorithm == "kshape" and variance_threshold is not None:
+        raise ValueError(
+            "PCA_VARIANCE_THRESHOLD must be None when using K-Shape."
+        )
     if forecast_horizon <= 0:
         raise ValueError("forecast_horizon must be positive.")
     if manual_zero_tolerance < 0:
@@ -2244,6 +3047,7 @@ def run_experiment(
                 df,
                 n_values=n_sigma_values,
                 window_stride=window_stride,
+                dissimilarity_metric=cluster_dissimilarity_metric,
             ).tolist()
             print_info(
                 f"Generated {len(selected_sigma_values)} sigma values: "
@@ -2281,6 +3085,7 @@ def run_experiment(
         n_clusters_list=n_clusters_list,
         clustering_algorithm=clustering_algorithm,
         window_stride=window_stride,
+        cluster_dissimilarity_metric=cluster_dissimilarity_metric,
         manual_clustering_method=manual_clustering_method,
         cluster_assignment_method=cluster_assignment_method,
         cluster_assignment_neighbors=cluster_assignment_neighbors,
@@ -2316,6 +3121,9 @@ def run_experiment(
             {
                 "window_size": config.window_size,
                 "window_stride": config.window_stride,
+                "cluster_dissimilarity_metric": (
+                    config.cluster_dissimilarity_metric
+                ),
                 "n_clusters": config.n_clusters,
                 "algorithm": config.algorithm,
                 "sigma": config.sigma,
@@ -2341,6 +3149,8 @@ def run_experiment(
                 "val_ratio": val_ratio,
                 "random_state": random_state,
                 "test_all_models": test_all_models,
+                "parallel_training": parallel_training,
+                "create_report": create_report,
             }
         )
     resolved_pivot_parameter = None
@@ -2355,6 +3165,10 @@ def run_experiment(
     )
     print_info(f"Station: {state}/{station_id}", show_console_info)
     print_info(f"Window stride: {window_stride} day(s)", show_console_info)
+    print_info(
+        f"Cluster dissimilarity metric: {cluster_dissimilarity_metric}",
+        show_console_info,
+    )
     print_info(f"Output directory: {sweep_dir}", show_console_info)
     print_info(
         "Clustering normalization: "
@@ -2377,6 +3191,10 @@ def run_experiment(
         f"{assignment_detail}",
         show_console_info,
     )
+    print_info(
+        f"Compile LaTeX PDF report: {create_report}",
+        show_console_info,
+    )
     if run_only_cluster:
         print_info(
             "Run-only-cluster mode: LSTM preprocessing and training are disabled.",
@@ -2390,6 +3208,10 @@ def run_experiment(
             show_console_info,
         )
         print_info(f"LSTM loss: {lstm_loss_function}", show_console_info)
+        print_info(
+            f"Parallel LSTM training: {parallel_training}",
+            show_console_info,
+        )
         if lstm_loss_function == "weighted_mse_loss":
             print_info(f"Loss alpha: {loss_alpha:g}", show_console_info)
         print_info(
@@ -2442,58 +3264,84 @@ def run_experiment(
     for config in configurations:
         print_info(f"  - {config.name}: {asdict(config)}", show_console_info)
 
-    results = []
     comparative_runs: list[ComparativeRunData] | None = (
         [] if comparative_run else None
     )
     persist_run_parameters = comparative_run or any(
         len(values) > 1 for values in training_parameter_values.values()
     )
-    for index, (config, run_parameters) in enumerate(
-        zip(configurations, run_parameter_rows),
-        start=1,
-    ):
-        print_info(f"\nConfiguration {index}/{len(configurations)}", show_console_info)
-        results.append(
-            run_configuration(
-                df,
-                config,
-                numeric_cols,
-                clustering_feature_normalize,
-                clustering_precipitation_normalize,
-                lstm_feature_normalize,
-                lstm_precipitation_normalize,
-                variance_threshold,
-                sweep_dir / config.name,
-                use_all_features=use_all_features,
-                forecast_horizon=forecast_horizon,
-                manual_zero_tolerance=manual_zero_tolerance,
-                train_ratio=train_ratio,
-                val_ratio=val_ratio,
-                random_state=random_state,
-                lstm_units=int(run_parameters["lstm_units"]),
-                lstm_units_2=int(run_parameters["lstm_units_2"]),
-                dropout_rate=float(run_parameters["dropout_rate"]),
-                learning_rate=float(run_parameters["learning_rate"]),
-                weight_decay=float(run_parameters["weight_decay"]),
-                epochs=int(run_parameters["epochs"]),
-                batch_size=int(run_parameters["batch_size"]),
-                early_stopping=early_stopping,
-                patience=int(run_parameters["patience"]),
-                early_stopping_metric=early_stopping_metric,
-                lstm_loss_function=lstm_loss_function,
-                loss_alpha=loss_alpha,
-                loss_quantiles=loss_quantiles,
-                loss_quantile_weights=loss_quantile_weights,
-                verbose_training=verbose_training,
-                show_console_info=show_console_info,
-                test_all_models=test_all_models,
-                pca_for_clustering_only=pca_for_clustering_only,
-                run_only_cluster=run_only_cluster,
-                run_parameters=(run_parameters if persist_run_parameters else None),
-                comparative_runs=comparative_runs,
+    parallel_configurations = (
+        run_only_cluster
+        and parallel_training
+        and _parallel_worker_count(len(configurations)) > 1
+    )
+    if run_only_cluster and not parallel_configurations:
+        print_info(
+            "Parallel cluster configurations: disabled",
+            show_console_info,
+        )
+    configuration_jobs = []
+    for config, run_parameters in zip(configurations, run_parameter_rows):
+        configuration_jobs.append(
+            (
+                (
+                    df,
+                    config,
+                    numeric_cols,
+                    clustering_feature_normalize,
+                    clustering_precipitation_normalize,
+                    lstm_feature_normalize,
+                    lstm_precipitation_normalize,
+                    variance_threshold,
+                    sweep_dir / config.name,
+                ),
+                dict(
+                    use_all_features=use_all_features,
+                    forecast_horizon=forecast_horizon,
+                    manual_zero_tolerance=manual_zero_tolerance,
+                    train_ratio=train_ratio,
+                    val_ratio=val_ratio,
+                    random_state=random_state,
+                    lstm_units=int(run_parameters["lstm_units"]),
+                    lstm_units_2=(
+                        None
+                        if run_parameters["lstm_units_2"] is None
+                        else int(run_parameters["lstm_units_2"])
+                    ),
+                    dropout_rate=float(run_parameters["dropout_rate"]),
+                    learning_rate=float(run_parameters["learning_rate"]),
+                    weight_decay=float(run_parameters["weight_decay"]),
+                    epochs=int(run_parameters["epochs"]),
+                    batch_size=int(run_parameters["batch_size"]),
+                    early_stopping=early_stopping,
+                    patience=int(run_parameters["patience"]),
+                    early_stopping_metric=early_stopping_metric,
+                    lstm_loss_function=lstm_loss_function,
+                    loss_alpha=loss_alpha,
+                    loss_quantiles=loss_quantiles,
+                    loss_quantile_weights=loss_quantile_weights,
+                    verbose_training=verbose_training,
+                    show_console_info=(
+                        show_console_info and not parallel_configurations
+                    ),
+                    test_all_models=test_all_models,
+                    pca_for_clustering_only=pca_for_clustering_only,
+                    run_only_cluster=run_only_cluster,
+                    run_parameters=(
+                        run_parameters if persist_run_parameters else None
+                    ),
+                    comparative_runs=comparative_runs,
+                    parallel_training=parallel_training,
+                    create_report=create_report,
+                ),
             )
         )
+    results = _execute_configuration_jobs(
+        configuration_jobs,
+        parallel=parallel_configurations,
+        show_console_info=show_console_info,
+        plot_style=plot_style,
+    )
 
     if run_only_cluster:
         save_cluster_sweep_outputs(
@@ -2508,6 +3356,7 @@ def run_experiment(
             cluster_assignment_method=cluster_assignment_method,
             cluster_assignment_neighbors=cluster_assignment_neighbors,
             window_stride=window_stride,
+            cluster_dissimilarity_metric=cluster_dissimilarity_metric,
             pca_variance_threshold=variance_threshold,
             pca_for_clustering_only=pca_for_clustering_only,
         )
@@ -2524,6 +3373,7 @@ def run_experiment(
             cluster_assignment_method=cluster_assignment_method,
             cluster_assignment_neighbors=cluster_assignment_neighbors,
             window_stride=window_stride,
+            cluster_dissimilarity_metric=cluster_dissimilarity_metric,
             pca_variance_threshold=variance_threshold,
             pca_for_clustering_only=pca_for_clustering_only,
             quantitative_metrics=quantitative_metrics,

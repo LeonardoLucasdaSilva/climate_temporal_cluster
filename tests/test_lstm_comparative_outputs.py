@@ -19,6 +19,7 @@ from data.lstm_comparative_outputs import (
     validate_comparative_pivot,
 )
 from methods.lstm_cluster.pipeline import (
+    _execute_configuration_jobs,
     _normalize_learning_rate_values,
     build_configurations,
     run_experiment,
@@ -29,6 +30,83 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class LstmComparativeOutputTests(unittest.TestCase):
+    def test_parallel_configuration_jobs_preserve_sweep_order(self) -> None:
+        configurations = build_configurations(
+            [None],
+            state="RS",
+            station_id="A801",
+            window_sizes=[5, 10],
+            n_clusters_list=[2],
+            clustering_algorithm="kmeans",
+        )
+        jobs = [
+            ((None, config), {"marker": index})
+            for index, config in enumerate(configurations)
+        ]
+        submitted: list[object] = []
+        observed_worker_counts: list[int] = []
+
+        class ImmediateFuture:
+            def __init__(self, result: object) -> None:
+                self._result = result
+
+            def result(self) -> object:
+                return self._result
+
+        class ImmediateExecutor:
+            def __init__(self, max_workers: int) -> None:
+                observed_worker_counts.append(max_workers)
+
+            def __enter__(self) -> ImmediateExecutor:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def submit(self, function: object, *args: object) -> ImmediateFuture:
+                submitted.append(args)
+                return ImmediateFuture(function(*args))
+
+        def fake_process(
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+            _plot_style: object,
+        ) -> dict[str, object]:
+            config = args[1]
+            return {
+                "run_name": config.name,
+                "marker": kwargs["marker"],
+            }
+
+        with (
+            patch(
+                "methods.lstm_cluster.pipeline.ProcessPoolExecutor",
+                ImmediateExecutor,
+            ),
+            patch(
+                "methods.lstm_cluster.pipeline.as_completed",
+                side_effect=lambda futures: reversed(list(futures)),
+            ),
+            patch(
+                "methods.lstm_cluster.pipeline._run_configuration_process",
+                side_effect=fake_process,
+            ),
+            patch("methods.lstm_cluster.pipeline.os.cpu_count", return_value=8),
+        ):
+            results = _execute_configuration_jobs(
+                jobs,
+                parallel=True,
+                show_console_info=False,
+            )
+
+        self.assertEqual(observed_worker_counts, [2])
+        self.assertEqual(len(submitted), 2)
+        self.assertEqual([result["marker"] for result in results], [0, 1])
+        self.assertEqual(
+            [result["run_name"] for result in results],
+            [config.name for config in configurations],
+        )
+
     def _run(
         self,
         *,
@@ -403,6 +481,51 @@ class LstmComparativeOutputTests(unittest.TestCase):
         self.assertIn("sigma_20", integer_sigma.name)
         self.assertNotIn("sigma_20p0", integer_sigma.name)
 
+    def test_sigma_slug_is_only_used_for_spectral_configuration_names(self) -> None:
+        kshape_config = build_configurations(
+            [None],
+            state="RS",
+            station_id="A801",
+            window_sizes=[15],
+            n_clusters_list=[3],
+            clustering_algorithm="kshape",
+        )[0]
+        kmeans_config = build_configurations(
+            [None],
+            state="RS",
+            station_id="A801",
+            window_sizes=[15],
+            n_clusters_list=[3],
+            clustering_algorithm="kmeans",
+        )[0]
+        spectral_config = build_configurations(
+            [1.0],
+            state="RS",
+            station_id="A801",
+            window_sizes=[15],
+            n_clusters_list=[3],
+            clustering_algorithm="spectral",
+        )[0]
+
+        self.assertEqual(kshape_config.name, "RS_A801_w15_k03_kshape")
+        self.assertEqual(kmeans_config.name, "RS_A801_w15_k03_kmeans")
+        self.assertEqual(spectral_config.name, "RS_A801_w15_k03_spectral_sigma_1")
+
+    def test_dtw_alias_is_canonicalized_in_configurations(self) -> None:
+        config = build_configurations(
+            [1.0],
+            state="RS",
+            station_id="A801",
+            window_sizes=[15],
+            n_clusters_list=[3],
+            clustering_algorithm="spectral",
+            cluster_dissimilarity_metric="DWT",
+            cluster_assignment_method="knn",
+        )[0]
+
+        self.assertEqual(config.cluster_dissimilarity_metric, "dtw")
+        self.assertIn("_dtw_", config.name)
+
     def test_numeric_training_grids_use_the_cartesian_product(self) -> None:
         configurations = build_configurations(
             [None],
@@ -440,6 +563,31 @@ class LstmComparativeOutputTests(unittest.TestCase):
                 training_parameter_values={"unknown_parameter": [1, 2]},
             )
 
+    def test_lstm_units_2_accepts_none_in_configuration_grid(self) -> None:
+        configurations = build_configurations(
+            [None],
+            state="RS",
+            station_id="A801",
+            window_sizes=[15],
+            n_clusters_list=[3],
+            clustering_algorithm="kmeans",
+            training_parameter_values={"lstm_units_2": [None, 16]},
+        )
+
+        self.assertEqual(len(configurations), 2)
+        variants = [dict(config.variant_parameters) for config in configurations]
+        self.assertEqual(
+            [variant["lstm_units_2"] for variant in variants],
+            [None, 16],
+        )
+        self.assertEqual(
+            [config.name for config in configurations],
+            [
+                "RS_A801_w15_k03_kmeans_u2_none",
+                "RS_A801_w15_k03_kmeans_u2_16",
+            ],
+        )
+
     def test_pipeline_calls_comparative_writer_only_when_enabled(self) -> None:
         base_output_dir = (
             PROJECT_ROOT
@@ -454,10 +602,12 @@ class LstmComparativeOutputTests(unittest.TestCase):
             }
         )
         observed_parameters: list[dict[str, object]] = []
+        observed_create_report: list[bool] = []
 
         def fake_run_configuration(*args: object, **kwargs: object) -> dict[str, object]:
             config = args[1]
             self.assertEqual(kwargs["loss_alpha"], 0.25)
+            observed_create_report.append(bool(kwargs["create_report"]))
             collector = kwargs["comparative_runs"]
             if collector is not None:
                 collector.append(config)
@@ -555,10 +705,12 @@ class LstmComparativeOutputTests(unittest.TestCase):
                     [row["learning_rate"] for row in observed_parameters],
                     [0.001, 0.001],
                 )
+                self.assertEqual(observed_create_report, [True, True])
 
                 run_configuration_mock.reset_mock()
                 comparative_writer.reset_mock()
                 observed_parameters.clear()
+                observed_create_report.clear()
                 run_experiment(
                     **{
                         **common_arguments,
@@ -574,6 +726,7 @@ class LstmComparativeOutputTests(unittest.TestCase):
                     [row["learning_rate"] for row in observed_parameters],
                     [0.001, 0.0001],
                 )
+                self.assertEqual(observed_create_report, [True, True])
                 comparative_writer.assert_called_once()
                 self.assertEqual(
                     comparative_writer.call_args.args[2],
@@ -582,6 +735,22 @@ class LstmComparativeOutputTests(unittest.TestCase):
 
                 run_configuration_mock.reset_mock()
                 observed_parameters.clear()
+                observed_create_report.clear()
+                run_experiment(
+                    **{
+                        **common_arguments,
+                        "window_sizes": [2],
+                        "sweep_name": "mock_tex_only_sweep",
+                    },
+                    comparative_run=False,
+                    create_report=False,
+                )
+                self.assertEqual(run_configuration_mock.call_count, 1)
+                self.assertEqual(observed_create_report, [False])
+
+                run_configuration_mock.reset_mock()
+                observed_parameters.clear()
+                observed_create_report.clear()
                 run_experiment(
                     **{
                         **common_arguments,
@@ -594,6 +763,37 @@ class LstmComparativeOutputTests(unittest.TestCase):
                 )
                 self.assertEqual(run_configuration_mock.call_count, 1)
                 self.assertEqual(observed_parameters, [])
+
+                with patch(
+                    "methods.lstm_cluster.pipeline._execute_configuration_jobs",
+                    return_value=[
+                        {"run_name": "first"},
+                        {"run_name": "second"},
+                    ],
+                ) as configuration_executor:
+                    run_experiment(
+                        **{
+                            **common_arguments,
+                            "window_sizes": [2, 3],
+                            "sweep_name": "mock_parallel_cluster_only_sweep",
+                            "show_console_info": True,
+                        },
+                        comparative_run=False,
+                        run_only_cluster=True,
+                        parallel_training=True,
+                    )
+                self.assertTrue(configuration_executor.call_args.kwargs["parallel"])
+                parallel_jobs = configuration_executor.call_args.args[0]
+                self.assertEqual(len(parallel_jobs), 2)
+                self.assertTrue(
+                    all(job_kwargs["run_only_cluster"] for _, job_kwargs in parallel_jobs)
+                )
+                self.assertTrue(
+                    all(
+                        not job_kwargs["show_console_info"]
+                        for _, job_kwargs in parallel_jobs
+                    )
+                )
 
                 with self.assertRaisesRegex(ValueError, "unique output names"):
                     run_experiment(

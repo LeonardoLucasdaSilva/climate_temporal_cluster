@@ -182,7 +182,7 @@ def render_report(
             ),
             (
                 "Cluster Timeline",
-                ("cluster_timeline.png",),
+                ("cluster_diagnostics/cluster_timeline.png",),
             ),
             (
                 "Input Precipitation",
@@ -227,8 +227,8 @@ def report_title(
         else "LSTM+Cluster Experiment"
     )
     if state and station_id:
-        return f"{prefix} - {state} - {station_id}"
-    return f"{prefix} - {output_dir.name.replace('_', ' ')}"
+        return f"{prefix} --- {state} --- {station_id}"
+    return f"{prefix} --- {output_dir.name.replace('_', ' ')}"
 
 
 def config_mapping(config: object | Mapping[str, object] | None) -> dict[str, object]:
@@ -247,6 +247,7 @@ def config_mapping(config: object | Mapping[str, object] | None) -> dict[str, ob
                 "station_id",
                 "window_size",
                 "window_stride",
+                "cluster_dissimilarity_metric",
                 "n_clusters",
                 "algorithm",
                 "manual_clustering_method",
@@ -269,6 +270,7 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
         ("station_id", "Station ID"),
         ("window_size", "Window Size"),
         ("window_stride", "Window Stride"),
+        ("cluster_dissimilarity_metric", "Cluster Dissimilarity Metric"),
         ("n_clusters", "Number of Clusters"),
         ("algorithm", "Algorithm"),
         ("manual_clustering_method", "Manual Clustering Method"),
@@ -496,7 +498,7 @@ def dataset_summary(config: object | Mapping[str, object] | None) -> str:
     if config_map.get("dataset_end_date") is not None:
         rows.append(("End date", config_map["dataset_end_date"]))
     if config_map.get("features") is not None:
-        rows.append(("Features", config_map["features"]))
+        rows.append(("Features", RawLatex(format_features(config_map["features"]))))
     if config_map.get("n_samples") is not None:
         rows.append(("Input samples", config_map["n_samples"]))
 
@@ -519,7 +521,7 @@ def dataset_summary(config: object | Mapping[str, object] | None) -> str:
 def bullet_list(rows: Sequence[tuple[str, object]]) -> str:
     """Return labeled rows as a compact LaTeX bullet list."""
     items = "\n".join(
-        rf"\item \textbf{{{latex_escape(label)}:}} {latex_escape(format_value(value))}"
+        rf"\item \textbf{{{latex_escape(label)}:}} {format_latex_value(value)}"
         for label, value in rows
     )
     return "\n".join(
@@ -530,6 +532,39 @@ def bullet_list(rows: Sequence[tuple[str, object]]) -> str:
             r"\end{itemize}",
         ]
     )
+
+
+class RawLatex(str):
+    """String that has already been escaped or intentionally contains LaTeX."""
+
+
+def format_latex_value(value: object) -> str:
+    """Format a value for LaTeX, preserving intentional report markup."""
+    if isinstance(value, RawLatex):
+        return str(value)
+    return latex_escape(format_value(value))
+
+
+def format_features(features: object) -> str:
+    """Format feature names with a controlled line break for long lists."""
+    if isinstance(features, Sequence) and not isinstance(features, str):
+        escaped_features = [latex_escape(format_value(feature)) for feature in features]
+    else:
+        escaped_features = [latex_escape(format_value(features))]
+    if not escaped_features:
+        return "N/A"
+
+    break_after = "UMIDADE\\_MIN"
+    if break_after in escaped_features:
+        index = escaped_features.index(break_after) + 1
+    else:
+        index = 6 if len(escaped_features) > 6 else len(escaped_features)
+
+    first_line = ", ".join(escaped_features[:index])
+    remaining = ", ".join(escaped_features[index:])
+    if not remaining:
+        return first_line
+    return first_line + r",\\" + "\n  " + remaining
 
 
 def unavailable_text(message: str) -> str:

@@ -12,7 +12,8 @@ and experiments.
   Use `euclidian_distances` to build a pairwise distance matrix and
   `take_sigma` or `calculate_sigma_values` to generate candidate sigma values
   from that distribution. `calculate_sigma_values` can retain window starts at
-  a configured `window_stride` before calculating pairwise distances.
+  a configured `window_stride` before calculating pairwise distances and can
+  use either flattened-window Euclidean distance or multivariate DTW.
 - `precipitation_utils.py`: precipitation-specific helpers. Use
   `horizon_precipitation` to align forecast-horizon precipitation targets with
   sliding windows, `precipitation_targets` to return only finite supervised

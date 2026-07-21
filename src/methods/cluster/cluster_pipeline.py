@@ -11,6 +11,7 @@ from sklearn.cluster import KMeans
 
 from config import DATA_ROOT
 from data.load_data import load_station_daily_data
+from methods.cluster.kshape import kshape_clustering
 from methods.cluster.manual import manual_clustering
 from methods.cluster.ng import spectral_clustering
 from methods.tools.feature_scaling import (
@@ -21,7 +22,7 @@ from methods.tools.feature_scaling import (
 from methods.tools.sliding_windows import create_windows
 
 
-SUPPORTED_CLUSTERING_ALGORITHMS = ("kmeans", "spectral", "manual")
+SUPPORTED_CLUSTERING_ALGORITHMS = ("kmeans", "kshape", "spectral", "manual")
 PCA_VARIANCE_THRESHOLD = 0.90
 KMEANS_N_INIT = 10
 
@@ -146,16 +147,18 @@ def cluster_feature_matrix(
     horizon_rain: np.ndarray | None = None,
     zero_tolerance: float = 0.0,
 ) -> np.ndarray:
-    """Cluster a feature matrix with K-means, spectral, or manual clustering.
+    """Cluster a feature matrix with a supported clustering algorithm.
 
     Args:
-        feature_matrix: 2D matrix with shape `(n_samples, n_features)`.
+        feature_matrix: 2D matrix with shape `(n_samples, n_features)`. K-Shape
+            also accepts 3D `(n_samples, n_timestamps, n_features)` windows.
         n_clusters: Number of clusters to produce.
         algorithm: Clustering algorithm name. Supported values are `kmeans`,
-            `spectral`, and `manual`.
+            `kshape`, `spectral`, and `manual`.
         sigma: Gaussian-kernel bandwidth for spectral clustering. Required
             when `algorithm="spectral"`.
-        random_state: Random seed used by K-means and spectral clustering.
+        random_state: Random seed used by K-means, K-Shape, and spectral
+            clustering.
         horizon_rain: Horizon precipitation aligned with `feature_matrix`.
             Required when `algorithm="manual"`. Missing horizons may be `NaN`.
         zero_tolerance: Maximum precipitation treated as zero by manual
@@ -173,6 +176,13 @@ def cluster_feature_matrix(
             n_init=KMEANS_N_INIT,
         )
         return kmeans.fit_predict(feature_matrix)
+
+    if algorithm == "kshape":
+        return kshape_clustering(
+            feature_matrix,
+            k=n_clusters,
+            random_state=random_state,
+        )
 
     if algorithm == "spectral":
         if sigma is None:

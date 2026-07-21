@@ -29,18 +29,27 @@ It is separate from the root `data/` directory, which stores raw INMET files.
   cross-cluster test model selection reports, and diagnostic plots, including
   chronological actual-versus-predicted and residual plots for each cluster.
   Configuration and sweep summaries record the held-out cluster-assignment
-  method, window stride, and, for KNN assignment, the configured neighbor
-  count.
+  method, window stride, cluster dissimilarity metric, and, for KNN assignment,
+  the configured neighbor count.
   The oracle transfer diagnostics compare the LSTM assigned by the test-window
   cluster with the post-hoc best LSTM for that same window, exporting routing
   summaries by assigned cluster and by assigned-to-oracle model pair.
   It also writes per-cluster test actual-versus-predicted scatter plots with
   legends.
   Cluster diagnostics include silhouette analysis plots and summary scores for
-  the split feature matrices used by the experiment pipeline. The cluster
+  the split feature matrices used by the experiment pipeline. DTW runs use
+  precomputed pairwise DTW distances for silhouette instead of flattening the
+  window tensors. The cluster
   distribution diagnostic also records each cluster's training count and
   optimizer steps per epoch for the configured batch size, with exact values
-  exported to `cluster_training_batch_statistics.csv`.
+  exported to `cluster_training_batch_statistics.csv`. In cluster-only mode,
+  `06_cluster_distribution.png` still plots grouped training, validation, and
+  test counts; the optimizer-workload table and CSV are omitted because no
+  LSTM is trained.
+  The cluster precipitation distribution diagnostic combines the existing
+  forecast-target boxplot with a second boxplot of each test window's mean
+  precipitation across its input days, using the same training, validation, and
+  test split colors as the cluster distribution diagnostic.
   It also writes CSV/text forecast-horizon diagnostics that compare the target
   at the configured horizon with the precipitation observed on the final
   input-window day, plus plotted lead-day diagnostics that compare each D+k
@@ -64,9 +73,9 @@ It is separate from the root `data/` directory, which stores raw INMET files.
   `cluster_prediction_timeseries/`, and
   `prediction_timeseries_splits/lead_day_XX/`, plus the plotted values in
   `train_predictions.csv`.
-  The configuration root also receives `cluster_timeline.png`, an XY plot of
-  every window in chronological split order (training, validation, then test)
-  against its assigned cluster label.
+  The `cluster_diagnostics/` folder also receives `cluster_timeline.png`, an XY
+  plot of every window in chronological split order (training, validation, then
+  test) against its assigned cluster label.
 
 Typical usage:
 

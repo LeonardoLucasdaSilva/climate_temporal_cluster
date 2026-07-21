@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from typing import Callable, Sequence, Tuple
 
 import numpy as np
+
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+
 import tensorflow as tf
 from tensorflow import keras
 
@@ -209,7 +214,7 @@ class LSTMPrecipitationPredictor:
 
     Architecture:
     - Input: (sequence_length, n_features) - typically flattened window features
-    - Two LSTM layers with dropout for regularization
+    - One or two LSTM layers with dropout for regularization
     - Dense layers for feature transformation
     - Output: One value per configured forecast lead day
     """
@@ -218,7 +223,7 @@ class LSTMPrecipitationPredictor:
         self,
         input_shape: Tuple[int, ...],
         lstm_units: int = 64,
-        lstm_units_2: int = 32,
+        lstm_units_2: int | None = 32,
         dropout_rate: float = 0.2,
         learning_rate: float = 0.001,
         weight_decay: float = 0.0,
@@ -234,7 +239,8 @@ class LSTMPrecipitationPredictor:
         Args:
             input_shape: Shape of input data (sequence_length, n_features) or (n_features,)
             lstm_units: Number of units in first LSTM layer
-            lstm_units_2: Number of units in second LSTM layer
+            lstm_units_2: Number of units in second LSTM layer; set to `None`
+                to use a single LSTM layer.
             dropout_rate: Dropout rate for regularization
             learning_rate: Learning rate for optimizer
             weight_decay: Decoupled AdamW weight-decay coefficient
@@ -275,24 +281,29 @@ class LSTMPrecipitationPredictor:
 
     def _build_model(self):
         """Build the LSTM model architecture."""
-        model = keras.Sequential([
-            # First LSTM layer
+        recurrent_layers = [
+            layers.Input(shape=self.input_shape),
             layers.LSTM(
                 self.lstm_units,
                 activation='relu',
-                input_shape=self.input_shape,
-                return_sequences=True,  # Return sequences for second LSTM
+                return_sequences=self.lstm_units_2 is not None,
             ),
             layers.Dropout(self.dropout_rate),
+        ]
+        if self.lstm_units_2 is not None:
+            recurrent_layers.extend(
+                [
+                    layers.LSTM(
+                        self.lstm_units_2,
+                        activation='relu',
+                        return_sequences=False,
+                    ),
+                    layers.Dropout(self.dropout_rate),
+                ]
+            )
 
-            # Second LSTM layer
-            layers.LSTM(
-                self.lstm_units_2,
-                activation='relu',
-                return_sequences=False,  # Return only last output
-            ),
-            layers.Dropout(self.dropout_rate),
-
+        model = keras.Sequential([
+            *recurrent_layers,
             # Dense layers for final prediction
             layers.Dense(16, activation='relu'),
             layers.Dropout(self.dropout_rate),

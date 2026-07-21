@@ -8,6 +8,14 @@ from methods.cluster.cluster_pipeline import (
     numeric_feature_columns,
     run_clustering_pipeline,
 )
+from methods.cluster.dtw import (
+    SUPPORTED_DISSIMILARITY_METRICS,
+    cross_dtw_distances,
+    dtw_distance,
+    normalize_dissimilarity_metric,
+    pairwise_dtw_distances,
+)
+from methods.cluster.kshape import KShape, kshape_clustering, shape_based_distance
 from methods.cluster.manual import (
     ManualRainClustering,
     SUPPORTED_MANUAL_CLUSTERING_METHODS,
@@ -19,16 +27,24 @@ from methods.tools.precipitation_utils import horizon_precipitation
 
 __all__ = [
     "ManualRainClustering",
+    "KShape",
     "PCA_VARIANCE_THRESHOLD",
+    "SUPPORTED_DISSIMILARITY_METRICS",
     "SUPPORTED_MANUAL_CLUSTERING_METHODS",
     "cluster_feature_matrix",
     "create_cluster_feature_matrix",
     "create_pipeline_clustering_features",
+    "cross_dtw_distances",
+    "dtw_distance",
     "fit_predict",
     "horizon_precipitation",
+    "kshape_clustering",
     "manual_clustering",
     "normalize_manual_clustering_method",
+    "normalize_dissimilarity_metric",
     "numeric_feature_columns",
     "run_clustering_pipeline",
+    "pairwise_dtw_distances",
     "spectral_clustering",
+    "shape_based_distance",
 ]

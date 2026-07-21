@@ -6,10 +6,17 @@ This folder contains clustering algorithms used by the project.
   `numeric_feature_columns`, `create_cluster_feature_matrix`, and
   `create_pipeline_clustering_features`, which reproduces the LSTM pipeline's
   train-only scaling and optional PCA for standalone analyses, plus
-  `cluster_feature_matrix`, which dispatches K-means, spectral, or manual
-  clustering. It also contains
+  `cluster_feature_matrix`, which dispatches K-means, K-Shape, spectral, or
+  manual clustering. It also contains
   `run_clustering_pipeline` and `main`, the CLI entrypoint used by the
   `climate-cluster` command.
+- `dtw.py`: exact dependent multivariate Dynamic Time Warping, pairwise and
+  cross-distance matrices, and normalization of the supported cluster
+  dissimilarity metric names.
+- `kshape.py`: K-Shape estimator and functional interface. It implements
+  z-normalization, normalized cross-correlation shape distance, temporal
+  alignment, shape extraction, multiple initializations, and held-out
+  prediction from learned shape centroids.
 - `ng.py`: custom spectral clustering implementation. It builds a
   Gaussian affinity matrix, normalizes it, extracts the largest eigenvectors,
   row-normalizes the embedding, and clusters that embedding.
@@ -33,6 +40,20 @@ from sklearn.cluster import KMeans
 The project uses `KMeans(...).fit_predict(...)` directly for K-means runs and
 inside the last step of the spectral clustering implementation.
 
+K-Shape is implemented locally and has no dependency beyond NumPy and SciPy.
+Use the canonical algorithm alias `kshape`. A 2D array is treated as a batch of
+univariate series; a 3D array uses `(samples, timestamps, features)`, with one
+temporal shift shared by all feature channels. Constant feature channels are
+handled as zero-valued normalized shapes.
+
+The active LSTM+cluster pipeline can instead build spectral affinity from DTW
+distances between scaled 3D weather windows. DTW uses a shared temporal path
+for all features. Because scikit-learn K-means and arithmetic centroids do not
+support an arbitrary DTW metric, this mode requires spectral or manual
+training labels plus KNN held-out assignment. PCA must remain disabled so the
+window time axis is preserved. `dwt` is accepted as an alias and normalized to
+the canonical name `dtw`.
+
 Typical usage:
 
 ```python
@@ -55,6 +76,22 @@ labels = cluster_feature_matrix(
     sigma=1.0,
 )
 ```
+
+K-Shape usage with the original temporal windows:
+
+```python
+from methods.cluster.kshape import KShape
+
+model = KShape(n_clusters=3, random_state=42)
+labels = model.fit_predict(windows)
+held_out_labels = model.predict(held_out_windows)
+```
+
+In the LSTM pipeline, K-Shape always fits on training window tensors and uses
+its learned shape centroids for validation and test. PCA must be disabled
+because it removes the temporal axis required for shape alignment. K-Shape has
+its own shape-based distance, so it cannot be combined with
+`CLUSTER_DISSIMILARITY_METRIC="dtw"`.
 
 For manual clustering, pass horizon-aligned precipitation through the same
 dispatcher:
