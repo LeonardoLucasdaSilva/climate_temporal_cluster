@@ -77,6 +77,7 @@ class LstmReportTests(unittest.TestCase):
                 "station_id": "A801",
                 "window_size": 8,
                 "window_stride": 3,
+                "cluster_dissimilarity_metric": "dtw",
                 "n_clusters": 3,
                 "algorithm": "manual",
                 "manual_clustering_method": "rain_level",
@@ -102,6 +103,10 @@ class LstmReportTests(unittest.TestCase):
 
         self.assertIn(r"\section*{Configuration}", tex)
         self.assertIn(r"\item \textbf{Window Stride:} 3", tex)
+        self.assertIn(
+            r"\item \textbf{Cluster Dissimilarity Metric:} dtw",
+            tex,
+        )
         self.assertIn(r"\item \textbf{Clustering Feature Scaler:} standard", tex)
         self.assertIn(r"\item \textbf{Clustering Precipitation Scaler:} none", tex)
         self.assertIn(r"\item \textbf{LSTM Feature Scaler:} minmax", tex)
@@ -118,6 +123,36 @@ class LstmReportTests(unittest.TestCase):
         self.assertNotIn("Manual Zero Tolerance", tex)
         self.assertIn(r"\item \textbf{Cluster Assignment Method:} knn", tex)
         self.assertIn(r"\item \textbf{Cluster Assignment Neighbors:} 7", tex)
+
+    def test_report_title_and_feature_list_use_latex_safe_breaks(self) -> None:
+        tex = render_report(
+            PROJECT_ROOT / "tests" / "_missing_report_dir",
+            {
+                "state": "RS",
+                "station_id": "A801",
+                "features": [
+                    "TEMPERATURA_MAXIMA",
+                    "TEMPERATURA_MIN",
+                    "UMIDADE_MAX",
+                    "UMIDADE_MIN",
+                    "PRESSAO_MAX",
+                    "PRESSAO_MIN",
+                ],
+            },
+        )
+
+        self.assertIn(
+            r"\title{LSTM+Cluster Experiment --- RS --- A801}",
+            tex,
+        )
+        self.assertIn(
+            "\\item \\textbf{Features:} "
+            "TEMPERATURA\\_MAXIMA, TEMPERATURA\\_MIN, "
+            "UMIDADE\\_MAX, UMIDADE\\_MIN,\\\\\n"
+            "  PRESSAO\\_MAX, PRESSAO\\_MIN",
+            tex,
+        )
+        self.assertNotIn(r"\textbackslash{}", tex)
 
     def test_config_summary_reports_disabled_and_shared_pca_modes(self) -> None:
         disabled_tex = config_summary_list(

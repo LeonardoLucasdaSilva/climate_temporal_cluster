@@ -17,6 +17,7 @@ from data.lstm_outputs import (
     compressed_time_positions,
     save_cluster_distribution_plot,
     save_cluster_precipitation_histograms,
+    save_precipitation_by_cluster_plot,
     save_cluster_timeline_plot,
     pca_mode_label,
     save_cluster_silhouette_plot,
@@ -569,6 +570,120 @@ class LstmOutputTests(unittest.TestCase):
             self.assertEqual(cells[(2, 2)].get_text().get_text(), "1")
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_cluster_distribution_without_training_uses_all_splits(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_only_distribution_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+        captured: dict[str, object] = {}
+
+        def fake_savefig(
+            figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            captured["figure"] = figure
+            captured["path"] = Path(path)
+            Path(path).write_bytes(b"plot")
+
+        try:
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                statistics = save_cluster_distribution_plot(
+                    c_test=np.array([0, 2, 2]),
+                    output_dir=output_dir,
+                    c_train=np.array([0, 0, 1]),
+                    c_val=np.array([1, 2]),
+                )
+
+            self.assertIsNotNone(statistics)
+            assert statistics is not None
+            self.assertEqual(statistics["cluster"].tolist(), [0, 1, 2])
+            self.assertEqual(statistics["n_train"].tolist(), [2, 1, 0])
+            self.assertEqual(statistics["n_validation"].tolist(), [0, 1, 1])
+            self.assertEqual(statistics["n_test"].tolist(), [1, 0, 2])
+            figure = captured["figure"]
+            self.assertEqual(len(figure.axes), 1)
+            bar_heights = [
+                [int(bar.get_height()) for bar in container]
+                for container in figure.axes[0].containers
+            ]
+            self.assertEqual(bar_heights, [[2, 1, 0], [0, 1, 1], [1, 0, 2]])
+            self.assertFalse(
+                (
+                    output_dir
+                    / "cluster_diagnostics"
+                    / "cluster_training_batch_statistics.csv"
+                ).exists()
+            )
+            self.assertEqual(
+                captured["path"],
+                output_dir / "cluster_diagnostics" / "06_cluster_distribution.png",
+            )
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_precipitation_by_cluster_plot_includes_input_window_mean_panel(
+        self,
+    ) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_precipitation_distribution_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+        captured: dict[str, object] = {}
+
+        def fake_savefig(
+            figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            captured["figure"] = figure
+            captured["path"] = Path(path)
+            Path(path).write_bytes(b"plot")
+
+        try:
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                save_precipitation_by_cluster_plot(
+                    y_test=np.array([1.0, 4.0, 2.0, 5.0]),
+                    c_test=np.array([0, 1, 0, 1]),
+                    output_dir=output_dir,
+                    input_window_mean_precipitation=np.array([0.5, 1.5, 1.0, 2.0]),
+                    y_train=np.array([0.0, 3.0, 1.0, 4.0]),
+                    c_train=np.array([0, 1, 0, 1]),
+                    y_val=np.array([0.8, 3.8]),
+                    c_val=np.array([0, 1]),
+                    input_window_mean_precipitation_train=np.array(
+                        [0.2, 1.2, 0.7, 1.7]
+                    ),
+                    input_window_mean_precipitation_val=np.array([0.4, 1.4]),
+                )
+
+            self.assertEqual(
+                captured["path"],
+                output_dir
+                / "cluster_diagnostics"
+                / "07_precipitation_distribution_by_cluster.png",
+            )
+            figure = captured["figure"]
+            self.assertEqual(len(figure.axes), 2)
+            self.assertEqual(
+                figure.axes[1].get_ylabel(),
+                "Input-window mean precipitation (mm)",
+            )
+            legend_labels = [
+                text.get_text()
+                for text in figure.axes[0].get_legend().get_texts()
+            ]
+            self.assertEqual(legend_labels, ["Training", "Validation", "Test"])
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
     def test_sweep_summary_records_pca_choice(self) -> None:
         output_dir = PROJECT_ROOT / "tests" / f"_pca_summary_test_{uuid.uuid4().hex}"
         output_dir.mkdir()
@@ -648,7 +763,10 @@ class LstmOutputTests(unittest.TestCase):
                     c_test=np.array([2, 0]),
                 )
 
-            self.assertEqual(captured["path"], output_dir / "cluster_timeline.png")
+            self.assertEqual(
+                captured["path"],
+                output_dir / "cluster_diagnostics" / "cluster_timeline.png",
+            )
             figure = captured["figure"]
             offsets = figure.axes[0].collections[0].get_offsets()
             np.testing.assert_allclose(offsets[:, 0], [0, 1, 2, 3, 4, 5])
@@ -807,6 +925,47 @@ class LstmOutputTests(unittest.TestCase):
             self.assertIn("Validation", summary["split"].tolist())
             training_overall = summary[
                 (summary["split"] == "Training") & (summary["cluster"] == "overall")
+            ]["mean_silhouette"].iloc[0]
+            self.assertGreater(training_overall, 0.0)
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_cluster_silhouette_plot_supports_dtw_windows(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_dtw_silhouette_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+
+        def fake_savefig(
+            _figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            Path(path).write_bytes(b"plot")
+
+        windows = np.array(
+            [
+                [[0.0], [0.0], [1.0]],
+                [[0.0], [1.0], [1.0]],
+                [[5.0], [5.0], [6.0]],
+                [[5.0], [6.0], [6.0]],
+            ]
+        )
+        try:
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                summary = save_cluster_silhouette_plot(
+                    {"Training": (windows, np.array([0, 0, 1, 1]))},
+                    output_dir,
+                    dissimilarity_metric="DWT",
+                )
+
+            self.assertEqual(set(summary["dissimilarity_metric"]), {"dtw"})
+            training_overall = summary[
+                (summary["split"] == "Training")
+                & (summary["cluster"] == "overall")
             ]["mean_silhouette"].iloc[0]
             self.assertGreater(training_overall, 0.0)
         finally:
