@@ -23,6 +23,7 @@ from methods.cluster.cluster_pipeline import (  # noqa: E402
 from methods.cluster.kshape import KShape, shape_based_distance  # noqa: E402
 from methods.lstm_cluster.pipeline import (  # noqa: E402
     ExperimentConfig,
+    _cluster_diagnostic_feature_splits,
     _cluster_window_splits,
     create_window_split_data,
 )
@@ -167,6 +168,12 @@ class KShapeTest(unittest.TestCase):
         self.assertEqual(len(split_data.c_train), len(split_data.i_train))
         self.assertEqual(len(split_data.c_val), len(split_data.i_val))
         self.assertEqual(len(split_data.c_test), len(split_data.i_test))
+        diagnostic_splits = _cluster_diagnostic_feature_splits(split_data, config)
+        self.assertEqual(diagnostic_splits["Training"][0].ndim, 3)
+        self.assertEqual(
+            diagnostic_splits["Training"][0].shape[1],
+            config.window_size,
+        )
 
     def test_invalid_cluster_count_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "cannot exceed"):

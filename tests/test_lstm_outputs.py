@@ -16,6 +16,7 @@ import pandas as pd
 from data.lstm_outputs import (
     compressed_time_positions,
     save_cluster_distribution_plot,
+    save_cluster_input_precipitation_timeseries,
     save_cluster_precipitation_histograms,
     save_precipitation_by_cluster_plot,
     save_cluster_timeline_plot,
@@ -24,6 +25,7 @@ from data.lstm_outputs import (
     save_cluster_prediction_scatters,
     save_cluster_prediction_timeseries,
     save_cluster_only_outputs,
+    save_run_outputs,
     save_forecast_horizon_diagnostics,
     save_forecast_lead_day_diagnostics,
     save_oracle_model_visualizations,
@@ -41,6 +43,110 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class LstmOutputTests(unittest.TestCase):
+    def test_cluster_input_precipitation_timeseries_writes_panels_and_individuals(
+        self,
+    ) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_input_precipitation_timeseries_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+
+        def fake_savefig(
+            _figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            Path(path).write_bytes(b"plot")
+
+        try:
+            windows = np.arange(23 * 3, dtype=float).reshape(23, 3)
+            labels = np.zeros(23, dtype=int)
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                save_cluster_input_precipitation_timeseries(
+                    windows,
+                    labels,
+                    output_dir,
+                    window_indices=np.arange(100, 123),
+                    n_clusters=3,
+                    plot_limit=4,
+                )
+
+            cluster_dir = (
+                output_dir
+                / "cluster_diagnostics"
+                / "clusters_timeseries"
+                / "cluster_0"
+            )
+            individual_dir = cluster_dir / "individual_windows"
+            self.assertTrue((cluster_dir / "precipitation_windows.png").exists())
+            self.assertFalse(
+                (cluster_dir / "precipitation_windows_page_02.png").exists()
+            )
+            self.assertEqual(len(list(individual_dir.glob("window_*.png"))), 4)
+            self.assertTrue((individual_dir / "window_000100.png").exists())
+            self.assertTrue((individual_dir / "window_000101.png").exists())
+            for cluster_id in (1, 2):
+                empty_cluster_dir = (
+                    output_dir
+                    / "cluster_diagnostics"
+                    / "clusters_timeseries"
+                    / f"cluster_{cluster_id}"
+                )
+                self.assertTrue((empty_cluster_dir / "individual_windows").is_dir())
+                self.assertTrue(
+                    (empty_cluster_dir / "precipitation_windows.png").exists()
+                )
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_cluster_timeseries_plot_limit_is_distributed_by_cluster(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_timeseries_plot_limit_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+
+        def fake_savefig(
+            _figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            Path(path).write_bytes(b"plot")
+
+        try:
+            windows = np.arange(6 * 3, dtype=float).reshape(6, 3)
+            labels = np.array([0, 0, 0, 1, 1, 2])
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                save_cluster_input_precipitation_timeseries(
+                    windows,
+                    labels,
+                    output_dir,
+                    n_clusters=3,
+                    plot_limit=4,
+                )
+
+            plot_root = output_dir / "cluster_diagnostics" / "clusters_timeseries"
+            counts = [
+                len(
+                    list(
+                        (
+                            plot_root
+                            / f"cluster_{cluster_id}"
+                            / "individual_windows"
+                        ).glob("window_*.png")
+                    )
+                )
+                for cluster_id in range(3)
+            ]
+            self.assertEqual(counts, [2, 1, 1])
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
     def test_cluster_precipitation_histograms_write_overview_and_individuals(self) -> None:
         output_dir = (
             PROJECT_ROOT
@@ -174,6 +280,98 @@ class LstmOutputTests(unittest.TestCase):
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
 
+    def test_run_outputs_skip_train_performance_when_train_info_is_false(
+        self,
+    ) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_run_outputs_train_info_test_{uuid.uuid4().hex}"
+        )
+        config = SimpleNamespace(
+            name="train_info_test",
+            window_size=3,
+            window_stride=1,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+            cluster_only_precipitation=False,
+            plot_cluster_timeseries=False,
+            cluster_timeseries_plot_limit=None,
+            cluster_assignment_method="centroid",
+            cluster_assignment_neighbors=5,
+            manual_clustering_method="legacy",
+            cluster_dissimilarity_metric="euclidean",
+        )
+        y_train = np.array([1.0, 2.0, 3.0])
+        y_val = np.array([1.5, 2.5])
+        y_test = np.array([1.2, 2.2])
+        y_pred_train = y_train + 0.1
+        y_pred_val = y_val + 0.1
+        y_pred_test = y_test + 0.1
+        lead_train = y_train.reshape(-1, 1)
+        lead_pred_train = y_pred_train.reshape(-1, 1)
+
+        try:
+            output_dir.mkdir()
+            with (
+                patch("data.lstm_outputs.save_input_precipitation_assignments"),
+                patch(
+                    "data.lstm_outputs.save_forecast_horizon_diagnostics",
+                    return_value={},
+                ),
+                patch(
+                    "data.lstm_outputs.save_forecast_lead_day_diagnostics",
+                    return_value=pd.DataFrame({"lead_day": [1]}),
+                ),
+                patch("data.lstm_outputs.save_config_summary"),
+                patch("data.lstm_outputs.save_visualizations") as visual_writer,
+                patch(
+                    "data.lstm_outputs.save_train_performance_visualizations"
+                ) as train_writer,
+            ):
+                result = save_run_outputs(
+                    config=config,
+                    output_dir=output_dir,
+                    feature_columns=["PRECIPITACAO_TOTAL"],
+                    next_day_precipitation=np.array([1.0, 2.0]),
+                    current_precipitation=np.array([0.5, 1.5]),
+                    input_cluster_labels=np.array([0, 1]),
+                    y_train=y_train,
+                    y_val=y_val,
+                    y_test=y_test,
+                    test_targets_by_lead_day=y_test.reshape(-1, 1),
+                    current_train=y_train - 0.1,
+                    current_val=y_val - 0.1,
+                    current_test=y_test - 0.1,
+                    y_pred_train=y_pred_train,
+                    y_pred_val=y_pred_val,
+                    y_pred_test=y_pred_test,
+                    c_test=np.array([0, 1]),
+                    train_indices=np.array([0, 1, 2]),
+                    val_indices=np.array([3, 4]),
+                    test_indices=np.array([5, 6]),
+                    histories_by_cluster={},
+                    metrics_by_cluster={},
+                    state="RS",
+                    station_id="A801",
+                    pca_variance_threshold=None,
+                    forecast_horizon=1,
+                    train_targets_by_lead_day=lead_train,
+                    y_pred_train_by_lead_day=lead_pred_train,
+                    train_cluster_labels=np.array([0, 1, 1]),
+                    train_info=False,
+                    silhouette_info=False,
+                )
+
+            train_writer.assert_not_called()
+            self.assertFalse(visual_writer.call_args.kwargs["silhouette_info"])
+            self.assertFalse((output_dir / "train_performance").exists())
+            self.assertFalse(result["train_info"])
+            self.assertFalse(result["silhouette_info"])
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
     def test_cluster_only_outputs_skip_supervised_artifacts(self) -> None:
         output_dir = (
             PROJECT_ROOT
@@ -250,6 +448,81 @@ class LstmOutputTests(unittest.TestCase):
                 "train_performance",
             ):
                 self.assertFalse((output_dir / forbidden_dir).exists())
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_cluster_only_outputs_skip_silhouette_when_disabled(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_only_silhouette_info_test_{uuid.uuid4().hex}"
+        )
+        config = SimpleNamespace(
+            name="cluster_only_silhouette_test",
+            window_size=3,
+            n_clusters=2,
+            algorithm="kmeans",
+            cluster_assignment_method="centroid",
+            cluster_assignment_neighbors=5,
+            cluster_only_precipitation=False,
+            plot_cluster_timeseries=False,
+            cluster_timeseries_plot_limit=None,
+            cluster_dissimilarity_metric="euclidean",
+            sigma=None,
+        )
+        c_train = np.array([0, 1, 0, 1])
+        c_val = np.array([0, 1])
+        c_test = np.array([0, 1])
+        y_train = np.array([1.0, 2.0, 1.5, 2.5])
+        y_val = np.array([1.2, 2.2])
+        y_test = np.array([1.1, 2.1])
+        feature_splits = {
+            "Training": (np.array([[0.0], [1.0], [0.1], [1.1]]), c_train),
+            "Validation": (np.array([[0.2], [1.2]]), c_val),
+            "Test": (np.array([[0.3], [1.3]]), c_test),
+        }
+
+        try:
+            with patch(
+                "data.lstm_outputs.save_cluster_silhouette_plot"
+            ) as silhouette_writer:
+                result = save_cluster_only_outputs(
+                    config,
+                    output_dir,
+                    ["PRECIPITACAO_TOTAL"],
+                    np.concatenate([y_train, y_val, y_test]),
+                    np.concatenate([y_train, y_val, y_test]) - 0.1,
+                    np.concatenate([c_train, c_val, c_test]),
+                    y_train,
+                    y_val,
+                    y_test,
+                    y_train - 0.1,
+                    y_val - 0.1,
+                    y_test - 0.1,
+                    c_train,
+                    c_val,
+                    c_test,
+                    np.arange(len(y_train)),
+                    np.arange(len(y_val)) + len(y_train),
+                    np.arange(len(y_test)) + len(y_train) + len(y_val),
+                    state="RS",
+                    station_id="A801",
+                    pca_variance_threshold=None,
+                    pca_for_clustering_only=False,
+                    forecast_horizon=1,
+                    cluster_feature_splits=feature_splits,
+                    silhouette_info=False,
+                )
+
+            silhouette_writer.assert_not_called()
+            self.assertFalse(
+                (output_dir / "cluster_diagnostics" / "08_silhouette_analysis.png").exists()
+            )
+            self.assertFalse(
+                (output_dir / "cluster_diagnostics" / "silhouette_scores.csv").exists()
+            )
+            self.assertFalse(result["silhouette_info"])
+            self.assertTrue(np.isnan(result["training_mean_silhouette"]))
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
 
@@ -963,6 +1236,50 @@ class LstmOutputTests(unittest.TestCase):
                 )
 
             self.assertEqual(set(summary["dissimilarity_metric"]), {"dtw"})
+            training_overall = summary[
+                (summary["split"] == "Training")
+                & (summary["cluster"] == "overall")
+            ]["mean_silhouette"].iloc[0]
+            self.assertGreater(training_overall, 0.0)
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_cluster_silhouette_plot_supports_sbd_windows(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_sbd_silhouette_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+
+        def fake_savefig(
+            _figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            Path(path).write_bytes(b"plot")
+
+        timestamps = np.linspace(0.0, 2.0 * np.pi, 12, endpoint=False)
+        first_shape = np.sin(timestamps)
+        second_shape = np.sign(np.sin(timestamps))
+        windows = np.asarray(
+            [
+                first_shape,
+                3.0 * first_shape + 10.0,
+                second_shape,
+                2.0 * second_shape - 4.0,
+            ]
+        )
+        try:
+            with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+                summary = save_cluster_silhouette_plot(
+                    {"Training": (windows, np.array([0, 0, 1, 1]))},
+                    output_dir,
+                    dissimilarity_metric="kshape",
+                )
+
+            self.assertEqual(set(summary["dissimilarity_metric"]), {"sbd"})
             training_overall = summary[
                 (summary["split"] == "Training")
                 & (summary["cluster"] == "overall")

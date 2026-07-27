@@ -110,7 +110,8 @@ WINDOW_STRIDE = 1  # Days between consecutive window starts
 N_CLUSTERS_LIST = [3, 4, 5]
 PCA_VARIANCE_THRESHOLD = 0.90  # None disables PCA
 PCA_FOR_CLUSTERING_ONLY = True
-CLUSTERING_ALGORITHM = "spectral"  # "kmeans", "kshape", "spectral", or "manual"
+CLUSTERING_ALGORITHM = "spectral"  # or a list such as ["kshape", "kmeans"]
+CLUSTER_ONLY_PRECIPITATION = False  # Use only the precipitation series to cluster windows
 CLUSTER_DISSIMILARITY_METRIC = "euclidean"  # "euclidean" or "dtw"
 MANUAL_CLUSTERING_METHOD = "legacy"  # "legacy" or "rain_level"
 MANUAL_ZERO_TOLERANCE = 0.0  # Used only by legacy manual clustering
@@ -120,14 +121,29 @@ FORECAST_HORIZON = 1
 N_SIGMA_VALUES = 5
 LEARNING_RATE: float | list[float] = 0.001
 COMPARATIVE_RUN = True
-PIVOT_PARAMETER = "window_size"  # aliases include "K" and "lr"
+PIVOT_PARAMETER = "window_size"  # aliases include "K", "lr", and "CLUSTERING_ALGORITHM"
 TEST_ALL_MODELS = True
 RUN_ONLY_CLUSTER = False  # Comparative plots require the complete LSTM pipeline
+TRAIN_INFO = True  # Save train_performance/ diagnostics
+SILHOUETTE_INFO = True  # Save cluster_diagnostics/08_silhouette_analysis.png
+PLOT_CLUSTER_TIMESERIES = True  # Save per-cluster input precipitation series diagnostics
+CLUSTER_TIMESERIES_PLOT_LIMIT = 100  # None saves every individual test-window series
 PARALEL = True  # Parallel cluster-only configs or cluster LSTMs
 CREATE_REPORT = False  # Write .tex and skip PDF compilation for faster runs
+WARM_UP = 25  # Epochs before early stopping starts counting
 EARLY_STOPPING_METRIC = "loss"  # "loss", "mse", "mae", or "r2"
 SHOW_CONSOLE_INFO = True
 ```
+
+Set `CLUSTER_ONLY_PRECIPITATION = True` to cluster each window from its
+`PRECIPITACAO_TOTAL` time series alone. This does not change the input features
+used to train the cluster-specific LSTMs.
+
+Set `PLOT_CLUSTER_TIMESERIES = False` to skip generating
+`cluster_diagnostics/clusters_timeseries/` entirely. When enabled,
+`CLUSTER_TIMESERIES_PLOT_LIMIT` bounds the total number of individual test
+window precipitation series written there. The selected windows are distributed
+across clusters; set it to `None` to save every available test-window series.
 
 ### PCA configuration modes
 
@@ -164,20 +180,30 @@ Set `PARALEL = False` for serial execution.
 Set `COMPARATIVE_RUN = True` to create sweep-level plots after every test has
 finished. `PIVOT_PARAMETER` selects the varied parameter shown on metric axes;
 it accepts parameter fields and convenient aliases such as `"K"` for
-`n_clusters` and `"lr"` for `learning_rate`. The pivot must have at least two
-distinct values when the sweep contains multiple tests. The grid varies
-`WINDOW_SIZES`, `N_CLUSTERS_LIST`, and spectral sigma candidates. These numeric
-training settings also accept either a scalar or a list: `LSTM_UNITS`,
+`n_clusters`, `"lr"` for `learning_rate`, and `"CLUSTERING_ALGORITHM"` for
+`clustering_algorithm`. The pivot must have at least two distinct values when
+the sweep contains multiple tests. The grid varies `WINDOW_SIZES`,
+`N_CLUSTERS_LIST`, `CLUSTERING_ALGORITHM`, and spectral sigma candidates. These
+numeric training settings also accept either a scalar or a list: `LSTM_UNITS`,
 `LSTM_UNITS_2`, `DROPOUT_RATE`, `LEARNING_RATE`, `WEIGHT_DECAY`, `EPOCHS`,
-`BATCH_SIZE`, and `PATIENCE`. `EARLY_STOPPING_METRIC` chooses the validation
-metric used by early stopping: `"loss"`, `"mse"`, and `"mae"` are minimized,
-while `"r2"` is maximized. Set `LSTM_UNITS_2 = None` to use a single LSTM
-layer with `LSTM_UNITS` units. Multiple lists form a Cartesian product. To
-compare learning rates, configure:
+`BATCH_SIZE`, `PATIENCE`, and `WARM_UP`. `WARM_UP = 0` preserves the previous
+behavior, where early stopping can count from the first epoch; larger values
+delay early-stopping monitoring until that epoch. `EARLY_STOPPING_METRIC`
+chooses the validation metric used by early stopping: `"loss"`, `"mse"`, and
+`"mae"` are minimized, while `"r2"` is maximized. Set `LSTM_UNITS_2 = None` to
+use a single LSTM layer with `LSTM_UNITS` units. Multiple lists form a
+Cartesian product. To compare learning rates, configure:
 
 ```python
 LEARNING_RATE = [0.0001, 0.0005, 0.001]
 PIVOT_PARAMETER = "learning_rate"
+```
+
+To compare clustering algorithms, configure:
+
+```python
+CLUSTERING_ALGORITHM = ["kshape", "kmeans"]
+PIVOT_PARAMETER = "CLUSTERING_ALGORITHM"
 ```
 
 Keep the other sweep dimensions fixed when the goal is to attribute changes to
@@ -229,8 +255,13 @@ For each configuration, the experiment runs these stages:
    `LSTM_FEATURE_NORMALIZE` and `LSTM_PRECIPITATION_NORMALIZE` on training
    rows/windows only, train one LSTM model per training cluster with one output
    unit per lead day, then inverse-transform predictions before metrics and
-   plots. With `LSTM_PRECIPITATION_NORMALIZE = None`, precipitation features
-   and targets stay in millimeters.
+   plots. `LSTM_PRECIPITATION_TRANSFORM = True` applies `log1p` only to LSTM
+   precipitation features and targets before normalization; clustering remains
+   untransformed. Predictions are denormalized and then restored with
+   `expm1`, so test metrics and plots stay in millimeters. With both
+   `LSTM_PRECIPITATION_TRANSFORM = False` and
+   `LSTM_PRECIPITATION_NORMALIZE = None`, precipitation features and targets
+   stay in millimeters.
 9. Predict train and validation precipitation with each sample's own cluster
    model.
 10. Evaluate test samples with either their own cluster model only or, when
@@ -238,11 +269,13 @@ For each configuration, the experiment runs these stages:
    selection. The all-model path is an oracle diagnostic: it compares the LSTM
    selected by the assigned test cluster with the best LSTM for that same
    window after observing the target, then writes routing summaries and plots.
-11. Save metrics, reports, predictions, plots, and LaTeX tables. Each normal
-    LSTM configuration also writes `train_performance/`, containing the
+11. Save metrics, reports, predictions, plots, and LaTeX tables. When
+    `TRAIN_INFO = True`, each normal LSTM configuration also writes
+    `train_performance/`, containing the
     per-cluster training histograms, scatter plots, chronological time series,
     and `prediction_timeseries_splits/lead_day_XX/` plots for every forecast
-    horizon. Cluster-only runs do not create this folder.
+    horizon. Set `TRAIN_INFO = False` to skip this folder. Cluster-only runs do
+    not create it.
 
 ### Cluster dissimilarity metric
 
@@ -252,7 +285,9 @@ previous flattened-window behavior. DTW compares the scaled 3D windows and
 uses one shared warping path across all weather variables. In the current
 implementation DTW requires spectral or manual clustering, KNN held-out
 assignment, and `PCA_VARIANCE_THRESHOLD = None`. The silhouette diagnostic and
-automatic spectral sigma candidates use the selected metric as well.
+automatic spectral sigma candidates use the selected metric as well. For
+K-Shape, the silhouette diagnostic uses precomputed SBD distances on the
+original temporal windows.
 
 ## ARMA Baseline
 
@@ -266,6 +301,7 @@ STATION_ID = "A801"
 WINDOW_SIZES = [5, 10, 15]
 FORECAST_HORIZON = 5
 ARMA_ORDERS = [(1, 0), (2, 1), (5, 1)]
+PARALEL = True  # Run independent window-size and ARMA-order configurations in parallel
 ```
 
 Each ARMA model is fit as `ARIMA(order=(p, 0, q))` with `statsmodels` on the
@@ -274,6 +310,9 @@ parameters fixed and condition each prediction on observations available up to
 the forecast origin. `WINDOW_SIZES` is used for target alignment with the LSTM
 sliding-window convention, so the ARMA plots use the same D+1 through
 D+`FORECAST_HORIZON` lead-day interpretation.
+With `PARALEL = True`, each independent `WINDOW_SIZE × ARMA(p, q)` configuration
+runs in a separate process, capped by the number of available CPU cores. The
+sweep summary records whether this parallel execution was active.
 
 ARMA outputs are saved under:
 
@@ -478,6 +517,10 @@ Supported algorithms:
 - `spectral`: uses the local implementation in
   `src/methods/cluster/ng.py`
 
+`CLUSTERING_ALGORITHM` may be a single value or a list. A list creates one
+configuration per algorithm, so `["kshape", "kmeans"]` can be compared with
+`PIVOT_PARAMETER = "CLUSTERING_ALGORITHM"`.
+
 K-Shape compares z-normalized temporal shapes through normalized
 cross-correlation, so it is insensitive to per-window offset and amplitude and
 can align a shared temporal shift across multiple weather features. In the
@@ -564,7 +607,8 @@ For each cluster, the training loop:
 
 1. Selects train/validation/test samples assigned to that cluster.
 2. Builds an LSTM model with two LSTM layers, dropout, and dense layers.
-3. Trains with optional early stopping, monitored by `EARLY_STOPPING_METRIC`.
+3. Trains with optional early stopping, monitored by `EARLY_STOPPING_METRIC`
+   after the configured `WARM_UP` epochs.
 4. Writes train and validation predictions back into aggregate arrays.
 5. Evaluates test samples with their own cluster model, or with every trained
    cluster model when `TEST_ALL_MODELS = True`.
@@ -610,11 +654,17 @@ day, `03_training_history_comparison.png`, one metric panel per lead day, and
 machine-readable `test_predictions_comparison.csv`,
 `aligned_test_predictions.csv`, `training_history_comparison.csv`,
 `comparative_metrics.csv`, `comparison_manifest.csv`, and
-`comparison_summary.txt`. The time-series panels show one real curve and one
-prediction curve per test; the scatter panels use shared axes and an identity
-line; the history panel compares cluster-weighted training and validation LOSS,
-MSE, MAE, and R2; and the metric panels compare MSE, RMSE, MAE, and R2 against
-`PIVOT_PARAMETER` on the common-date test interval.
+`comparison_summary.txt`. It also writes `report_compare.tex`, a sweep-level
+LaTeX report with a linked table of contents plus Cluster Step, Prediction Time
+Series by lead day, Prediction Scatter plot, Training History, and Test Metrics
+sections. Its Cluster Step section skips silhouette plots for `K = 1` and
+deduplicates fixed cluster diagnostics when `K` is fixed across the sweep,
+while keeping `05_cluster_performance.png` for each run. The time-series
+panels show one real curve and one prediction curve per test; the scatter
+panels use shared axes and an identity line; the history panel compares
+cluster-weighted training and validation LOSS, MSE, MAE, and R2; and the metric
+panels compare MSE, RMSE, MAE, and R2 against `PIVOT_PARAMETER` on the
+common-date test interval.
 
 `sweep_summary.txt` records the PCA variance threshold and whether PCA was
 disabled, applied only to clustering, or applied to both clustering and LSTM
@@ -645,7 +695,10 @@ Each configuration folder contains:
 - split time-series plots in `prediction_timeseries_splits/lead_day_XX/` use
   target dates from the source dataset on the x-axis, formatted as `dd/mm/YYYY`
 - cluster silhouette diagnostics under `cluster_diagnostics/`, including
-  `08_silhouette_analysis.png` and `silhouette_scores.csv`
+  `08_silhouette_analysis.png` and `silhouette_scores.csv` when
+  `SILHOUETTE_INFO = True`; DTW runs use precomputed DTW distances, and K-Shape
+  runs use precomputed SBD distances. Set `SILHOUETTE_INFO = False` to skip
+  these silhouette artifacts
 - cluster precipitation histograms now use
   `cluster_precipitation_histograms/all_clusters_precipitation_histograms.png`
   for the combined subplot panel and
@@ -662,6 +715,15 @@ Each configuration folder contains:
 - `cluster_diagnostics/cluster_timeline.png`, plotting every training,
   validation, and test window in chronological split order against its assigned
   cluster
+- `cluster_diagnostics/clusters_timeseries/cluster_<id>/`, containing raw
+  precipitation series for every test input window assigned to that cluster.
+  Each cluster folder has a 5x4 overview panel (additional panels are written
+  after 20 windows) and one PNG per window under `individual_windows/`. Folders
+  are created for every configured cluster from `cluster_0` through
+  `cluster_{K-1}`; an empty test cluster receives a placeholder overview panel.
+  `PLOT_CLUSTER_TIMESERIES` controls whether this diagnostic is created.
+  When enabled, `CLUSTER_TIMESERIES_PLOT_LIMIT` limits the total selected
+  individual series across these folders, while `None` leaves it unrestricted.
 - input-window forecast-horizon precipitation distribution plots by cluster under
   `input_precipitation_distribution_by_cluster/`
 - current-window versus forecast-horizon target diagnostics and persistence
@@ -708,8 +770,8 @@ is descriptive and useful for diagnosing cross-cluster transfer rather than an
 unbiased generalization estimate.
 
 To create a slide deck from selected plots in one saved configuration folder,
-open `experiments/create_beamer_report.py`, edit `RUN_DIR` and
-`SELECTED_PLOTS`, then run:
+open `experiments/create_beamer_report.py`, edit `RUN_DIR`, `SELECTED_PLOTS`,
+and optionally `PARAMS`, then run:
 
 ```powershell
 python experiments\create_beamer_report.py
@@ -717,11 +779,15 @@ python experiments\create_beamer_report.py
 
 The runner writes `beamer.tex` and compiles `beamer.pdf` by default. Set
 `COMPILE_PDF = False` in the script if only the TeX source is needed.
+`PARAMS = ["LEARNING_RATE", "EPOCHS", "CLUSTERING_ALGORITHM"]` adds a first
+section with a ruled table of selected run parameters. Names can be copied from
+`run_experiment.py` constants, `summary.txt`, `experiment_report.tex`, or
+`sweep_results.csv`.
 
 The command-line form is still available when needed:
 
 ```powershell
-python experiments\create_beamer_report.py outputs\dd_mm_yy\lstm_cluster_sweep_RS_A801_YYYYMMDD_HHMMSS\RS_A801_w15_k03_kmeans --plots prediction_overview\02_predictions_vs_actual.png cluster_prediction_scatter\*.png residual_diagnostics\*.png
+python experiments\create_beamer_report.py outputs\dd_mm_yy\lstm_cluster_sweep_RS_A801_YYYYMMDD_HHMMSS\RS_A801_w15_k03_kmeans --params LEARNING_RATE EPOCHS CLUSTERING_ALGORITHM --plots prediction_overview\02_predictions_vs_actual.png cluster_prediction_scatter\*.png residual_diagnostics\*.png
 ```
 
 Use `--list-plots` on the same run folder to print all selectable plot paths.
@@ -756,6 +822,7 @@ CLUSTERING_FEATURE_NORMALIZE = "standard"
 CLUSTERING_PRECIPITATION_NORMALIZE = None
 LSTM_FEATURE_NORMALIZE = "standard"
 LSTM_PRECIPITATION_NORMALIZE = None  # None keeps PRECIPITACAO_TOTAL and targets in mm
+LSTM_PRECIPITATION_TRANSFORM = False  # True applies log1p only in the LSTM path
 LSTM_LOSS_FUNCTION = "weighted_mse_loss"
 LOSS_ALPHA = 1.0
 N_SIGMA_VALUES = 1

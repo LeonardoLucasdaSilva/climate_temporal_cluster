@@ -8,7 +8,9 @@ This folder contains experiment notes and older runnable scripts.
   `beamer.tex` presentation and compiles `beamer.pdf` for one saved run under
   `outputs/`. It can list all available plots, select plots by relative path,
   glob, absolute path, or substring, and groups selected figures into analysis
-  sections with a clickable overview slide.
+  sections with a Madrid-style table-of-contents overview slide. The editable
+  `PARAMS` list adds a first section with a ruled table of selected run
+  parameters, including names copied from `run_experiment.py` constants.
 - `temporary_experiments/`: older experiment scripts kept temporarily so they
   can be reviewed, saved elsewhere, or folded back into the organized package.
 
@@ -28,4 +30,5 @@ SELECTED_PLOTS = [
     "cluster_prediction_scatter/*.png",
     "residual_diagnostics/*.png",
 ]
+PARAMS = ["LEARNING_RATE", "EPOCHS", "LSTM_UNITS_1", "CLUSTERING_ALGORITHM"]
 ```

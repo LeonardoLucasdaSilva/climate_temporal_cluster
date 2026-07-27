@@ -253,6 +253,10 @@ def config_mapping(config: object | Mapping[str, object] | None) -> dict[str, ob
                 "manual_clustering_method",
                 "cluster_assignment_method",
                 "cluster_assignment_neighbors",
+                "cluster_only_precipitation",
+                "plot_cluster_timeseries",
+                "cluster_timeseries_plot_limit",
+                "silhouette_info",
                 "sigma",
             )
             if hasattr(config, key)
@@ -273,6 +277,10 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
         ("cluster_dissimilarity_metric", "Cluster Dissimilarity Metric"),
         ("n_clusters", "Number of Clusters"),
         ("algorithm", "Algorithm"),
+        ("cluster_only_precipitation", "Cluster Only Precipitation"),
+        ("plot_cluster_timeseries", "Plot Cluster Time-series"),
+        ("cluster_timeseries_plot_limit", "Cluster Time-series Plot Limit"),
+        ("silhouette_info", "Silhouette Diagnostics"),
         ("manual_clustering_method", "Manual Clustering Method"),
         ("cluster_assignment_method", "Cluster Assignment Method"),
         ("sigma", "Sigma"),
@@ -373,6 +381,15 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
         )
         if lstm_precipitation_scaler is not None:
             rows.append(("LSTM Precipitation Scaler", lstm_precipitation_scaler))
+        if "lstm_precipitation_transform" in config_map:
+            rows.append(
+                (
+                    "LSTM Precipitation Transform",
+                    "log1p"
+                    if config_map.get("lstm_precipitation_transform")
+                    else "disabled",
+                )
+            )
         if "target_scale" in config_map:
             rows.append(("LSTM Target Scale", config_map.get("target_scale")))
     rows.extend(
@@ -431,7 +448,9 @@ def lstm_configs_list(config: object | Mapping[str, object] | None) -> str:
         ("Batch size", config_map.get("batch_size")),
         ("Early stopping", config_map.get("early_stopping")),
         ("Patience", config_map.get("patience")),
+        ("Warm-up epochs", config_map.get("warm_up")),
         ("Early stopping metric", config_map.get("early_stopping_metric")),
+        ("Train diagnostics", config_map.get("train_info")),
         ("Optimizer", config_map.get("optimizer")),
         ("Loss", config_map.get("loss")),
         ("Loss alpha", config_map.get("loss_alpha")),
@@ -499,6 +518,13 @@ def dataset_summary(config: object | Mapping[str, object] | None) -> str:
         rows.append(("End date", config_map["dataset_end_date"]))
     if config_map.get("features") is not None:
         rows.append(("Features", RawLatex(format_features(config_map["features"]))))
+    if config_map.get("clustering_features") is not None:
+        rows.append(
+            (
+                "Clustering Features",
+                RawLatex(format_features(config_map["clustering_features"])),
+            )
+        )
     if config_map.get("n_samples") is not None:
         rows.append(("Input samples", config_map["n_samples"]))
 

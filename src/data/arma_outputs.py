@@ -629,6 +629,7 @@ def save_arma_sweep_outputs(
     forecast_horizon: int,
     arma_orders: Sequence[tuple[int, int]],
     window_sizes: Sequence[int],
+    parallel_orders: bool = False,
 ) -> None:
     """Save sweep-level CSV and compact text summaries."""
     results_df = pd.DataFrame(result_rows)
@@ -644,6 +645,7 @@ def save_arma_sweep_outputs(
         f.write(f"Forecast horizon: +{forecast_horizon} day(s)\n")
         f.write(f"Window sizes: {list(window_sizes)}\n")
         f.write(f"ARMA orders: {list(arma_orders)}\n")
+        f.write(f"Parallel configurations: {parallel_orders}\n")
         f.write(f"Successful runs: {len(results_df)}\n")
         f.write(f"Failed runs: {len(failures_df)}\n\n")
 

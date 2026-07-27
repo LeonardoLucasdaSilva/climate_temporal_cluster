@@ -15,8 +15,8 @@ STATE = "RS"
 STATION_ID = "A801"
 
 # Data setting
-WINDOW_SIZES = [10]
-WINDOW_STRIDE = 10                                # Days between consecutive window starts;
+WINDOW_SIZES = [45]
+WINDOW_STRIDE = 1                                 # Days between consecutive window starts;
 FORECAST_HORIZON = 5
 USE_ALL_FEATURES = True
 
@@ -28,61 +28,67 @@ PCA_FOR_CLUSTERING_ONLY = True                   # Keep pre-PCA window features 
 
 # Normalization settings
 CLUSTERING_FEATURE_NORMALIZE = 'standard'         # "standard", "minmax", or None
-CLUSTERING_PRECIPITATION_NORMALIZE = 'standard'  # "standard", "minmax", or None
-LSTM_FEATURE_NORMALIZE = "standard"              # "standard", "minmax", or None
-LSTM_PRECIPITATION_NORMALIZE = None              # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
-
+CLUSTERING_PRECIPITATION_NORMALIZE = None  # "standard", "minmax", or None
+LSTM_FEATURE_NORMALIZE = 'standard'              # "standard", "minmax", or None
+LSTM_PRECIPITATION_NORMALIZE = 'standard'             # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
+LSTM_PRECIPITATION_TRANSFORM = False             # Apply log(1 + x) before LSTM precipitation normalization
 
 
 # Clustering parameters
-N_CLUSTERS_LIST = [5]
-CLUSTERING_ALGORITHM = "kshape"                  # "kmeans", "kshape", "spectral", or "manual"
+N_CLUSTERS_LIST = [3]
+CLUSTERING_ALGORITHM = ["kmeans"]      # "kmeans", "kshape", "spectral", "manual", or a list
+CLUSTER_ONLY_PRECIPITATION = False               # Cluster on precipitation time series only
 CLUSTER_DISSIMILARITY_METRIC = "euclidean"       # "euclidean" or "dtw"
 MANUAL_CLUSTERING_METHOD = "rain_level"          # "legacy" or "rain_level"
 MANUAL_ZERO_TOLERANCE = 0.0                      # Used only by legacy manual clustering
-CLUSTER_ASSIGNMENT_METHOD = "centroid"                # "centroid" or "knn"
+CLUSTER_ASSIGNMENT_METHOD = "centroid"           # "centroid" or "knn"
 CLUSTER_ASSIGNMENT_NEIGHBORS = 3                 # Used only when assignment method is "knn"
 N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"                            # "auto" or "manual"
 MANUAL_SIGMA_VALUES = [0.3]                      # Only used if SIGMA_MODE is "manual"
 RUN_ONLY_CLUSTER = False
+TRAIN_INFO = False                                # Save train_performance/ diagnostics
+SILHOUETTE_INFO = False                           # Save cluster_diagnostics silhouette diagnostics
+PLOT_CLUSTER_TIMESERIES = False                  # Save test-window precipitation diagnostics by cluster
+CLUSTER_TIMESERIES_PLOT_LIMIT = 3                # None saves every test-window series
 
 # Model hyperparameters. Use LSTM_UNITS_2=None for a single LSTM layer.
-LSTM_UNITS: int | list[int] = 32
-LSTM_UNITS_2: int | None | list[int | None] = None
-DROPOUT_RATE: float | list[float] = 0.0
+LSTM_UNITS: int | list[int] = 128
+LSTM_UNITS_2: int | None | list[int | None] = [2,4,8,16,32,64,128]
+DROPOUT_RATE: float | list[float] = 0.2
 LEARNING_RATE: float | list[float] = 1e-3
-WEIGHT_DECAY: float | list[float] = 1e-3         # Decoupled weight decay used by AdamW
+WEIGHT_DECAY: float | list[float] = 1e-4         # Decoupled weight decay used by AdamW
 
 # Metrics exported to compact comparison tables
 QUANTITATIVE_METRICS = ["MSE"]
 
 # Optional oracle diagnostic: evaluates every test window with every cluster LSTM.
-TEST_ALL_MODELS = True
+TEST_ALL_MODELS = False
 
 # LSTM Loss and metrics
 LSTM_LOSS_FUNCTION = "quantile_weighted_mse"     # Supported: "mean_squared_error", "mae", "huber", "weighted_mse_loss", "quantile_weighted_mse"
 LOSS_ALPHA = 1e-2                                # Positive coefficient used only by weighted_mse_loss
-LOSS_QUANTILES = [0.85]
+LOSS_QUANTILES = [0.9]
 LOSS_QUANTILE_WEIGHTS = "auto"                   # "auto" or one positive weight per quantile bin
 
 # Training settings. Numeric settings may also be lists in a comparative grid.
-EPOCHS: int | list[int] = 150
+EPOCHS: int | list[int] = 300
 BATCH_SIZE: int | list[int] = 4
 EARLY_STOPPING = True
-PATIENCE: int | list[int] = 20
-EARLY_STOPPING_METRIC = "loss"                   # "loss", "mse", "mae", or "r2"
+PATIENCE: int | list[int] = 30
+WARM_UP: int | list[int] = 30
+EARLY_STOPPING_METRIC = "mae"                   # "loss", "mse", "mae", or "r2"
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True                         # Only cluster windows; skip all LSTM training/output.
 PARALEL = True                                   # Parallelize cluster-only configs or cluster LSTMs.
 CREATE_REPORT = False                            # Compile experiment_report.pdf; .tex is always written.
 
 # Sweep-level comparison between the tests produced by this run.
-COMPARATIVE_RUN = False
-PIVOT_PARAMETER = "LSTM_UNITS"                   # e.g. "window_size", "learning_rate", "K", "sigma"
+COMPARATIVE_RUN = True
+PIVOT_PARAMETER = "LSTM_UNITS_2"         # e.g. "window_size", "learning_rate", "K", "sigma", "CLUSTERING_ALGORITHM"
 
 # Train/validation/test split
-TRAIN_RATIO = 0.75
+TRAIN_RATIO = 0.6
 VAL_RATIO = 0.1
 RANDOM_STATE = 42
 
@@ -106,11 +112,17 @@ def main() -> None:
         clustering_precipitation_normalize=CLUSTERING_PRECIPITATION_NORMALIZE,
         lstm_feature_normalize=LSTM_FEATURE_NORMALIZE,
         lstm_precipitation_normalize=LSTM_PRECIPITATION_NORMALIZE,
+        lstm_precipitation_transform=LSTM_PRECIPITATION_TRANSFORM,
         variance_threshold=PCA_VARIANCE_THRESHOLD,
         pca_for_clustering_only=PCA_FOR_CLUSTERING_ONLY,
         run_only_cluster=RUN_ONLY_CLUSTER,
+        train_info=TRAIN_INFO,
+        silhouette_info=SILHOUETTE_INFO,
+        plot_cluster_timeseries=PLOT_CLUSTER_TIMESERIES,
+        cluster_timeseries_plot_limit=CLUSTER_TIMESERIES_PLOT_LIMIT,
         n_clusters_list=N_CLUSTERS_LIST,
         clustering_algorithm=CLUSTERING_ALGORITHM,
+        cluster_only_precipitation=CLUSTER_ONLY_PRECIPITATION,
         cluster_dissimilarity_metric=CLUSTER_DISSIMILARITY_METRIC,
         manual_clustering_method=MANUAL_CLUSTERING_METHOD,
         manual_zero_tolerance=MANUAL_ZERO_TOLERANCE,
@@ -131,6 +143,7 @@ def main() -> None:
         batch_size=BATCH_SIZE,
         early_stopping=EARLY_STOPPING,
         patience=PATIENCE,
+        warm_up=WARM_UP,
         early_stopping_metric=EARLY_STOPPING_METRIC,
         lstm_loss_function=LSTM_LOSS_FUNCTION,
         loss_alpha=LOSS_ALPHA,

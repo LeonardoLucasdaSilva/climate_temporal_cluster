@@ -89,7 +89,8 @@ class LstmReportTests(unittest.TestCase):
                 "clustering_precipitation_normalize": None,
                 "lstm_feature_normalize": "minmax",
                 "lstm_precipitation_normalize": "standard",
-                "target_scale": "normalized",
+                "lstm_precipitation_transform": True,
+                "target_scale": "log1p + normalized",
                 "optimizer": "AdamW",
                 "loss": "weighted_mse_loss",
                 "loss_alpha": 0.5,
@@ -111,7 +112,11 @@ class LstmReportTests(unittest.TestCase):
         self.assertIn(r"\item \textbf{Clustering Precipitation Scaler:} none", tex)
         self.assertIn(r"\item \textbf{LSTM Feature Scaler:} minmax", tex)
         self.assertIn(r"\item \textbf{LSTM Precipitation Scaler:} standard", tex)
-        self.assertIn(r"\item \textbf{LSTM Target Scale:} normalized", tex)
+        self.assertIn(r"\item \textbf{LSTM Precipitation Transform:} log1p", tex)
+        self.assertIn(
+            r"\item \textbf{LSTM Target Scale:} log1p + normalized",
+            tex,
+        )
         self.assertIn(r"\item \textbf{Optimizer:} AdamW", tex)
         self.assertIn(r"\item \textbf{Loss:} weighted\_mse\_loss", tex)
         self.assertIn(r"\item \textbf{Loss alpha:} 0.5", tex)
