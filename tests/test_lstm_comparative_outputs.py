@@ -15,6 +15,7 @@ from data.lstm_comparative_outputs import (
     ComparativeRunData,
     _weighted_history_dataframe,
     normalize_pivot_parameter,
+    render_report_compare,
     save_comparative_outputs,
     validate_comparative_pivot,
 )
@@ -112,6 +113,7 @@ class LstmComparativeOutputTests(unittest.TestCase):
         *,
         name: str,
         window_size: int,
+        n_clusters: int = 2,
         dates: list[str],
         actual: list[float],
         predicted: list[float],
@@ -131,7 +133,7 @@ class LstmComparativeOutputTests(unittest.TestCase):
             run_name=name,
             parameters={
                 "window_size": window_size,
-                "n_clusters": 2,
+                "n_clusters": n_clusters,
                 "sigma": 1.0,
                 "learning_rate": 0.001,
             },
@@ -145,6 +147,141 @@ class LstmComparativeOutputTests(unittest.TestCase):
             histories_by_cluster={0: history, 1: history},
             cluster_train_counts={0: 3, 1: 1},
         )
+
+    def test_report_compare_cluster_step_skips_silhouette_for_single_cluster(
+        self,
+    ) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_comparative_k1_cluster_step_test_{uuid.uuid4().hex}"
+        )
+        run = self._run(
+            name="k1",
+            window_size=10,
+            n_clusters=1,
+            dates=["2025-01-01", "2025-01-02"],
+            actual=[0.0, 1.0],
+            predicted=[0.1, 1.1],
+            epochs=2,
+        )
+        metrics = pd.DataFrame(
+            [
+                {
+                    "run_name": "k1",
+                    "pivot_parameter": "window_size",
+                    "pivot_value": 10,
+                    "lead_day": 1,
+                    "n_common_test_dates": 2,
+                    "start_date": "2025-01-01",
+                    "end_date": "2025-01-02",
+                    "MSE": 0.1,
+                    "RMSE": 0.316,
+                    "MAE": 0.2,
+                    "R2": 0.9,
+                }
+            ]
+        )
+
+        try:
+            diagnostics_dir = output_dir / "k1" / "cluster_diagnostics"
+            diagnostics_dir.mkdir(parents=True)
+            (diagnostics_dir / "05_cluster_performance.png").write_bytes(b"plot")
+            (diagnostics_dir / "08_silhouette_analysis.png").write_bytes(b"plot")
+
+            report_tex = render_report_compare(
+                output_dir / "comparative_analysis",
+                output_dir,
+                "window_size",
+                metrics,
+                [run],
+            )
+
+            self.assertIn("05_cluster_performance.png", report_tex)
+            self.assertNotIn("08_silhouette_analysis.png", report_tex)
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_report_compare_cluster_step_keeps_cluster_performance_per_run_when_cluster_count_is_fixed(
+        self,
+    ) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_comparative_fixed_k_cluster_step_test_{uuid.uuid4().hex}"
+        )
+        run_a = self._run(
+            name="w10",
+            window_size=10,
+            n_clusters=2,
+            dates=["2025-01-01", "2025-01-02"],
+            actual=[0.0, 1.0],
+            predicted=[0.1, 1.1],
+            epochs=2,
+        )
+        run_b = self._run(
+            name="w20",
+            window_size=20,
+            n_clusters=2,
+            dates=["2025-01-01", "2025-01-02"],
+            actual=[0.0, 1.0],
+            predicted=[0.2, 1.2],
+            epochs=2,
+        )
+        metrics = pd.DataFrame(
+            [
+                {
+                    "run_name": run.run_name,
+                    "pivot_parameter": "window_size",
+                    "pivot_value": run.parameters["window_size"],
+                    "lead_day": 1,
+                    "n_common_test_dates": 2,
+                    "start_date": "2025-01-01",
+                    "end_date": "2025-01-02",
+                    "MSE": 0.1,
+                    "RMSE": 0.316,
+                    "MAE": 0.2,
+                    "R2": 0.9,
+                }
+                for run in (run_a, run_b)
+            ]
+        )
+
+        try:
+            for run_name in ("w10", "w20"):
+                diagnostics_dir = output_dir / run_name / "cluster_diagnostics"
+                diagnostics_dir.mkdir(parents=True)
+                (diagnostics_dir / "05_cluster_performance.png").write_bytes(b"plot")
+                (
+                    diagnostics_dir / "06_cluster_distribution.png"
+                ).write_bytes(b"plot")
+
+            report_tex = render_report_compare(
+                output_dir / "comparative_analysis",
+                output_dir,
+                "window_size",
+                metrics,
+                [run_a, run_b],
+            )
+
+            self.assertIn(
+                "../w10/cluster_diagnostics/05_cluster_performance.png",
+                report_tex,
+            )
+            self.assertIn(
+                "../w10/cluster_diagnostics/06_cluster_distribution.png",
+                report_tex,
+            )
+            self.assertIn(
+                "../w20/cluster_diagnostics/05_cluster_performance.png",
+                report_tex,
+            )
+            self.assertNotIn(
+                "../w20/cluster_diagnostics/06_cluster_distribution.png",
+                report_tex,
+            )
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
 
     def test_pivot_aliases_and_constant_validation(self) -> None:
         self.assertEqual(normalize_pivot_parameter("K"), "n_clusters")
@@ -200,6 +337,14 @@ class LstmComparativeOutputTests(unittest.TestCase):
 
         try:
             output_dir.mkdir()
+            for run_name in ("w10", "w20"):
+                diagnostics_dir = (
+                    output_dir / run_name / "cluster_diagnostics"
+                )
+                diagnostics_dir.mkdir(parents=True)
+                (
+                    diagnostics_dir / "05_cluster_performance.png"
+                ).write_bytes(b"cluster plot")
             preexisting_comparison_dir = output_dir / "comparative_analysis"
             preexisting_comparison_dir.mkdir()
             stale_plot = (
@@ -227,6 +372,7 @@ class LstmComparativeOutputTests(unittest.TestCase):
                 "comparative_metrics.csv",
                 "comparison_manifest.csv",
                 "comparison_summary.txt",
+                "report_compare.tex",
             )
             for filename in expected_files:
                 self.assertTrue((comparison_dir / filename).exists(), filename)
@@ -253,8 +399,99 @@ class LstmComparativeOutputTests(unittest.TestCase):
                     encoding="utf-8"
                 ),
             )
+            report_tex = (comparison_dir / "report_compare.tex").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(r"\usepackage[hidelinks]{hyperref}", report_tex)
+            self.assertIn(r"\tableofcontents", report_tex)
+            self.assertIn(r"\section{Cluster Step}", report_tex)
+            self.assertIn(r"\section{Prediction Time Series}", report_tex)
+            self.assertIn(r"\subsection{day 1}", report_tex)
+            self.assertIn(r"\section{Prediction Scatter plot}", report_tex)
+            self.assertIn(r"\section{Training History}", report_tex)
+            self.assertIn(r"\section{Test Metrics}", report_tex)
+            self.assertIn(
+                "01_test_timeseries_comparison_lead_day_01.png",
+                report_tex,
+            )
+            self.assertIn(
+                "02_test_scatter_comparison_lead_day_01.png",
+                report_tex,
+            )
+            self.assertIn(
+                "04_test_metrics_vs_window_size_lead_day_01.png",
+                report_tex,
+            )
+            self.assertIn(
+                r"\detokenize{01_test_timeseries_comparison_lead_day_01.png}",
+                report_tex,
+            )
+            self.assertIn(
+                r"\detokenize{../w10/cluster_diagnostics/05_cluster_performance.png}",
+                report_tex,
+            )
+            self.assertIn(r"w10 \textendash{} 05 Cluster Performance", report_tex)
+            self.assertNotIn(" -- ", report_tex)
+            self.assertNotIn(" - ", report_tex)
+            self.assertIn("Lead Day", report_tex)
+            self.assertIn("WINDOW\\_SIZE", report_tex)
+            self.assertNotIn("run\\_name", report_tex)
+            self.assertIn(r"$t_0$", report_tex)
+            self.assertIn(r"$t_f$", report_tex)
+            self.assertNotIn("start\\_date", report_tex)
+            self.assertNotIn("end\\_date", report_tex)
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_report_compare_metrics_table_uses_readable_pivot_header(self) -> None:
+        metrics = pd.DataFrame(
+            [
+                {
+                    "run_name": "k2",
+                    "pivot_parameter": "n_clusters",
+                    "pivot_value": 2,
+                    "lead_day": 1,
+                    "n_common_test_dates": 3,
+                    "start_date": "2025-01-01",
+                    "end_date": "2025-01-03",
+                    "MSE": 0.1,
+                    "RMSE": 0.316,
+                    "MAE": 0.2,
+                    "R2": 0.9,
+                },
+                {
+                    "run_name": "k3",
+                    "pivot_parameter": "n_clusters",
+                    "pivot_value": 3,
+                    "lead_day": 2,
+                    "n_common_test_dates": 3,
+                    "start_date": "2025-01-02",
+                    "end_date": "2025-01-04",
+                    "MSE": 0.2,
+                    "RMSE": 0.447,
+                    "MAE": 0.3,
+                    "R2": -0.1,
+                }
+            ]
+        )
+
+        report_tex = render_report_compare(
+            PROJECT_ROOT / "tests" / "comparative_analysis",
+            PROJECT_ROOT / "tests",
+            "n_clusters",
+            metrics,
+            [],
+        )
+
+        self.assertIn(
+            r"Lead Day & K & N Common Test Dates & $t_0$ & $t_f$",
+            report_tex,
+        )
+        self.assertIn("01/01/2025 & 03/01/2025", report_tex)
+        self.assertIn("0.9 \\\\\n\\midrule\n2 & 3", report_tex)
+        self.assertNotIn("run\\_name", report_tex)
+        self.assertNotIn("start\\_date", report_tex)
+        self.assertNotIn("end\\_date", report_tex)
 
     def test_history_aggregation_uses_fixed_clusters_and_common_epochs(self) -> None:
         histories = pd.DataFrame(
@@ -511,6 +748,50 @@ class LstmComparativeOutputTests(unittest.TestCase):
         self.assertEqual(kmeans_config.name, "RS_A801_w15_k03_kmeans")
         self.assertEqual(spectral_config.name, "RS_A801_w15_k03_spectral_sigma_1")
 
+    def test_clustering_algorithm_list_expands_configuration_grid(self) -> None:
+        configurations = build_configurations(
+            [None],
+            state="RS",
+            station_id="A801",
+            window_sizes=[15],
+            n_clusters_list=[3],
+            clustering_algorithm=["kshape", "kmeans"],
+        )
+
+        self.assertEqual(
+            [configuration.algorithm for configuration in configurations],
+            ["kshape", "kmeans"],
+        )
+        self.assertEqual(
+            [configuration.name for configuration in configurations],
+            ["RS_A801_w15_k03_kshape", "RS_A801_w15_k03_kmeans"],
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            build_configurations(
+                [None],
+                state="RS",
+                station_id="A801",
+                window_sizes=[15],
+                n_clusters_list=[3],
+                clustering_algorithm=["kmeans", "KMEANS"],
+            )
+
+    def test_clustering_algorithm_pivot_alias_is_supported(self) -> None:
+        self.assertEqual(
+            normalize_pivot_parameter("CLUSTERING_ALGORITHM"),
+            "clustering_algorithm",
+        )
+        self.assertEqual(
+            validate_comparative_pivot(
+                [
+                    {"clustering_algorithm": "kshape"},
+                    {"clustering_algorithm": "kmeans"},
+                ],
+                "CLUSTERING_ALGORITHM",
+            ),
+            "clustering_algorithm",
+        )
+
     def test_dtw_alias_is_canonicalized_in_configurations(self) -> None:
         config = build_configurations(
             [1.0],
@@ -525,6 +806,19 @@ class LstmComparativeOutputTests(unittest.TestCase):
 
         self.assertEqual(config.cluster_dissimilarity_metric, "dtw")
         self.assertIn("_dtw_", config.name)
+
+    def test_cluster_timeseries_plot_setting_is_preserved_in_configuration(self) -> None:
+        config = build_configurations(
+            [None],
+            state="RS",
+            station_id="A801",
+            window_sizes=[15],
+            n_clusters_list=[3],
+            clustering_algorithm="kmeans",
+            plot_cluster_timeseries=False,
+        )[0]
+
+        self.assertFalse(config.plot_cluster_timeseries)
 
     def test_numeric_training_grids_use_the_cartesian_product(self) -> None:
         configurations = build_configurations(
@@ -603,11 +897,15 @@ class LstmComparativeOutputTests(unittest.TestCase):
         )
         observed_parameters: list[dict[str, object]] = []
         observed_create_report: list[bool] = []
+        observed_train_info: list[bool] = []
+        observed_silhouette_info: list[bool] = []
 
         def fake_run_configuration(*args: object, **kwargs: object) -> dict[str, object]:
             config = args[1]
             self.assertEqual(kwargs["loss_alpha"], 0.25)
             observed_create_report.append(bool(kwargs["create_report"]))
+            observed_train_info.append(bool(kwargs["train_info"]))
+            observed_silhouette_info.append(bool(kwargs["silhouette_info"]))
             collector = kwargs["comparative_runs"]
             if collector is not None:
                 collector.append(config)
@@ -623,6 +921,7 @@ class LstmComparativeOutputTests(unittest.TestCase):
                     "epochs",
                     "batch_size",
                     "patience",
+                    "warm_up",
                 ):
                     self.assertTrue(np.isscalar(parameters[field]), field)
             else:
@@ -655,6 +954,7 @@ class LstmComparativeOutputTests(unittest.TestCase):
             "batch_size": 2,
             "early_stopping": False,
             "patience": 1,
+            "warm_up": 2,
             "early_stopping_metric": "loss",
             "lstm_loss_function": "mse",
             "loss_alpha": 0.25,
@@ -669,6 +969,8 @@ class LstmComparativeOutputTests(unittest.TestCase):
             "sweep_name": "mock_sweep",
             "show_console_info": False,
             "test_all_models": False,
+            "train_info": False,
+            "silhouette_info": False,
         }
 
         try:
@@ -705,12 +1007,20 @@ class LstmComparativeOutputTests(unittest.TestCase):
                     [row["learning_rate"] for row in observed_parameters],
                     [0.001, 0.001],
                 )
+                self.assertEqual(
+                    [row["warm_up"] for row in observed_parameters],
+                    [2, 2],
+                )
                 self.assertEqual(observed_create_report, [True, True])
+                self.assertEqual(observed_train_info, [False, False])
+                self.assertEqual(observed_silhouette_info, [False, False])
 
                 run_configuration_mock.reset_mock()
                 comparative_writer.reset_mock()
                 observed_parameters.clear()
                 observed_create_report.clear()
+                observed_train_info.clear()
+                observed_silhouette_info.clear()
                 run_experiment(
                     **{
                         **common_arguments,
@@ -727,6 +1037,8 @@ class LstmComparativeOutputTests(unittest.TestCase):
                     [0.001, 0.0001],
                 )
                 self.assertEqual(observed_create_report, [True, True])
+                self.assertEqual(observed_train_info, [False, False])
+                self.assertEqual(observed_silhouette_info, [False, False])
                 comparative_writer.assert_called_once()
                 self.assertEqual(
                     comparative_writer.call_args.args[2],
@@ -734,8 +1046,37 @@ class LstmComparativeOutputTests(unittest.TestCase):
                 )
 
                 run_configuration_mock.reset_mock()
+                comparative_writer.reset_mock()
                 observed_parameters.clear()
                 observed_create_report.clear()
+                observed_train_info.clear()
+                observed_silhouette_info.clear()
+                run_experiment(
+                    **{
+                        **common_arguments,
+                        "window_sizes": [2],
+                        "clustering_algorithm": ["kshape", "kmeans"],
+                        "sweep_name": "mock_algorithm_sweep",
+                    },
+                    comparative_run=True,
+                    pivot_parameter="CLUSTERING_ALGORITHM",
+                )
+                self.assertEqual(run_configuration_mock.call_count, 2)
+                self.assertEqual(
+                    [row["clustering_algorithm"] for row in observed_parameters],
+                    ["kshape", "kmeans"],
+                )
+                comparative_writer.assert_called_once()
+                self.assertEqual(
+                    comparative_writer.call_args.args[2],
+                    "clustering_algorithm",
+                )
+
+                run_configuration_mock.reset_mock()
+                observed_parameters.clear()
+                observed_create_report.clear()
+                observed_train_info.clear()
+                observed_silhouette_info.clear()
                 run_experiment(
                     **{
                         **common_arguments,
@@ -747,10 +1088,14 @@ class LstmComparativeOutputTests(unittest.TestCase):
                 )
                 self.assertEqual(run_configuration_mock.call_count, 1)
                 self.assertEqual(observed_create_report, [False])
+                self.assertEqual(observed_train_info, [False])
+                self.assertEqual(observed_silhouette_info, [False])
 
                 run_configuration_mock.reset_mock()
                 observed_parameters.clear()
                 observed_create_report.clear()
+                observed_train_info.clear()
+                observed_silhouette_info.clear()
                 run_experiment(
                     **{
                         **common_arguments,
@@ -763,6 +1108,8 @@ class LstmComparativeOutputTests(unittest.TestCase):
                 )
                 self.assertEqual(run_configuration_mock.call_count, 1)
                 self.assertEqual(observed_parameters, [])
+                self.assertEqual(observed_train_info, [False])
+                self.assertEqual(observed_silhouette_info, [False])
 
                 with patch(
                     "methods.lstm_cluster.pipeline._execute_configuration_jobs",

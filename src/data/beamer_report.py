@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 from collections import OrderedDict
+import csv
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -47,6 +49,62 @@ SECTION_DESCRIPTIONS = {
     "Forecast Horizon Diagnostics": "Current value, forecast target, and horizon-specific behavior.",
     "Lead-Day Diagnostics": "How one prediction compares against D+1 through the configured horizon.",
     "Other Selected Plots": "Selected figures that do not match a known experiment plot group.",
+}
+
+RUN_EXPERIMENT_PARAMETER_ALIASES = {
+    "state": ("state",),
+    "station_id": ("station_id", "station"),
+    "window_sizes": ("window_size", "window_sizes"),
+    "window_stride": ("window_stride",),
+    "forecast_horizon": ("forecast_horizon", "horizon_forecast_horizon"),
+    "use_all_features": ("use_all_features",),
+    "pca_variance_threshold": ("pca_variance_threshold",),
+    "pca_for_clustering_only": ("pca_for_clustering_only",),
+    "clustering_feature_normalize": ("clustering_feature_scaler",),
+    "clustering_precipitation_normalize": ("clustering_precipitation_scaler",),
+    "lstm_feature_normalize": ("lstm_feature_scaler",),
+    "lstm_precipitation_normalize": ("lstm_precipitation_scaler",),
+    "n_clusters_list": ("n_clusters", "cluster_counts", "n_clusters_list"),
+    "clustering_algorithm": ("clustering_algorithm", "algorithm"),
+    "cluster_dissimilarity_metric": ("cluster_dissimilarity_metric",),
+    "manual_clustering_method": ("manual_clustering_method",),
+    "manual_zero_tolerance": ("manual_zero_tolerance",),
+    "cluster_assignment_method": ("cluster_assignment_method",),
+    "cluster_assignment_neighbors": ("cluster_assignment_neighbors",),
+    "n_sigma_values": ("n_sigma_values",),
+    "sigma_mode": ("sigma_mode",),
+    "manual_sigma_values": ("manual_sigma_values", "sigma"),
+    "run_only_cluster": ("run_only_cluster",),
+    "lstm_units": ("lstm_layer_1_units", "lstm_units"),
+    "lstm_units_1": ("lstm_layer_1_units", "lstm_units"),
+    "lstm_units_2": ("lstm_units_2", "lstm_layer_2_units"),
+    "dropout_rate": ("dropout_rate",),
+    "learning_rate": ("learning_rate",),
+    "weight_decay": ("weight_decay",),
+    "quantitative_metrics": ("quantitative_metrics",),
+    "test_all_models": ("test_all_models", "test_samples_on_all_models"),
+    "lstm_loss_function": ("lstm_loss_function", "loss"),
+    "loss_alpha": ("loss_alpha",),
+    "loss_quantiles": ("loss_quantiles",),
+    "loss_quantile_weights": ("loss_quantile_weights",),
+    "epochs": ("epochs",),
+    "batch_size": ("batch_size",),
+    "early_stopping": ("early_stopping",),
+    "patience": ("patience",),
+    "warm_up": ("warm_up", "warm_up_epochs"),
+    "early_stopping_metric": ("early_stopping_metric",),
+    "verbose_training": ("verbose_training",),
+    "show_console_info": ("show_console_info",),
+    "paralel": ("parallel_training",),
+    "parallel_training": ("parallel_training",),
+    "train_info": ("train_info",),
+    "silhouette_info": ("silhouette_info",),
+    "create_report": ("create_report",),
+    "comparative_run": ("comparative_run",),
+    "pivot_parameter": ("pivot_parameter",),
+    "train_ratio": ("train_ratio",),
+    "val_ratio": ("val_ratio",),
+    "random_state": ("random_state",),
 }
 
 
@@ -138,24 +196,36 @@ def render_beamer(
     plots: Sequence[Path],
     title: str | None = None,
     tex_dir: Path | None = None,
+    parameters: Sequence[str] | None = None,
 ) -> str:
     """Render a complete Beamer document for selected experiment plots."""
     run_dir = Path(run_dir)
     tex_dir = Path(tex_dir) if tex_dir is not None else run_dir
     slides = build_slides(run_dir, plots)
     grouped = group_slides(slides)
+    parameter_rows = selected_run_parameters(run_dir, parameters)
     presentation_title = title or f"Experiment Run: {run_dir.name}"
 
     lines = [
         r"\documentclass[aspectratio=169,11pt]{beamer}",
         r"\usetheme{Madrid}",
-        r"\usecolortheme{dove}",
-        r"\setbeamertemplate{navigation symbols}{}",
         r"\usepackage[T1]{fontenc}",
         r"\usepackage[utf8]{inputenc}",
         r"\usepackage{graphicx}",
         r"\usepackage{hyperref}",
-        r"\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}",
+        r"\setbeamertemplate{blocks}[rounded][shadow=false]",
+        r"\setbeamercolor{section in toc}{fg=black}",
+        r"\setbeamertemplate{itemize item}[ball]",
+        r"\setbeamertemplate{itemize subitem}[circle]",
+        r"\setbeamertemplate{section in toc}{%",
+        r"  \leavevmode%",
+        r"  \usebeamercolor[fg]{itemize item}%",
+        r"  \raise0.2ex\hbox{\usebeamertemplate{itemize item}}%",
+        r"  \hspace{0.75em}%",
+        r"  \usebeamercolor[fg]{section in toc}%",
+        r"  \usebeamerfont{section in toc}\inserttocsection\par%",
+        r"}",
+        r"\hypersetup{hidelinks}",
         rf"\title{{{latex_escape(presentation_title)}}}",
         r"\author{}",
         r"\date{}",
@@ -163,8 +233,11 @@ def render_beamer(
         r"\begin{frame}",
         r"\titlepage",
         r"\end{frame}",
-        *_overview_frame(grouped),
+        *_overview_frame(grouped, has_parameter_section=bool(parameter_rows)),
     ]
+
+    if parameter_rows:
+        lines.extend(_parameters_frame(parameter_rows))
 
     if not grouped:
         lines.extend(
@@ -192,6 +265,7 @@ def write_beamer(
     plots: Sequence[Path],
     output_path: Path | None = None,
     title: str | None = None,
+    parameters: Sequence[str] | None = None,
 ) -> Path:
     """Write `beamer.tex` for a saved experiment run and return its path."""
     run_dir = Path(run_dir).resolve()
@@ -200,7 +274,13 @@ def write_beamer(
         output_path = Path.cwd() / output_path
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        render_beamer(run_dir, plots, title=title, tex_dir=output_path.parent),
+        render_beamer(
+            run_dir,
+            plots,
+            title=title,
+            tex_dir=output_path.parent,
+            parameters=parameters,
+        ),
         encoding="utf-8",
     )
     return output_path
@@ -315,6 +395,24 @@ def latex_escape(value: object) -> str:
     return "".join(replacements.get(char, char) for char in text)
 
 
+def selected_run_parameters(
+    run_dir: Path,
+    parameters: Sequence[str] | None,
+) -> list[tuple[str, str]]:
+    """Return selected run parameter values in the requested order."""
+    if not parameters:
+        return []
+    values = _run_parameter_values(Path(run_dir))
+    rows = []
+    for parameter in parameters:
+        key = str(parameter).strip()
+        if not key:
+            continue
+        value = _lookup_parameter(values, key)
+        rows.append((key, value if value not in {None, ""} else "not found"))
+    return rows
+
+
 def _matches_selector(
     run_dir: Path,
     all_plots: Sequence[Path],
@@ -353,23 +451,212 @@ def _matches_selector(
     ]
 
 
-def _overview_frame(grouped: OrderedDict[str, list[PlotSlide]]) -> list[str]:
+def _run_parameter_values(run_dir: Path) -> dict[str, str]:
+    values = _runner_constant_parameter_values()
+    values["run_name"] = run_dir.name
+    values.update(_summary_parameter_values(run_dir / "summary.txt"))
+    values.update(_experiment_report_parameter_values(run_dir / "experiment_report.tex"))
+    values.update(_sweep_result_parameter_values(run_dir))
+    return values
+
+
+def _runner_constant_parameter_values() -> dict[str, str]:
+    path = Path(__file__).resolve().parents[2] / "src" / "methods" / "lstm_cluster" / "run_experiment.py"
+    if not path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    module = ast.parse(path.read_text(encoding="utf-8"))
+    for node in module.body:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+            value_node = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets = [node.target]
+            value_node = node.value
+        else:
+            continue
+        if value_node is None:
+            continue
+        for target in targets:
+            if not isinstance(target, ast.Name) or not target.id.isupper():
+                continue
+            try:
+                value = ast.literal_eval(value_node)
+            except (ValueError, SyntaxError):
+                continue
+            values[_parameter_key(target.id)] = _format_parameter_value(value)
+    return values
+
+
+def _format_parameter_value(value: object) -> str:
+    if value is None:
+        return "None"
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_format_parameter_value(item) for item in value)
+    return str(value)
+
+
+def _summary_parameter_values(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if ":" not in line:
+            continue
+        label, raw_value = line.split(":", 1)
+        key = _parameter_key(label)
+        value = raw_value.strip()
+        if key and value:
+            values[key] = value
+        if key == "station" and "/" in value:
+            state, station_id = value.split("/", 1)
+            values["state"] = state.strip()
+            values["station_id"] = station_id.strip()
+    return values
+
+
+def _sweep_result_parameter_values(run_dir: Path) -> dict[str, str]:
+    path = run_dir.parent / "sweep_results.csv"
+    if not path.exists():
+        return {}
+
+    with path.open("r", encoding="utf-8", newline="") as csv_file:
+        reader = csv.DictReader(csv_file)
+        for row in reader:
+            if row.get("run_name") == run_dir.name:
+                return {
+                    key: value
+                    for key, value in row.items()
+                    if key is not None and value is not None
+                }
+    return {}
+
+
+def _experiment_report_parameter_values(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    pattern = re.compile(r"\\item\s+\\textbf\{(?P<label>[^:}]+):\}\s*(?P<value>.+)")
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = pattern.match(line.strip())
+        if not match:
+            continue
+        key = _parameter_key(match.group("label"))
+        value = _latex_unescape(match.group("value").strip())
+        if key and value:
+            values[key] = value
+    return values
+
+
+def _lookup_parameter(values: dict[str, str], parameter: str) -> str | None:
+    aliases = {
+        "k": "n_clusters",
+        "clusters": "n_clusters",
+        "algorithm": "clustering_algorithm",
+        "lstm_units_2": "lstm_units_2",
+        "lr": "learning_rate",
+        "validation_rmse": "val_rmse",
+    }
+    key = _parameter_key(parameter)
+    candidate_keys = [
+        *RUN_EXPERIMENT_PARAMETER_ALIASES.get(key, ()),
+        key,
+        aliases.get(key, ""),
+    ]
+    for candidate in candidate_keys:
+        if candidate and candidate in values:
+            return values[candidate]
+    return None
+
+
+def _parameter_key(value: str) -> str:
+    key = re.sub(r"[^0-9a-zA-Z]+", "_", value.strip()).strip("_").lower()
+    label_aliases = {
+        "run_folder": "run_name",
+        "station": "station",
+        "station_id": "station_id",
+        "state": "state",
+        "window_size": "window_size",
+        "window_sizes": "window_sizes",
+        "window_stride": "window_stride",
+        "forecast_horizon": "forecast_horizon",
+        "number_of_clusters": "n_clusters",
+        "cluster_counts": "cluster_counts",
+        "algorithm": "algorithm",
+        "clustering_algorithm": "clustering_algorithm",
+        "cluster_dissimilarity_metric": "cluster_dissimilarity_metric",
+        "cluster_assignment_method": "cluster_assignment_method",
+        "cluster_assignment_neighbors": "cluster_assignment_neighbors",
+        "pca_variance_threshold": "pca_variance_threshold",
+        "pca_mode": "pca_mode",
+        "clustering_feature_scaler": "clustering_feature_scaler",
+        "clustering_precipitation_scaler": "clustering_precipitation_scaler",
+        "lstm_feature_scaler": "lstm_feature_scaler",
+        "lstm_precipitation_scaler": "lstm_precipitation_scaler",
+        "test_samples_on_all_models": "test_samples_on_all_models",
+        "lstm_layer_1_units": "lstm_layer_1_units",
+        "lstm_layer_2_units": "lstm_units_2",
+        "learning_rate": "learning_rate",
+        "epochs": "epochs",
+        "batch_size": "batch_size",
+        "dropout_rate": "dropout_rate",
+        "weight_decay": "weight_decay",
+    }
+    return label_aliases.get(key, key)
+
+
+def _latex_unescape(value: str) -> str:
+    replacements = {
+        r"\_": "_",
+        r"\%": "%",
+        r"\&": "&",
+        r"\#": "#",
+        r"\$": "$",
+        r"\{": "{",
+        r"\}": "}",
+    }
+    text = value.replace(r"\\", " ")
+    for escaped, plain in replacements.items():
+        text = text.replace(escaped, plain)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _overview_frame(
+    grouped: OrderedDict[str, list[PlotSlide]],
+    *,
+    has_parameter_section: bool = False,
+) -> list[str]:
     lines = [r"\begin{frame}{Overview}", r"\small"]
-    if not grouped:
+    if not grouped and not has_parameter_section:
         lines.append("No plot sections were selected.")
     else:
-        lines.append(r"\begin{itemize}")
-        for section, slides in grouped.items():
-            target = _section_target(section)
-            label = latex_escape(section)
-            count = len(slides)
-            lines.append(
-                rf"\item \hyperlink{{{target}}}{{\beamergotobutton{{{label}}}}} "
-                rf"\hfill {count} plot(s)"
-            )
-        lines.append(r"\end{itemize}")
+        lines.append(r"\tableofcontents")
     lines.extend([r"\end{frame}"])
     return lines
+
+
+def _parameters_frame(parameter_rows: Sequence[tuple[str, str]]) -> list[str]:
+    return [
+        r"\section{Run Parameters}",
+        r"\begin{frame}{Run Parameters}",
+        r"\centering",
+        r"\small",
+        r"\begin{tabular}{|l|l|}",
+        r"\hline",
+        r"\textbf{Parameter} & \textbf{Value} \\",
+        r"\hline",
+        *[
+            rf"{latex_escape(parameter)} & {latex_escape(value)} \\ \hline"
+            for parameter, value in parameter_rows
+        ],
+        r"\end{tabular}",
+        r"\end{frame}",
+    ]
 
 
 def _section_intro_frame(section: str, count: int) -> list[str]:
@@ -379,9 +666,13 @@ def _section_intro_frame(section: str, count: int) -> list[str]:
         rf"\section{{{latex_escape(section)}}}",
         rf"\begin{{frame}}{{{latex_escape(section)}}}",
         rf"\hypertarget{{{target}}}{{}}",
-        rf"\large {latex_escape(description)}",
-        "",
-        rf"\vfill\small {count} selected plot(s)",
+        rf"\begin{{block}}{{{latex_escape(section)}}}",
+        rf"{latex_escape(description)}",
+        r"\end{block}",
+        r"\vfill",
+        r"\begin{itemize}",
+        rf"\item {count} selected plot(s)",
+        r"\end{itemize}",
         r"\end{frame}",
     ]
 

@@ -69,9 +69,34 @@ def _load_lstm_module_with_recording_keras():
         def __init__(self, layers: list[object]) -> None:
             self.layers = layers
             self.compiled = False
+            self.fit_kwargs: dict[str, object] = {}
 
         def compile(self, **_kwargs: object) -> None:
             self.compiled = True
+
+        def fit(self, *_args: object, **kwargs: object) -> str:
+            self.fit_kwargs = kwargs
+            return "history"
+
+    class FakeEarlyStopping:
+        def __init__(
+            self,
+            *,
+            monitor: str,
+            mode: str,
+            patience: int,
+            restore_best_weights: bool,
+            verbose: int,
+            start_from_epoch: int = 0,
+        ) -> None:
+            self.kwargs = {
+                "monitor": monitor,
+                "mode": mode,
+                "patience": patience,
+                "restore_best_weights": restore_best_weights,
+                "verbose": verbose,
+                "start_from_epoch": start_from_epoch,
+            }
 
     keras_stub = types.SimpleNamespace(
         Sequential=FakeSequential,
@@ -87,6 +112,7 @@ def _load_lstm_module_with_recording_keras():
         metrics=types.SimpleNamespace(
             R2Score=lambda name: ("R2Score", name),
         ),
+        callbacks=types.SimpleNamespace(EarlyStopping=FakeEarlyStopping),
     )
     tensorflow_stub.keras = keras_stub
 
@@ -148,6 +174,32 @@ class WeightedMseLossTest(unittest.TestCase):
         self.assertTrue(recurrent_layers[0].kwargs["return_sequences"])
         self.assertEqual(recurrent_layers[1].args, (4,))
         self.assertFalse(recurrent_layers[1].kwargs["return_sequences"])
+
+    def test_fit_passes_warm_up_to_early_stopping(self) -> None:
+        lstm = _load_lstm_module_with_recording_keras()
+        predictor = lstm.LSTMPrecipitationPredictor(
+            input_shape=(1, 3),
+            lstm_units=8,
+            loss_function="mse",
+        )
+
+        history = predictor.fit(
+            np.ones((4, 1, 3)),
+            np.ones((4, 1)),
+            X_val=np.ones((2, 1, 3)),
+            y_val=np.ones((2, 1)),
+            early_stopping=True,
+            patience=7,
+            warm_up=25,
+            early_stopping_metric="mae",
+        )
+
+        self.assertEqual(history, "history")
+        callbacks = predictor.model.fit_kwargs["callbacks"]
+        self.assertEqual(len(callbacks), 1)
+        self.assertEqual(callbacks[0].kwargs["monitor"], "val_mae")
+        self.assertEqual(callbacks[0].kwargs["patience"], 7)
+        self.assertEqual(callbacks[0].kwargs["start_from_epoch"], 25)
 
     def test_weighted_mse_loss_matches_requested_formula(self) -> None:
         y_real = np.array([0.0, 2.0])

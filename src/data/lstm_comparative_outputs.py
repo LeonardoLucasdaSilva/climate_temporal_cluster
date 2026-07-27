@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil
+import os
 from pathlib import Path
 import re
 from typing import Mapping, Sequence
@@ -28,6 +29,9 @@ PIVOT_ALIASES = {
     "clusters": "n_clusters",
     "cluster_count": "n_clusters",
     "number_of_clusters": "n_clusters",
+    "algorithm": "clustering_algorithm",
+    "algorithms": "clustering_algorithm",
+    "clustering_algorithms": "clustering_algorithm",
     "lr": "learning_rate",
     "learning_rates": "learning_rate",
     "dropout": "dropout_rate",
@@ -45,11 +49,16 @@ PIVOT_LABELS = {
     "batch_size": "Batch size",
     "epochs": "Maximum epochs",
     "patience": "Early-stopping patience",
+    "warm_up": "Early-stopping warm-up epochs",
     "forecast_horizon": "Forecast horizon",
+    "clustering_algorithm": "Clustering algorithm",
+    "train_info": "Train-performance diagnostics",
+    "silhouette_info": "Silhouette diagnostics",
 }
 
 COMPARATIVE_METRICS = ("MSE", "RMSE", "MAE", "R2")
 HISTORY_METRICS = ("loss", "mse", "mae", "r2")
+REPORT_COMPARE_TEX_NAME = "report_compare.tex"
 COMPARATIVE_ARTIFACT_NAMES = (
     "test_predictions_comparison.csv",
     "aligned_test_predictions.csv",
@@ -57,6 +66,7 @@ COMPARATIVE_ARTIFACT_NAMES = (
     "comparative_metrics.csv",
     "comparison_manifest.csv",
     "comparison_summary.txt",
+    REPORT_COMPARE_TEX_NAME,
     "03_training_history_comparison.png",
 )
 COMPARATIVE_ARTIFACT_PATTERNS = (
@@ -243,6 +253,13 @@ def save_comparative_outputs(
         comparison_dir,
         pivot,
         aligned_predictions,
+        metrics,
+        runs,
+    )
+    _write_report_compare(
+        comparison_dir,
+        Path(sweep_dir),
+        pivot,
         metrics,
         runs,
     )
@@ -849,6 +866,422 @@ def _write_comparison_summary(
         "\n".join(lines),
         encoding="utf-8",
     )
+
+
+def _write_report_compare(
+    comparison_dir: Path,
+    sweep_dir: Path,
+    pivot_parameter: str,
+    metrics: pd.DataFrame,
+    runs: Sequence[ComparativeRunData],
+) -> None:
+    """Write a LaTeX report that gathers the comparative plots and tables."""
+    (comparison_dir / REPORT_COMPARE_TEX_NAME).write_text(
+        render_report_compare(
+            comparison_dir,
+            sweep_dir,
+            pivot_parameter,
+            metrics,
+            runs,
+        ),
+        encoding="utf-8",
+    )
+
+
+def render_report_compare(
+    comparison_dir: Path,
+    sweep_dir: Path,
+    pivot_parameter: str,
+    metrics: pd.DataFrame,
+    runs: Sequence[ComparativeRunData],
+) -> str:
+    """Return the LaTeX source for the sweep-level comparative report."""
+    comparison_dir = Path(comparison_dir)
+    sweep_dir = Path(sweep_dir)
+    pivot_label = PIVOT_LABELS.get(
+        pivot_parameter,
+        pivot_parameter.replace("_", " ").title(),
+    )
+    lead_days = sorted(int(value) for value in metrics["lead_day"].unique())
+    lines = [
+        r"\documentclass[11pt]{article}",
+        r"\usepackage[margin=0.7in]{geometry}",
+        r"\usepackage{booktabs}",
+        r"\usepackage{caption}",
+        r"\usepackage{float}",
+        r"\usepackage{graphicx}",
+        r"\usepackage[hidelinks]{hyperref}",
+        r"\usepackage{longtable}",
+        r"\usepackage[T1]{fontenc}",
+        r"\usepackage[utf8]{inputenc}",
+        r"\captionsetup{font=small,labelfont=bf}",
+        r"\setlength{\parindent}{0pt}",
+        r"\setlength{\parskip}{5pt}",
+        r"\setcounter{tocdepth}{2}",
+        r"\begin{document}",
+        rf"\title{{{_latex_escape('LSTM Sweep Comparative Report')}}}",
+        r"\author{}",
+        r"\date{}",
+        r"\maketitle",
+        r"\vspace{-2em}",
+        r"\tableofcontents",
+        r"\clearpage",
+        r"\section{Summary}",
+        _bullet_list(
+            (
+                ("Sweep folder", sweep_dir.name),
+                ("Pivot parameter", pivot_parameter),
+                ("Pivot label", pivot_label),
+                ("Compared tests", len(runs)),
+                ("Forecast lead days", ", ".join(f"D+{day}" for day in lead_days)),
+            )
+        ),
+        r"\section{Cluster Step}",
+    ]
+    cluster_figures = _cluster_step_figures(sweep_dir, runs)
+    if cluster_figures:
+        for run_name, figure_path in cluster_figures:
+            lines.extend(
+                _figure_block(
+                    comparison_dir,
+                    figure_path,
+                    _caption_join(run_name, _caption_from_path(figure_path)),
+                )
+            )
+    else:
+        lines.append(
+            _unavailable_text("No cluster-step figures were found for this sweep.")
+        )
+
+    lines.append(r"\clearpage")
+    lines.append(r"\section{Prediction Time Series}")
+    for lead_day in lead_days:
+        lines.append(rf"\subsection{{day {lead_day}}}")
+        lines.extend(
+            _figures_for_lead_day(
+                comparison_dir,
+                f"01_test_timeseries_comparison_lead_day_{lead_day:02d}.png",
+            )
+        )
+
+    lines.append(r"\section{Prediction Scatter plot}")
+    for lead_day in lead_days:
+        lines.append(rf"\subsection{{day {lead_day}}}")
+        lines.extend(
+            _figures_for_lead_day(
+                comparison_dir,
+                f"02_test_scatter_comparison_lead_day_{lead_day:02d}.png",
+            )
+        )
+
+    lines.append(r"\section{Training History}")
+    training_history_path = comparison_dir / "03_training_history_comparison.png"
+    if training_history_path.exists():
+        lines.extend(_figure_block(comparison_dir, training_history_path))
+    else:
+        lines.append(_unavailable_text("Training-history comparison plot not found."))
+
+    lines.append(r"\section{Test Metrics}")
+    lines.append(_metrics_latex_table(metrics))
+    for lead_day in lead_days:
+        lines.append(rf"\subsection{{day {lead_day}}}")
+        lines.extend(
+            _figures_for_lead_day(
+                comparison_dir,
+                f"04_test_metrics_vs_{pivot_parameter}_lead_day_{lead_day:02d}.png",
+            )
+        )
+
+    lines.extend([r"\end{document}", ""])
+    return "\n".join(line for line in lines if line is not None)
+
+
+def _cluster_step_figures(
+    sweep_dir: Path,
+    runs: Sequence[ComparativeRunData],
+) -> list[tuple[str, Path]]:
+    patterns = (
+        "cluster_diagnostics/05_cluster_performance.png",
+        "cluster_diagnostics/06_cluster_distribution.png",
+        "cluster_diagnostics/07_precipitation_distribution_by_cluster.png",
+        "cluster_diagnostics/08_silhouette_analysis.png",
+        "05_cluster_performance.png",
+        "06_cluster_distribution.png",
+        "07_precipitation_distribution_by_cluster.png",
+        "08_silhouette_analysis.png",
+    )
+    fixed_cluster_count = _fixed_cluster_count(runs)
+    shown_figure_names: set[str] = set()
+    figures: list[tuple[str, Path]] = []
+    for run in runs:
+        run_dir = sweep_dir / run.run_name
+        run_cluster_count = _run_cluster_count(run)
+        seen: set[Path] = set()
+        for pattern in patterns:
+            for figure_path in sorted(run_dir.glob(pattern)):
+                if _is_silhouette_figure(figure_path) and run_cluster_count == 1:
+                    continue
+                if (
+                    fixed_cluster_count is not None
+                    and not _is_cluster_performance_figure(figure_path)
+                    and figure_path.name in shown_figure_names
+                ):
+                    continue
+                if figure_path.is_file() and figure_path not in seen:
+                    figures.append((run.run_name, figure_path))
+                    seen.add(figure_path)
+                    shown_figure_names.add(figure_path.name)
+    return figures
+
+
+def _fixed_cluster_count(runs: Sequence[ComparativeRunData]) -> int | None:
+    cluster_counts = [
+        cluster_count
+        for run in runs
+        for cluster_count in [_run_cluster_count(run)]
+        if cluster_count is not None
+    ]
+    if cluster_counts and len(set(cluster_counts)) == 1:
+        return cluster_counts[0]
+    return None
+
+
+def _run_cluster_count(run: ComparativeRunData) -> int | None:
+    value = run.parameters.get("n_clusters")
+    if _is_missing(value):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_silhouette_figure(figure_path: Path) -> bool:
+    return figure_path.name == "08_silhouette_analysis.png"
+
+
+def _is_cluster_performance_figure(figure_path: Path) -> bool:
+    return figure_path.name == "05_cluster_performance.png"
+
+
+def _figures_for_lead_day(
+    comparison_dir: Path,
+    filename: str,
+) -> list[str]:
+    figure_path = comparison_dir / filename
+    if not figure_path.exists():
+        return [_unavailable_text(f"Missing figure: {filename}.")]
+    return _figure_block(comparison_dir, figure_path)
+
+
+def _figure_block(
+    output_dir: Path,
+    figure_path: Path,
+    caption: str | None = None,
+) -> list[str]:
+    relative_path = _latex_graphics_path(output_dir, figure_path)
+    caption = caption or _caption_from_path(figure_path)
+    return [
+        r"\begin{figure}[H]",
+        r"\centering",
+        rf"\includegraphics[width=0.96\textwidth,height=0.42\textheight,keepaspectratio]{{{relative_path}}}",
+        rf"\caption*{{{_latex_caption(caption)}}}",
+        r"\end{figure}",
+    ]
+
+
+def _latex_graphics_path(output_dir: Path, figure_path: Path) -> str:
+    relative_path = os.path.relpath(figure_path, output_dir).replace("\\", "/")
+    return rf"\detokenize{{{relative_path}}}"
+
+
+def _metrics_latex_table(metrics: pd.DataFrame) -> str:
+    if metrics.empty:
+        return _unavailable_text("Comparative metrics table is empty.")
+    wanted = [
+        column
+        for column in (
+            "lead_day",
+            "pivot_value",
+            "n_common_test_dates",
+            "start_date",
+            "end_date",
+            "MSE",
+            "RMSE",
+            "MAE",
+            "R2",
+        )
+        if column in metrics.columns
+    ]
+    if not wanted:
+        return _unavailable_text("Comparative metrics columns were not found.")
+    table = metrics[wanted].copy()
+    for column in ("start_date", "end_date"):
+        if column in table.columns:
+            table[column] = pd.to_datetime(table[column]).dt.strftime("%d/%m/%Y")
+    alignment = "l" * len(table.columns)
+    header_labels = [
+        _test_metrics_column_label(column, metrics)
+        for column in table.columns
+    ]
+    header = " & ".join(_latex_table_header(column) for column in header_labels) + r" \\"
+    rows = []
+    previous_lead_day: object | None = None
+    for _, row in table.iterrows():
+        current_lead_day = row.get("lead_day")
+        if (
+            previous_lead_day is not None
+            and current_lead_day != previous_lead_day
+        ):
+            rows.append(r"\midrule")
+        rows.append(
+            " & ".join(_latex_table_value(row[column]) for column in table.columns)
+            + r" \\"
+        )
+        previous_lead_day = current_lead_day
+    return "\n".join(
+        [
+            r"\begin{longtable}{" + alignment + r"}",
+            r"\caption*{Common-Date Test Metrics}\\",
+            r"\toprule",
+            header,
+            r"\midrule",
+            *rows,
+            r"\bottomrule",
+            r"\end{longtable}",
+        ]
+    )
+
+
+def _test_metrics_column_label(column: str, metrics: pd.DataFrame) -> str:
+    if column == "lead_day":
+        return "Lead Day"
+    if column == "pivot_value":
+        pivot_parameter = _metrics_pivot_parameter(metrics)
+        return _pivot_table_column_label(pivot_parameter)
+    if column == "start_date":
+        return _RawLatex(r"$t_0$")
+    if column == "end_date":
+        return _RawLatex(r"$t_f$")
+    return column.replace("_", " ").title()
+
+
+def _latex_table_header(value: object) -> str:
+    if isinstance(value, _RawLatex):
+        return str(value)
+    return _latex_escape(value)
+
+
+def _metrics_pivot_parameter(metrics: pd.DataFrame) -> str:
+    if "pivot_parameter" not in metrics.columns or metrics["pivot_parameter"].empty:
+        return "pivot_value"
+    pivot_values = metrics["pivot_parameter"].dropna()
+    if pivot_values.empty:
+        return "pivot_value"
+    return str(pivot_values.iloc[0])
+
+
+def _pivot_table_column_label(pivot_parameter: str) -> str:
+    labels = {
+        "n_clusters": "K",
+        "lstm_units": "LSTM_UNIT",
+        "lstm_units_2": "LSTM_UNITS_2",
+        "learning_rate": "LEARNING_RATE",
+        "dropout_rate": "DROPOUT_RATE",
+        "weight_decay": "WEIGHT_DECAY",
+        "window_size": "WINDOW_SIZE",
+        "batch_size": "BATCH_SIZE",
+        "epochs": "EPOCHS",
+        "patience": "PATIENCE",
+        "warm_up": "WARM_UP",
+        "forecast_horizon": "FORECAST_HORIZON",
+        "train_info": "TRAIN_INFO",
+        "silhouette_info": "SILHOUETTE_INFO",
+        "sigma": "SIGMA",
+    }
+    return labels.get(pivot_parameter, pivot_parameter.replace("_", " ").title())
+
+
+def _bullet_list(rows: Sequence[tuple[str, object]]) -> str:
+    items = "\n".join(
+        rf"\item \textbf{{{_latex_escape(label)}:}} {_latex_escape(_format_report_value(value))}"
+        for label, value in rows
+    )
+    return "\n".join(
+        [
+            r"\begin{itemize}",
+            r"\setlength\itemsep{0.1em}",
+            items,
+            r"\end{itemize}",
+        ]
+    )
+
+
+def _caption_from_path(path: Path) -> str:
+    return path.stem.replace("_", " ").replace("-", " ").title()
+
+
+def _caption_join(left: str, right: str) -> str:
+    return _RawLatex(
+        rf"{_latex_escape(left)} \textendash{{}} {_latex_escape(right)}"
+    )
+
+
+class _RawLatex(str):
+    """String that intentionally contains LaTeX markup."""
+
+
+def _latex_table_value(value: object) -> str:
+    formatted = _format_report_value(value)
+    if isinstance(formatted, _RawLatex):
+        return str(formatted)
+    return _latex_escape(formatted)
+
+
+def _latex_caption(caption: object) -> str:
+    if isinstance(caption, _RawLatex):
+        return str(caption)
+    return _latex_escape(caption)
+
+
+def _unavailable_text(message: str) -> str:
+    return rf"\textit{{{_latex_escape(message)}}}"
+
+
+def _format_report_value(value: object) -> str:
+    if value is None:
+        return "N/A"
+    try:
+        if pd.isna(value):
+            return "N/A"
+    except (TypeError, ValueError):
+        pass
+    if _is_number(value):
+        numeric_value = float(value)
+        formatted = f"{abs(numeric_value):g}" if numeric_value.is_integer() else f"{abs(numeric_value):.4g}"
+        if numeric_value < 0:
+            return _RawLatex(r"$-$" + formatted)
+        return formatted
+    return str(value)
+
+
+def _latex_escape(value: object) -> str:
+    replacements = {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+        "~": r"\textasciitilde{}",
+        "^": r"\textasciicircum{}",
+    }
+    text = str(value)
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
 
 
 def _weighted_history_dataframe(histories: pd.DataFrame) -> pd.DataFrame:

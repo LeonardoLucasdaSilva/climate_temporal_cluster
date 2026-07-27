@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import inspect
 from typing import Callable, Sequence, Tuple
 
 import numpy as np
@@ -347,6 +348,7 @@ class LSTMPrecipitationPredictor:
         early_stopping: bool = True,
         patience: int = 10,
         early_stopping_metric: str = "loss",
+        warm_up: int = 0,
     ) -> keras.callbacks.History:
         """Train the LSTM model.
 
@@ -363,6 +365,8 @@ class LSTMPrecipitationPredictor:
             patience: Patience for early stopping
             early_stopping_metric: Validation metric monitored by early stopping.
                 Supported values are "loss", "mse", "mae", and "r2".
+            warm_up: Number of initial epochs ignored by early stopping. A value
+                of 0 starts counting immediately.
 
         Returns:
             History object with training metrics
@@ -374,15 +378,26 @@ class LSTMPrecipitationPredictor:
             validation_data = (X_val, y_val)
 
         if early_stopping and validation_data is not None:
+            if (
+                isinstance(warm_up, (bool, np.bool_))
+                or not isinstance(warm_up, (int, np.integer))
+                or warm_up < 0
+            ):
+                raise ValueError("warm_up must be a non-negative integer.")
             monitor, mode = early_stopping_monitor(early_stopping_metric)
+            early_stopping_kwargs = {
+                "monitor": monitor,
+                "mode": mode,
+                "patience": patience,
+                "restore_best_weights": True,
+                "verbose": verbose,
+            }
+            if "start_from_epoch" in inspect.signature(
+                keras.callbacks.EarlyStopping
+            ).parameters:
+                early_stopping_kwargs["start_from_epoch"] = warm_up
             callbacks.append(
-                keras.callbacks.EarlyStopping(
-                    monitor=monitor,
-                    mode=mode,
-                    patience=patience,
-                    restore_best_weights=True,
-                    verbose=verbose,
-                )
+                keras.callbacks.EarlyStopping(**early_stopping_kwargs)
             )
 
         self.history = self.model.fit(

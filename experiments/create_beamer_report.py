@@ -18,6 +18,7 @@ from data.beamer_report import (  # noqa: E402
     discover_plots,
     render_beamer,
     resolve_selected_plots,
+    selected_run_parameters,
     write_beamer,
 )
 
@@ -32,9 +33,9 @@ from data.beamer_report import (  # noqa: E402
 RUN_DIR = (
     PROJECT_ROOT
     / "outputs"
-    / "14_07_26"
-    / "lstm_cluster_sweep_RS_A801_2026_07_09_16h37"
-    / "RS_A801_w15_k01_kmeans"
+    / "21_07_26"
+    / "lstm_cluster_sweep_RS_A801_2026_07_21_17h37"
+    / "RS_A801_w10_s10_k02_kshape"
 )
 
 
@@ -43,10 +44,24 @@ RUN_DIR = (
 # caminho absoluto dentro da run, ou trecho do nome/caminho.
 # Deixe [] para incluir todos os plots encontrados.
 SELECTED_PLOTS = [
-    "prediction_overview/02_predictions_vs_actual.png",
+    "model_fit/01_training_history_cluster_0.png",
+    "model_fit/01_training_history_cluster_1.png",
     "cluster_prediction_scatter/*.png",
     "residual_diagnostics/*.png",
     "cluster_diagnostics/*.png",
+
+
+# Parametros da run que entram na primeira secao do Beamer.
+# Use nomes de run_experiment.py, do summary.txt, ou colunas do sweep_results.csv.
+# Deixe [] para omitir a tabela.
+PARAMS = [
+    "LEARNING_RATE",
+    "EPOCHS",
+    "LSTM_UNITS_1",
+    "WINDOW_SIZES",
+    "N_CLUSTERS_LIST",
+    "CLUSTERING_ALGORITHM",
+    "FORECAST_HORIZON",
 ]
 
 # Arquivo opcional com um seletor de plot por linha. Use None para ignorar.
@@ -62,7 +77,7 @@ TITLE = None
 LIST_PLOTS = False
 
 # Troque para False se quiser criar apenas o .tex sem compilar o PDF.
-COMPILE_PDF = True
+COMPILE_PDF = False
 
 # Numero de compilacoes do pdflatex. Duas passagens atualizam links/overview.
 PDFLATEX_RUNS = 2
@@ -91,6 +106,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--plots-file",
         type=Path,
         help="Text file with one plot selector per line.",
+    )
+    parser.add_argument(
+        "--params",
+        nargs="*",
+        default=None,
+        help=(
+            "Run parameters to show in the first section. Names can come from "
+            "summary.txt or sweep_results.csv. Omit to skip the table."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -150,6 +174,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         selected_plots,
         output_path=args.output,
         title=args.title,
+        parameters=args.params,
     )
     print(f"Wrote {output_path}")
     print(f"Selected {len(selected_plots)} plot(s)")
@@ -184,6 +209,7 @@ def run_from_config() -> int:
         selected_plots,
         output_path=Path(OUTPUT_PATH) if OUTPUT_PATH is not None else None,
         title=TITLE,
+        parameters=PARAMS,
     )
     print(f"Wrote {output_path}")
     print(f"Selected {len(selected_plots)} plot(s)")

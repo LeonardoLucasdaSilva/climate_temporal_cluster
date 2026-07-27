@@ -86,6 +86,9 @@ class ExperimentConfig:
     manual_clustering_method: str = "legacy"
     cluster_assignment_method: str = "centroid"
     cluster_assignment_neighbors: int = 5
+    cluster_only_precipitation: bool = False
+    plot_cluster_timeseries: bool = True
+    cluster_timeseries_plot_limit: int | None = None
     variant_parameters: tuple[tuple[str, int | float | None], ...] = ()
 
     @property
@@ -160,6 +163,7 @@ class WindowSplitData:
     input_window_mean_train: np.ndarray
     input_window_mean_val: np.ndarray
     input_window_mean_test: np.ndarray
+    test_input_precipitation_windows: np.ndarray
     c_train: np.ndarray
     c_val: np.ndarray
     c_test: np.ndarray
@@ -174,6 +178,7 @@ class WindowSplitData:
     test_targets_by_lead_day: np.ndarray
     test_target_dates_by_lead_day: np.ndarray
     target_scaler: FeatureScaler | None
+    lstm_precipitation_transform: bool
     n_windows: int
 
     @property
@@ -232,6 +237,7 @@ VARIANT_PARAMETER_SLUGS = {
     "epochs": "epochs",
     "batch_size": "batch",
     "patience": "patience",
+    "warm_up": "warmup",
 }
 SUPPORTED_LSTM_LOSS_FUNCTIONS = (
     "mean_squared_error",
@@ -428,10 +434,17 @@ def _variant_value_slug(value: int | float | None) -> str:
 def _transform_precipitation_values(
     values: np.ndarray,
     scaler: FeatureScaler | None,
+    apply_log1p: bool = False,
 ) -> np.ndarray:
-    """Transform precipitation arrays with a one-column fitted scaler."""
+    """Apply optional log1p and a fitted one-column precipitation scaler."""
     array = np.asarray(values, dtype=float)
-    if scaler is None or array.size == 0:
+    if array.size == 0:
+        return array.copy()
+    if apply_log1p:
+        if np.any(array < 0):
+            raise ValueError("Precipitation values must be non-negative for log1p.")
+        array = np.log1p(array)
+    if scaler is None:
         return array.copy()
     return scaler.transform(array.reshape(-1, 1)).reshape(array.shape)
 
@@ -439,12 +452,24 @@ def _transform_precipitation_values(
 def _inverse_transform_precipitation_values(
     values: np.ndarray,
     scaler: FeatureScaler | None,
+    apply_expm1: bool = False,
 ) -> np.ndarray:
-    """Inverse-transform precipitation arrays from the training target scale."""
+    """Undo target scaling and optional log1p to recover millimeters."""
     array = np.asarray(values, dtype=float)
-    if scaler is None or array.size == 0:
+    if array.size == 0:
         return array.copy()
-    return scaler.inverse_transform(array.reshape(-1, 1)).reshape(array.shape)
+    if scaler is not None:
+        array = scaler.inverse_transform(array.reshape(-1, 1)).reshape(array.shape)
+    if apply_expm1:
+        array = np.expm1(array)
+    return array
+
+
+def _validate_lstm_precipitation_transform(value: bool) -> bool:
+    """Return a strict boolean flag for the LSTM precipitation log transform."""
+    if not isinstance(value, (bool, np.bool_)):
+        raise ValueError("lstm_precipitation_transform must be a boolean.")
+    return bool(value)
 
 
 def validate_loss_function(loss_function: str) -> str:
@@ -550,18 +575,47 @@ def setup_styling(plot_style: Mapping[str, object] | None = None) -> None:
     plt.rcParams.update(rc_params)
 
 
+def _normalize_clustering_algorithms(
+    clustering_algorithm: str | Sequence[str],
+) -> list[str]:
+    """Return one or more validated clustering algorithm names."""
+    if isinstance(clustering_algorithm, (str, bytes)):
+        raw_values = [clustering_algorithm]
+    else:
+        raw_values = list(clustering_algorithm)
+    if not raw_values:
+        raise ValueError("clustering_algorithm must contain at least one value.")
+
+    algorithms: list[str] = []
+    for raw_value in raw_values:
+        normalized = str(raw_value).strip().lower()
+        if normalized not in SUPPORTED_CLUSTERING_ALGORITHMS:
+            supported = ", ".join(SUPPORTED_CLUSTERING_ALGORITHMS)
+            raise ValueError(
+                f"Unsupported clustering algorithm: {raw_value!r}. "
+                f"Use one of: {supported}"
+            )
+        algorithms.append(normalized)
+    if len(set(algorithms)) != len(algorithms):
+        raise ValueError("clustering_algorithm cannot contain duplicate values.")
+    return algorithms
+
+
 def build_configurations(
     sigmas: list[float | None],
     state: str,
     station_id: str,
     window_sizes: list[int],
     n_clusters_list: list[int],
-    clustering_algorithm: str,
+    clustering_algorithm: str | Sequence[str],
     window_stride: int = 1,
     cluster_dissimilarity_metric: str = "euclidean",
     manual_clustering_method: str = "legacy",
     cluster_assignment_method: str = "centroid",
     cluster_assignment_neighbors: int = 5,
+    cluster_only_precipitation: bool = False,
+    plot_cluster_timeseries: bool = True,
+    cluster_timeseries_plot_limit: int | None = None,
     training_parameter_values: Mapping[
         str,
         Sequence[int | float | None],
@@ -572,6 +626,7 @@ def build_configurations(
     cluster_dissimilarity_metric = normalize_dissimilarity_metric(
         cluster_dissimilarity_metric
     )
+    clustering_algorithms = _normalize_clustering_algorithms(clustering_algorithm)
     training_parameter_values = dict(training_parameter_values or {})
     unsupported_parameters = sorted(
         set(training_parameter_values) - set(VARIANT_PARAMETER_SLUGS)
@@ -601,13 +656,16 @@ def build_configurations(
             station_id=station_id,
             window_size=window_size,
             n_clusters=n_clusters,
-            algorithm=clustering_algorithm.lower(),
+            algorithm=algorithm,
             sigma=sigma,
             window_stride=window_stride,
             cluster_dissimilarity_metric=cluster_dissimilarity_metric,
             manual_clustering_method=manual_clustering_method,
             cluster_assignment_method=cluster_assignment_method,
             cluster_assignment_neighbors=cluster_assignment_neighbors,
+            cluster_only_precipitation=cluster_only_precipitation,
+            plot_cluster_timeseries=plot_cluster_timeseries,
+            cluster_timeseries_plot_limit=cluster_timeseries_plot_limit,
             variant_parameters=tuple(
                 (parameter, value)
                 for parameter, value in zip(parameter_names, parameter_values)
@@ -616,7 +674,8 @@ def build_configurations(
         )
         for window_size in window_sizes
         for n_clusters in n_clusters_list
-        for sigma in sigmas
+        for algorithm in clustering_algorithms
+        for sigma in (sigmas if algorithm == "spectral" else [None])
         for parameter_values in parameter_combinations
     ]
 
@@ -681,9 +740,23 @@ def _split_feature_matrix(
     fit_pca: bool,
     variance_threshold: float | None,
     window_stride: int = 1,
+    precipitation_log_transform: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, FeatureScalingState, PCA | None]:
+    feature_df = df
+    if (
+        precipitation_log_transform
+        and DEFAULT_PRECIPITATION_COLUMN in columns
+    ):
+        feature_df = df.copy()
+        feature_df.loc[:, DEFAULT_PRECIPITATION_COLUMN] = (
+            _transform_precipitation_values(
+                feature_df[DEFAULT_PRECIPITATION_COLUMN].to_numpy(dtype=float),
+                scaler=None,
+                apply_log1p=True,
+            )
+        )
     values_df, fitted_scalers = scale_weather_features(
-        df,
+        feature_df,
         columns,
         scalers=scalers,
         covariate_scaler_type=covariate_scaler_type,
@@ -812,15 +885,40 @@ def _mean_input_window_precipitation(
     window_size: int,
 ) -> np.ndarray:
     """Return raw mean precipitation over every selected input window."""
+    return _input_precipitation_windows(
+        df,
+        window_start_indices,
+        window_size,
+    ).mean(axis=1)
+
+
+def _input_precipitation_windows(
+    df: pd.DataFrame,
+    window_start_indices: np.ndarray,
+    window_size: int,
+) -> np.ndarray:
+    """Return raw precipitation values for every selected input window."""
     precipitation = pd.to_numeric(
         df[DEFAULT_PRECIPITATION_COLUMN],
         errors="coerce",
     ).to_numpy(dtype=float)
+    if len(precipitation) < window_size:
+        return np.empty((0, window_size), dtype=float)
     precipitation_windows = np.lib.stride_tricks.sliding_window_view(
         precipitation,
         window_size,
     )
-    return precipitation_windows[window_start_indices].mean(axis=1)
+    return precipitation_windows[window_start_indices]
+
+
+def _clustering_feature_columns(
+    feature_columns: list[str],
+    cluster_only_precipitation: bool,
+) -> list[str]:
+    """Return the feature columns used exclusively to assign clusters."""
+    if cluster_only_precipitation:
+        return [DEFAULT_PRECIPITATION_COLUMN]
+    return feature_columns
 
 
 def _nearest_centroid_labels(
@@ -1049,6 +1147,7 @@ def create_window_split_data(
     normalize: bool | None = None,
     scaler_type: str | None = None,
     precipitation_scaler_type: str | None = None,
+    lstm_precipitation_transform: bool = False,
 ) -> tuple[WindowSplitData, DailyDataSplits]:
     """Create independent split windows from chronological dataframe blocks.
 
@@ -1057,8 +1156,15 @@ def create_window_split_data(
     dimensionality. PCA is still fitted only on training windows.
     """
     window_stride = validate_window_stride(config.window_stride)
+    lstm_precipitation_transform = _validate_lstm_precipitation_transform(
+        lstm_precipitation_transform
+    )
     cluster_dissimilarity_metric = normalize_dissimilarity_metric(
         config.cluster_dissimilarity_metric
+    )
+    cluster_feature_columns = _clustering_feature_columns(
+        feature_columns,
+        config.cluster_only_precipitation,
     )
     if (
         cluster_dissimilarity_metric == "dtw" or config.algorithm == "kshape"
@@ -1098,6 +1204,7 @@ def create_window_split_data(
     if run_only_cluster:
         lstm_feature_normalize = None
         lstm_precipitation_normalize = None
+        lstm_precipitation_transform = False
     else:
         lstm_feature_normalize = _normalize_optional_scaler_type(
             lstm_feature_normalize,
@@ -1117,7 +1224,7 @@ def create_window_split_data(
         cluster_pca,
     ) = _split_feature_matrix(
         splits.train,
-        feature_columns,
+        cluster_feature_columns,
         config.window_size,
         scalers=empty_scalers,
         covariate_scaler_type=clustering_feature_normalize,
@@ -1130,7 +1237,7 @@ def create_window_split_data(
     )
     cluster_val_windows, cluster_val_flat, _, _ = _split_feature_matrix(
         splits.val,
-        feature_columns,
+        cluster_feature_columns,
         config.window_size,
         scalers=cluster_feature_scalers,
         covariate_scaler_type=clustering_feature_normalize,
@@ -1142,7 +1249,7 @@ def create_window_split_data(
     )
     cluster_test_windows, cluster_test_flat, _, _ = _split_feature_matrix(
         splits.test,
-        feature_columns,
+        cluster_feature_columns,
         config.window_size,
         scalers=cluster_feature_scalers,
         covariate_scaler_type=clustering_feature_normalize,
@@ -1157,7 +1264,18 @@ def create_window_split_data(
         val_windows, val_flat = cluster_val_windows, cluster_val_flat
         test_windows, test_flat = cluster_test_windows, cluster_test_flat
     else:
-        train_windows, train_flat, lstm_feature_scalers, _ = _split_feature_matrix(
+        fit_lstm_pca = bool(
+            lstm_precipitation_transform
+            and variance_threshold is not None
+            and not pca_for_clustering_only
+            and not config.cluster_only_precipitation
+        )
+        (
+            train_windows,
+            train_flat,
+            lstm_feature_scalers,
+            lstm_pca,
+        ) = _split_feature_matrix(
             splits.train,
             feature_columns,
             config.window_size,
@@ -1166,8 +1284,10 @@ def create_window_split_data(
             precipitation_scaler_type=lstm_precipitation_normalize,
             pca=None,
             fit_scaler=True,
-            fit_pca=False,
-            variance_threshold=None,
+            fit_pca=fit_lstm_pca,
+            variance_threshold=variance_threshold if fit_lstm_pca else None,
+            window_stride=window_stride,
+            precipitation_log_transform=lstm_precipitation_transform,
         )
         val_windows, val_flat, _, _ = _split_feature_matrix(
             splits.val,
@@ -1176,10 +1296,11 @@ def create_window_split_data(
             scalers=lstm_feature_scalers,
             covariate_scaler_type=lstm_feature_normalize,
             precipitation_scaler_type=lstm_precipitation_normalize,
-            pca=None,
+            pca=lstm_pca,
             fit_scaler=False,
             fit_pca=False,
-            variance_threshold=None,
+            variance_threshold=variance_threshold if fit_lstm_pca else None,
+            precipitation_log_transform=lstm_precipitation_transform,
         )
         test_windows, test_flat, _, _ = _split_feature_matrix(
             splits.test,
@@ -1188,10 +1309,11 @@ def create_window_split_data(
             scalers=lstm_feature_scalers,
             covariate_scaler_type=lstm_feature_normalize,
             precipitation_scaler_type=lstm_precipitation_normalize,
-            pca=None,
+            pca=lstm_pca,
             fit_scaler=False,
             fit_pca=False,
-            variance_threshold=None,
+            variance_threshold=variance_threshold if fit_lstm_pca else None,
+            precipitation_log_transform=lstm_precipitation_transform,
         )
 
     (
@@ -1260,6 +1382,11 @@ def create_window_split_data(
         test_local_indices,
         config.window_size,
     )
+    test_input_precipitation_windows = _input_precipitation_windows(
+        splits.test,
+        test_local_indices,
+        config.window_size,
+    )
     manual_window_mean_rain = None
     if (
         config.algorithm == "manual"
@@ -1271,7 +1398,12 @@ def create_window_split_data(
             train_local_indices,
             config.window_size,
         )
-    if run_only_cluster or (cluster_pca is not None and not pca_for_clustering_only):
+    if run_only_cluster or (
+        cluster_pca is not None
+        and not pca_for_clustering_only
+        and not config.cluster_only_precipitation
+        and not lstm_precipitation_transform
+    ):
         X_train = cluster_X_train
         X_val = cluster_X_val
         X_test = cluster_X_test
@@ -1281,16 +1413,23 @@ def create_window_split_data(
         X_test = test_flat[test_local_indices]
     target_scaler = None
     if not run_only_cluster and lstm_precipitation_normalize is not None:
+        target_scaler_fit_values = _transform_precipitation_values(
+            y_train_by_lead_day,
+            scaler=None,
+            apply_log1p=lstm_precipitation_transform,
+        )
         target_scaler = create_feature_scaler(lstm_precipitation_normalize).fit(
-            y_train_by_lead_day.reshape(-1, 1)
+            target_scaler_fit_values.reshape(-1, 1)
         )
     y_train_by_lead_day_scaled = _transform_precipitation_values(
         y_train_by_lead_day,
         target_scaler,
+        apply_log1p=lstm_precipitation_transform,
     )
     y_val_by_lead_day_scaled = _transform_precipitation_values(
         y_val_by_lead_day,
         target_scaler,
+        apply_log1p=lstm_precipitation_transform,
     )
 
     c_train, c_val, c_test = _cluster_window_splits(
@@ -1331,6 +1470,7 @@ def create_window_split_data(
             input_window_mean_train=input_window_mean_train,
             input_window_mean_val=input_window_mean_val,
             input_window_mean_test=input_window_mean_test,
+            test_input_precipitation_windows=test_input_precipitation_windows,
             c_train=c_train,
             c_val=c_val,
             c_test=c_test,
@@ -1353,6 +1493,7 @@ def create_window_split_data(
             test_targets_by_lead_day=y_test_by_lead_day,
             test_target_dates_by_lead_day=test_target_dates_by_lead_day,
             target_scaler=target_scaler,
+            lstm_precipitation_transform=lstm_precipitation_transform,
             n_windows=(
                 len(cluster_train_windows[::window_stride])
                 + len(cluster_val_windows[::window_stride])
@@ -1376,6 +1517,7 @@ def _cluster_diagnostic_feature_splits(
     if (
         normalize_dissimilarity_metric(config.cluster_dissimilarity_metric)
         == "dtw"
+        or config.algorithm == "kshape"
     ):
         return {
             "Training": (split_data.cluster_windows_train, split_data.c_train),
@@ -1393,12 +1535,17 @@ def clipped_predictions(
     model: LSTMPrecipitationPredictor,
     X: np.ndarray,
     target_scaler: FeatureScaler | None = None,
+    lstm_precipitation_transform: bool = False,
 ) -> np.ndarray:
     """Predict precipitation in millimeters and clip impossible negatives."""
     predictions = np.asarray(model.predict(X), dtype=float)
     if predictions.ndim == 1:
         predictions = predictions.reshape(-1, 1)
-    predictions = _inverse_transform_precipitation_values(predictions, target_scaler)
+    predictions = _inverse_transform_precipitation_values(
+        predictions,
+        target_scaler,
+        apply_expm1=lstm_precipitation_transform,
+    )
     return np.maximum(predictions, 0.0)
 
 
@@ -1445,6 +1592,7 @@ def evaluate_test_samples_with_all_models(
     original_y_pred_test: np.ndarray,
     random_state: int,
     target_scaler: FeatureScaler | None = None,
+    lstm_precipitation_transform: bool = False,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -1459,7 +1607,12 @@ def evaluate_test_samples_with_all_models(
     )
     y_pred_by_model_by_lead_day = np.stack(
         [
-            clipped_predictions(model, X_test_lstm, target_scaler)
+            clipped_predictions(
+                model,
+                X_test_lstm,
+                target_scaler,
+                lstm_precipitation_transform,
+            )
             for _cluster_id, model in model_items
         ],
         axis=1,
@@ -2040,6 +2193,7 @@ def _train_single_cluster_model(
     batch_size: int,
     early_stopping: bool,
     patience: int,
+    warm_up: int,
     early_stopping_metric: str,
     lstm_loss_function: str,
     loss_quantiles: Sequence[float],
@@ -2048,6 +2202,8 @@ def _train_single_cluster_model(
     random_state: int,
     test_all_models: bool,
     loss_alpha: float,
+    target_scaler: FeatureScaler | None,
+    lstm_precipitation_transform: bool,
     tensorflow_worker_count: int = 1,
 ) -> ClusterTrainingResult:
     """Train one cluster LSTM and return serializable predictions/history."""
@@ -2091,6 +2247,7 @@ def _train_single_cluster_model(
         verbose=verbose_training,
         early_stopping=early_stopping and np.any(va_mask),
         patience=patience,
+        warm_up=warm_up,
         early_stopping_metric=early_stopping_metric,
     )
 
@@ -2115,7 +2272,14 @@ def _train_single_cluster_model(
     )
     test_metrics = None
     if test_predictions_scaled is not None:
-        test_predictions = np.maximum(test_predictions_scaled, 0.0)
+        test_predictions = np.maximum(
+            _inverse_transform_precipitation_values(
+                test_predictions_scaled,
+                target_scaler,
+                apply_expm1=lstm_precipitation_transform,
+            ),
+            0.0,
+        )
         test_metrics = calculate_regression_metrics(
             y_test[te_mask],
             test_predictions[:, -1],
@@ -2164,6 +2328,7 @@ def train_cluster_models(
     batch_size: int,
     early_stopping: bool,
     patience: int,
+    warm_up: int,
     early_stopping_metric: str,
     lstm_loss_function: str,
     loss_quantiles: Sequence[float],
@@ -2175,6 +2340,7 @@ def train_cluster_models(
     parallel_training: bool = False,
     target_scaler: FeatureScaler | None = None,
     loss_alpha: float = 1.0,
+    lstm_precipitation_transform: bool = False,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -2281,6 +2447,7 @@ def train_cluster_models(
         "batch_size": batch_size,
         "early_stopping": early_stopping,
         "patience": patience,
+        "warm_up": warm_up,
         "early_stopping_metric": early_stopping_metric,
         "lstm_loss_function": lstm_loss_function,
         "loss_quantiles": loss_quantiles,
@@ -2289,6 +2456,8 @@ def train_cluster_models(
         "random_state": random_state,
         "test_all_models": test_all_models,
         "loss_alpha": loss_alpha,
+        "target_scaler": target_scaler,
+        "lstm_precipitation_transform": lstm_precipitation_transform,
         "tensorflow_worker_count": worker_count if use_parallel else 1,
     }
     if use_parallel:
@@ -2327,6 +2496,7 @@ def train_cluster_models(
             _inverse_transform_precipitation_values(
                 result.train_predictions_scaled,
                 target_scaler,
+                apply_expm1=lstm_precipitation_transform,
             ),
             0.0,
         )
@@ -2337,6 +2507,7 @@ def train_cluster_models(
                 _inverse_transform_precipitation_values(
                     result.val_predictions_scaled,
                     target_scaler,
+                    apply_expm1=lstm_precipitation_transform,
                 ),
                 0.0,
             )
@@ -2346,6 +2517,7 @@ def train_cluster_models(
                 _inverse_transform_precipitation_values(
                     result.test_predictions_scaled,
                     target_scaler,
+                    apply_expm1=lstm_precipitation_transform,
                 ),
                 0.0,
             )
@@ -2362,6 +2534,7 @@ def train_cluster_models(
                 _inverse_transform_precipitation_values(
                     result.all_test_predictions_scaled,
                     target_scaler,
+                    apply_expm1=lstm_precipitation_transform,
                 ),
                 0.0,
             )
@@ -2446,6 +2619,7 @@ def run_configuration(
     batch_size: int,
     early_stopping: bool,
     patience: int,
+    warm_up: int,
     early_stopping_metric: str,
     lstm_loss_function: str,
     loss_quantiles: Sequence[float],
@@ -2460,6 +2634,9 @@ def run_configuration(
     loss_alpha: float = 1.0,
     parallel_training: bool = False,
     create_report: bool = True,
+    train_info: bool = True,
+    silhouette_info: bool = True,
+    lstm_precipitation_transform: bool = False,
 ) -> dict[str, float | int | str | None]:
     """Run one sweep configuration and save its artifacts."""
     if run_only_cluster and comparative_runs is not None:
@@ -2477,7 +2654,11 @@ def run_configuration(
     if run_only_cluster:
         lstm_feature_normalize = None
         lstm_precipitation_normalize = None
+        lstm_precipitation_transform = False
     else:
+        lstm_precipitation_transform = _validate_lstm_precipitation_transform(
+            lstm_precipitation_transform
+        )
         lstm_feature_normalize = _normalize_optional_scaler_type(
             lstm_feature_normalize,
             setting_name="lstm_feature_normalize",
@@ -2490,6 +2671,10 @@ def run_configuration(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     feature_columns = numeric_cols if use_all_features else numeric_feature_columns(df)
+    clustering_feature_columns = _clustering_feature_columns(
+        feature_columns,
+        config.cluster_only_precipitation,
+    )
     split_data, daily_splits = create_window_split_data(
         df,
         config,
@@ -2506,6 +2691,7 @@ def run_configuration(
         manual_zero_tolerance=manual_zero_tolerance,
         pca_for_clustering_only=pca_for_clustering_only,
         run_only_cluster=run_only_cluster,
+        lstm_precipitation_transform=lstm_precipitation_transform,
     )
 
     X_train = split_data.X_train
@@ -2546,11 +2732,22 @@ def run_configuration(
         "dataset_start_date": df["Data"].min().date().isoformat(),
         "dataset_end_date": df["Data"].max().date().isoformat(),
         "features": feature_columns,
+        "clustering_features": clustering_feature_columns,
+        "cluster_only_precipitation": config.cluster_only_precipitation,
         "clustering_feature_normalize": clustering_feature_normalize,
         "clustering_precipitation_normalize": clustering_precipitation_normalize,
         "lstm_feature_normalize": lstm_feature_normalize,
         "lstm_precipitation_normalize": lstm_precipitation_normalize,
-        "target_scale": "normalized" if split_data.target_scaler is not None else "mm",
+        "lstm_precipitation_transform": lstm_precipitation_transform,
+        "target_scale": (
+            "log1p + normalized"
+            if lstm_precipitation_transform and split_data.target_scaler is not None
+            else "log1p"
+            if lstm_precipitation_transform
+            else "normalized"
+            if split_data.target_scaler is not None
+            else "mm"
+        ),
         "pca_variance_threshold": variance_threshold,
         "pca_for_clustering_only": pca_for_clustering_only,
         "n_samples": n_samples,
@@ -2581,6 +2778,7 @@ def run_configuration(
         "batch_size": batch_size,
         "early_stopping": early_stopping,
         "patience": patience,
+        "warm_up": warm_up,
         "early_stopping_metric": early_stopping_metric,
         "optimizer": "AdamW",
         "loss": lstm_loss_function,
@@ -2593,6 +2791,8 @@ def run_configuration(
         "test_all_models": test_all_models,
         "run_only_cluster": run_only_cluster,
         "parallel_training": parallel_training,
+        "train_info": train_info,
+        "silhouette_info": silhouette_info,
     }
 
     cluster_feature_splits = _cluster_diagnostic_feature_splits(split_data, config)
@@ -2629,6 +2829,10 @@ def run_configuration(
             input_window_mean_precipitation_test=(
                 split_data.input_window_mean_test
             ),
+            test_input_precipitation_windows=(
+                split_data.test_input_precipitation_windows
+            ),
+            silhouette_info=silhouette_info,
         )
         tex_path, pdf_path = generate_config_report(
             output_dir,
@@ -2677,6 +2881,7 @@ def run_configuration(
         batch_size=batch_size,
         early_stopping=early_stopping,
         patience=patience,
+        warm_up=warm_up,
         early_stopping_metric=early_stopping_metric,
         lstm_loss_function=lstm_loss_function,
         loss_alpha=loss_alpha,
@@ -2688,6 +2893,7 @@ def run_configuration(
         test_all_models=test_all_models,
         parallel_training=parallel_training,
         target_scaler=split_data.target_scaler,
+        lstm_precipitation_transform=split_data.lstm_precipitation_transform,
     )
 
     result = save_run_outputs(
@@ -2732,6 +2938,9 @@ def run_configuration(
         input_window_mean_precipitation_train=split_data.input_window_mean_train,
         input_window_mean_precipitation_val=split_data.input_window_mean_val,
         input_window_mean_precipitation_test=split_data.input_window_mean_test,
+        test_input_precipitation_windows=split_data.test_input_precipitation_windows,
+        train_info=train_info,
+        silhouette_info=silhouette_info,
     )
     if run_parameters is not None:
         result.update(run_parameters)
@@ -2836,7 +3045,7 @@ def run_experiment(
     lstm_precipitation_normalize: str | None,
     variance_threshold: float | None,
     n_clusters_list: list[int],
-    clustering_algorithm: str,
+    clustering_algorithm: str | Sequence[str],
     n_sigma_values: int,
     use_all_features: bool,
     quantitative_metrics: list[str],
@@ -2872,17 +3081,24 @@ def run_experiment(
     run_only_cluster: bool = False,
     cluster_assignment_method: str = "centroid",
     cluster_assignment_neighbors: int = 5,
+    cluster_only_precipitation: bool = False,
+    plot_cluster_timeseries: bool = True,
+    cluster_timeseries_plot_limit: int | None = None,
     comparative_run: bool = False,
     pivot_parameter: str = "window_size",
     early_stopping_metric: str = "loss",
+    warm_up: int | Sequence[int] = 0,
     loss_alpha: float = 1.0,
     window_stride: int = 1,
     cluster_dissimilarity_metric: str = "euclidean",
     parallel_training: bool = False,
     create_report: bool = True,
+    train_info: bool = True,
+    silhouette_info: bool = True,
+    lstm_precipitation_transform: bool = False,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
-    clustering_algorithm = clustering_algorithm.lower()
+    clustering_algorithms = _normalize_clustering_algorithms(clustering_algorithm)
     manual_clustering_method = normalize_manual_clustering_method(
         manual_clustering_method
     )
@@ -2892,6 +3108,27 @@ def run_experiment(
     cluster_assignment_neighbors = _validate_cluster_assignment_neighbors(
         cluster_assignment_neighbors
     )
+    if not isinstance(cluster_only_precipitation, (bool, np.bool_)):
+        raise ValueError("cluster_only_precipitation must be a boolean.")
+    if not isinstance(plot_cluster_timeseries, (bool, np.bool_)):
+        raise ValueError("plot_cluster_timeseries must be a boolean.")
+    if not isinstance(train_info, (bool, np.bool_)):
+        raise ValueError("train_info must be a boolean.")
+    if not isinstance(silhouette_info, (bool, np.bool_)):
+        raise ValueError("silhouette_info must be a boolean.")
+    lstm_precipitation_transform = _validate_lstm_precipitation_transform(
+        lstm_precipitation_transform
+    )
+    if cluster_timeseries_plot_limit is not None:
+        if (
+            isinstance(cluster_timeseries_plot_limit, (bool, np.bool_))
+            or not isinstance(cluster_timeseries_plot_limit, (int, np.integer))
+            or cluster_timeseries_plot_limit < 0
+        ):
+            raise ValueError(
+                "cluster_timeseries_plot_limit must be a non-negative integer or None."
+            )
+        cluster_timeseries_plot_limit = int(cluster_timeseries_plot_limit)
     window_stride = validate_window_stride(window_stride)
     cluster_dissimilarity_metric = normalize_dissimilarity_metric(
         cluster_dissimilarity_metric
@@ -2946,6 +3183,13 @@ def run_experiment(
             minimum=0.0,
             minimum_inclusive=True,
         ),
+        "warm_up": _normalize_numeric_sweep_values(
+            warm_up,
+            setting_name="warm_up",
+            integer=True,
+            minimum=0.0,
+            minimum_inclusive=True,
+        ),
     }
     clustering_feature_normalize = _normalize_optional_scaler_type(
         clustering_feature_normalize,
@@ -2958,6 +3202,7 @@ def run_experiment(
     if run_only_cluster:
         lstm_feature_normalize = None
         lstm_precipitation_normalize = None
+        lstm_precipitation_transform = False
     else:
         lstm_feature_normalize = _normalize_optional_scaler_type(
             lstm_feature_normalize,
@@ -2982,16 +3227,16 @@ def run_experiment(
                 ) from exc
             if not np.isfinite(loss_alpha) or loss_alpha <= 0:
                 raise ValueError("loss_alpha must be a finite positive number.")
-    if clustering_algorithm not in SUPPORTED_CLUSTERING_ALGORITHMS:
-        supported = ", ".join(SUPPORTED_CLUSTERING_ALGORITHMS)
-        raise ValueError(
-            f"Unsupported clustering algorithm: {clustering_algorithm!r}. "
-            f"Use one of: {supported}"
-        )
     if cluster_dissimilarity_metric == "dtw":
-        if clustering_algorithm in {"kmeans", "kshape"}:
+        unsupported_dtw_algorithms = [
+            algorithm
+            for algorithm in clustering_algorithms
+            if algorithm in {"kmeans", "kshape"}
+        ]
+        if unsupported_dtw_algorithms:
             raise ValueError(
-                f"CLUSTERING_ALGORITHM={clustering_algorithm!r} does not support "
+                "CLUSTERING_ALGORITHM="
+                f"{unsupported_dtw_algorithms!r} does not support "
                 "DTW; "
                 "use 'spectral' or 'manual'."
             )
@@ -3003,7 +3248,7 @@ def run_experiment(
             raise ValueError(
                 "PCA_VARIANCE_THRESHOLD must be None when using DTW."
             )
-    if clustering_algorithm == "kshape" and variance_threshold is not None:
+    if "kshape" in clustering_algorithms and variance_threshold is not None:
         raise ValueError(
             "PCA_VARIANCE_THRESHOLD must be None when using K-Shape."
         )
@@ -3027,6 +3272,11 @@ def run_experiment(
         sweep_name = f"{sweep_name_prefix}_{state}_{station_id}_{timestamp}"
     output_root = Path(output_root)
     sweep_dir = output_root / sweep_name
+    clustering_algorithm_summary = (
+        clustering_algorithms[0]
+        if len(clustering_algorithms) == 1
+        else ", ".join(clustering_algorithms)
+    )
 
     setup_styling(plot_style)
     sweep_dir.mkdir(parents=True, exist_ok=True)
@@ -3040,7 +3290,7 @@ def run_experiment(
     )
     print_info(f"Numeric features: {numeric_cols}", show_console_info)
 
-    if clustering_algorithm.lower() == "spectral":
+    if "spectral" in clustering_algorithms:
         if sigma_values is None:
             print_section("Calculating Sigma Values", show_console_info)
             selected_sigma_values = calculate_sigma_values(
@@ -3083,12 +3333,15 @@ def run_experiment(
         station_id=station_id,
         window_sizes=window_sizes,
         n_clusters_list=n_clusters_list,
-        clustering_algorithm=clustering_algorithm,
+        clustering_algorithm=clustering_algorithms,
         window_stride=window_stride,
         cluster_dissimilarity_metric=cluster_dissimilarity_metric,
         manual_clustering_method=manual_clustering_method,
         cluster_assignment_method=cluster_assignment_method,
         cluster_assignment_neighbors=cluster_assignment_neighbors,
+        cluster_only_precipitation=bool(cluster_only_precipitation),
+        plot_cluster_timeseries=bool(plot_cluster_timeseries),
+        cluster_timeseries_plot_limit=cluster_timeseries_plot_limit,
         training_parameter_values=training_parameter_values,
     )
     if not configurations:
@@ -3126,10 +3379,16 @@ def run_experiment(
                 ),
                 "n_clusters": config.n_clusters,
                 "algorithm": config.algorithm,
+                "clustering_algorithm": config.algorithm,
                 "sigma": config.sigma,
                 "manual_clustering_method": config.manual_clustering_method,
                 "cluster_assignment_method": config.cluster_assignment_method,
                 "cluster_assignment_neighbors": config.cluster_assignment_neighbors,
+                "cluster_only_precipitation": config.cluster_only_precipitation,
+                "plot_cluster_timeseries": config.plot_cluster_timeseries,
+                "cluster_timeseries_plot_limit": (
+                    config.cluster_timeseries_plot_limit
+                ),
                 "pca_variance_threshold": variance_threshold,
                 "pca_for_clustering_only": pca_for_clustering_only,
                 "forecast_horizon": forecast_horizon,
@@ -3140,6 +3399,7 @@ def run_experiment(
                 ),
                 "lstm_feature_normalize": lstm_feature_normalize,
                 "lstm_precipitation_normalize": lstm_precipitation_normalize,
+                "lstm_precipitation_transform": lstm_precipitation_transform,
                 **active_training_parameters,
                 "early_stopping": early_stopping,
                 "early_stopping_metric": early_stopping_metric,
@@ -3151,6 +3411,8 @@ def run_experiment(
                 "test_all_models": test_all_models,
                 "parallel_training": parallel_training,
                 "create_report": create_report,
+                "train_info": bool(train_info),
+                "silhouette_info": bool(silhouette_info),
             }
         )
     resolved_pivot_parameter = None
@@ -3176,7 +3438,16 @@ def run_experiment(
         f"precipitation={clustering_precipitation_normalize or 'none'}",
         show_console_info,
     )
-    if clustering_algorithm == "manual":
+    print_info(
+        "Clustering input: "
+        + (
+            "precipitation time series only"
+            if cluster_only_precipitation
+            else "all selected features"
+        ),
+        show_console_info,
+    )
+    if "manual" in clustering_algorithms:
         print_info(
             f"Manual clustering method: {manual_clustering_method}",
             show_console_info,
@@ -3207,9 +3478,22 @@ def run_experiment(
             f"precipitation/target={lstm_precipitation_normalize or 'none'}",
             show_console_info,
         )
+        print_info(
+            "LSTM precipitation log1p transform: "
+            f"{lstm_precipitation_transform}",
+            show_console_info,
+        )
         print_info(f"LSTM loss: {lstm_loss_function}", show_console_info)
         print_info(
             f"Parallel LSTM training: {parallel_training}",
+            show_console_info,
+        )
+        print_info(
+            f"Train-performance diagnostics: {bool(train_info)}",
+            show_console_info,
+        )
+        print_info(
+            f"Silhouette diagnostics: {bool(silhouette_info)}",
             show_console_info,
         )
         if lstm_loss_function == "weighted_mse_loss":
@@ -3269,7 +3553,7 @@ def run_experiment(
     )
     persist_run_parameters = comparative_run or any(
         len(values) > 1 for values in training_parameter_values.values()
-    )
+    ) or len(clustering_algorithms) > 1
     parallel_configurations = (
         run_only_cluster
         and parallel_training
@@ -3315,6 +3599,7 @@ def run_experiment(
                     batch_size=int(run_parameters["batch_size"]),
                     early_stopping=early_stopping,
                     patience=int(run_parameters["patience"]),
+                    warm_up=int(run_parameters["warm_up"]),
                     early_stopping_metric=early_stopping_metric,
                     lstm_loss_function=lstm_loss_function,
                     loss_alpha=loss_alpha,
@@ -3333,6 +3618,9 @@ def run_experiment(
                     comparative_runs=comparative_runs,
                     parallel_training=parallel_training,
                     create_report=create_report,
+                    train_info=bool(train_info),
+                    silhouette_info=bool(silhouette_info),
+                    lstm_precipitation_transform=lstm_precipitation_transform,
                 ),
             )
         )
@@ -3351,7 +3639,7 @@ def run_experiment(
             station_id=station_id,
             window_sizes=window_sizes,
             n_clusters_list=n_clusters_list,
-            clustering_algorithm=clustering_algorithm,
+            clustering_algorithm=clustering_algorithm_summary,
             manual_clustering_method=manual_clustering_method,
             cluster_assignment_method=cluster_assignment_method,
             cluster_assignment_neighbors=cluster_assignment_neighbors,
@@ -3368,7 +3656,7 @@ def run_experiment(
             station_id=station_id,
             window_sizes=window_sizes,
             n_clusters_list=n_clusters_list,
-            clustering_algorithm=clustering_algorithm,
+            clustering_algorithm=clustering_algorithm_summary,
             manual_clustering_method=manual_clustering_method,
             cluster_assignment_method=cluster_assignment_method,
             cluster_assignment_neighbors=cluster_assignment_neighbors,
