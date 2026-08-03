@@ -30,13 +30,13 @@ PCA_FOR_CLUSTERING_ONLY = True                   # Keep pre-PCA window features 
 CLUSTERING_FEATURE_NORMALIZE = 'standard'         # "standard", "minmax", or None
 CLUSTERING_PRECIPITATION_NORMALIZE = None  # "standard", "minmax", or None
 LSTM_FEATURE_NORMALIZE = 'standard'              # "standard", "minmax", or None
-LSTM_PRECIPITATION_NORMALIZE = 'standard'             # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
-LSTM_PRECIPITATION_TRANSFORM = False             # Apply log(1 + x) before LSTM precipitation normalization
+LSTM_PRECIPITATION_NORMALIZE = None             # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
+LSTM_PRECIPITATION_TRANSFORM = False             # Apply log(1+x) before LSTM precipitation normalization
 
 
 # Clustering parameters
-N_CLUSTERS_LIST = [3]
-CLUSTERING_ALGORITHM = ["kmeans"]      # "kmeans", "kshape", "spectral", "manual", or a list
+N_CLUSTERS_LIST = [7,9]
+CLUSTERING_ALGORITHM = ["kmeans"]                # "kmeans", "kshape", "spectral", "manual", or a list
 CLUSTER_ONLY_PRECIPITATION = False               # Cluster on precipitation time series only
 CLUSTER_DISSIMILARITY_METRIC = "euclidean"       # "euclidean" or "dtw"
 MANUAL_CLUSTERING_METHOD = "rain_level"          # "legacy" or "rain_level"
@@ -53,11 +53,11 @@ PLOT_CLUSTER_TIMESERIES = False                  # Save test-window precipitatio
 CLUSTER_TIMESERIES_PLOT_LIMIT = 3                # None saves every test-window series
 
 # Model hyperparameters. Use LSTM_UNITS_2=None for a single LSTM layer.
-LSTM_UNITS: int | list[int] = 128
-LSTM_UNITS_2: int | None | list[int | None] = [2,4,8,16,32,64,128]
+LSTM_UNITS: int | list[int] = [64]
+LSTM_UNITS_2: int | None | list[int | None] = [32]
 DROPOUT_RATE: float | list[float] = 0.2
 LEARNING_RATE: float | list[float] = 1e-3
-WEIGHT_DECAY: float | list[float] = 1e-4         # Decoupled weight decay used by AdamW
+WEIGHT_DECAY: float | list[float] = [1e-4]         # Decoupled weight decay used by AdamW
 
 # Metrics exported to compact comparison tables
 QUANTITATIVE_METRICS = ["MSE"]
@@ -68,7 +68,7 @@ TEST_ALL_MODELS = False
 # LSTM Loss and metrics
 LSTM_LOSS_FUNCTION = "quantile_weighted_mse"     # Supported: "mean_squared_error", "mae", "huber", "weighted_mse_loss", "quantile_weighted_mse"
 LOSS_ALPHA = 1e-2                                # Positive coefficient used only by weighted_mse_loss
-LOSS_QUANTILES = [0.9]
+LOSS_QUANTILES = [0.95]
 LOSS_QUANTILE_WEIGHTS = "auto"                   # "auto" or one positive weight per quantile bin
 
 # Training settings. Numeric settings may also be lists in a comparative grid.
@@ -76,16 +76,17 @@ EPOCHS: int | list[int] = 300
 BATCH_SIZE: int | list[int] = 4
 EARLY_STOPPING = True
 PATIENCE: int | list[int] = 30
-WARM_UP: int | list[int] = 30
+WARM_UP: int | list[int] = 10
 EARLY_STOPPING_METRIC = "mae"                   # "loss", "mse", "mae", or "r2"
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True                         # Only cluster windows; skip all LSTM training/output.
 PARALEL = True                                   # Parallelize cluster-only configs or cluster LSTMs.
+REQUIRE_GPU = False                               # Fail LSTM training unless TensorFlow detects a GPU.
 CREATE_REPORT = False                            # Compile experiment_report.pdf; .tex is always written.
 
 # Sweep-level comparison between the tests produced by this run.
-COMPARATIVE_RUN = True
-PIVOT_PARAMETER = "LSTM_UNITS_2"         # e.g. "window_size", "learning_rate", "K", "sigma", "CLUSTERING_ALGORITHM"
+COMPARATIVE_RUN = False
+PIVOT_PARAMETER = "WINDOW_SIZES"         # e.g. "window_size", "learning_rate", "K", "sigma", "CLUSTERING_ALGORITHM"
 
 # Train/validation/test split
 TRAIN_RATIO = 0.6
@@ -163,6 +164,7 @@ def main() -> None:
         comparative_run=COMPARATIVE_RUN,
         pivot_parameter=PIVOT_PARAMETER,
         parallel_training=PARALEL,
+        require_gpu=REQUIRE_GPU,
         create_report=False,
     )
 

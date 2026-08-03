@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import inspect
+from contextlib import nullcontext
 from typing import Callable, Sequence, Tuple
 
 import numpy as np
@@ -27,6 +28,40 @@ SUPPORTED_LOSS_FUNCTIONS = (
     "quantile_weighted_mse",
 )
 SUPPORTED_EARLY_STOPPING_METRICS = ("loss", "mse", "mae", "r2")
+
+
+def configure_tensorflow_gpu(
+    require_gpu: bool = True,
+    gpu_index: int = 0,
+) -> str | None:
+    """Configure TensorFlow to use one GPU and return its device name."""
+    if isinstance(require_gpu, (bool, np.bool_)) and not require_gpu:
+        return None
+    if isinstance(gpu_index, (bool, np.bool_)) or int(gpu_index) < 0:
+        raise ValueError("gpu_index must be a non-negative integer.")
+
+    gpus = tf.config.list_physical_devices("GPU")
+    if not gpus:
+        raise RuntimeError(
+            "TensorFlow did not detect a GPU. Install a GPU-enabled TensorFlow "
+            "environment and compatible NVIDIA/CUDA drivers before running the "
+            "LSTM experiment."
+        )
+    if int(gpu_index) >= len(gpus):
+        raise RuntimeError(
+            f"Requested GPU index {gpu_index}, but TensorFlow detected only "
+            f"{len(gpus)} GPU(s): {gpus}"
+        )
+
+    selected_gpu = gpus[int(gpu_index)]
+    try:
+        tf.config.set_visible_devices(selected_gpu, "GPU")
+        tf.config.experimental.set_memory_growth(selected_gpu, True)
+    except RuntimeError:
+        # TensorFlow may already be initialized in this process. In that case,
+        # keep the detected GPU and still place model operations on it below.
+        pass
+    return f"/GPU:{int(gpu_index)}"
 
 
 def early_stopping_monitor(metric: str) -> tuple[str, str]:
@@ -214,7 +249,7 @@ class LSTMPrecipitationPredictor:
     one or more precipitation values after the window.
 
     Architecture:
-    - Input: (sequence_length, n_features) - typically flattened window features
+    - Input: (sequence_length, n_features), with one timestep per window day
     - One or two LSTM layers with dropout for regularization
     - Dense layers for feature transformation
     - Output: One value per configured forecast lead day
@@ -234,6 +269,8 @@ class LSTMPrecipitationPredictor:
         loss_quantile_weights: Sequence[float] | None = None,
         output_units: int = 1,
         loss_alpha: float | None = None,
+        require_gpu: bool = False,
+        gpu_index: int = 0,
     ):
         """Initialize LSTM model.
 
@@ -254,6 +291,9 @@ class LSTMPrecipitationPredictor:
                 `quantile_weighted_mse`.
             output_units: Number of precipitation target columns to predict.
             loss_alpha: Positive alpha coefficient used by `weighted_mse_loss`.
+            require_gpu: When true, fail unless TensorFlow detects a GPU and
+                place model operations on it.
+            gpu_index: GPU index used when `require_gpu` is true.
         """
         if output_units <= 0:
             raise ValueError("output_units must be positive.")
@@ -271,6 +311,7 @@ class LSTMPrecipitationPredictor:
         self.loss_quantile_weights = loss_quantile_weights
         self.loss_alpha = loss_alpha
         self.output_units = output_units
+        self.device_name = configure_tensorflow_gpu(require_gpu, gpu_index)
         self.history = None
         self.model = None
 
@@ -282,59 +323,65 @@ class LSTMPrecipitationPredictor:
 
     def _build_model(self):
         """Build the LSTM model architecture."""
-        recurrent_layers = [
-            layers.Input(shape=self.input_shape),
-            layers.LSTM(
-                self.lstm_units,
-                activation='relu',
-                return_sequences=self.lstm_units_2 is not None,
-            ),
-            layers.Dropout(self.dropout_rate),
-        ]
-        if self.lstm_units_2 is not None:
-            recurrent_layers.extend(
-                [
-                    layers.LSTM(
-                        self.lstm_units_2,
-                        activation='relu',
-                        return_sequences=False,
-                    ),
-                    layers.Dropout(self.dropout_rate),
-                ]
+        device_context = (
+            tf.device(self.device_name)
+            if self.device_name is not None
+            else nullcontext()
+        )
+        with device_context:
+            recurrent_layers = [
+                layers.Input(shape=self.input_shape),
+                layers.LSTM(
+                    self.lstm_units,
+                    activation='tanh',
+                    return_sequences=self.lstm_units_2 is not None,
+                ),
+                layers.Dropout(self.dropout_rate),
+            ]
+            if self.lstm_units_2 is not None:
+                recurrent_layers.extend(
+                    [
+                        layers.LSTM(
+                            self.lstm_units_2,
+                            activation='tanh',
+                            return_sequences=False,
+                        ),
+                        layers.Dropout(self.dropout_rate),
+                    ]
+                )
+
+            model = keras.Sequential([
+                *recurrent_layers,
+                # Dense layers for final prediction
+                layers.Dense(16, activation='relu'),
+                layers.Dropout(self.dropout_rate),
+                layers.Dense(8, activation='relu'),
+
+                # Output layer (one precipitation value per lead day)
+                layers.Dense(
+                    self.output_units,
+                    activation='linear',
+                ),
+            ])
+
+            # Compile model
+            optimizer = _create_adamw_optimizer(
+                learning_rate=self.learning_rate,
+                weight_decay=self.weight_decay,
+            )
+            loss = resolve_loss_function(
+                self.loss_function,
+                quantile_thresholds_mm=self.loss_quantile_thresholds_mm,
+                quantile_weights=self.loss_quantile_weights,
+                weighted_mse_alpha=self.loss_alpha,
+            )
+            model.compile(
+                optimizer=optimizer,
+                loss=loss,
+                metrics=['mae', 'mse', _r2_metric()],
             )
 
-        model = keras.Sequential([
-            *recurrent_layers,
-            # Dense layers for final prediction
-            layers.Dense(16, activation='relu'),
-            layers.Dropout(self.dropout_rate),
-            layers.Dense(8, activation='relu'),
-
-            # Output layer (one precipitation value per lead day)
-            layers.Dense(
-                self.output_units,
-                activation='linear',
-            ),
-        ])
-
-        # Compile model
-        optimizer = _create_adamw_optimizer(
-            learning_rate=self.learning_rate,
-            weight_decay=self.weight_decay,
-        )
-        loss = resolve_loss_function(
-            self.loss_function,
-            quantile_thresholds_mm=self.loss_quantile_thresholds_mm,
-            quantile_weights=self.loss_quantile_weights,
-            weighted_mse_alpha=self.loss_alpha,
-        )
-        model.compile(
-            optimizer=optimizer,
-            loss=loss,
-            metrics=['mae', 'mse', _r2_metric()],
-        )
-
-        self.model = model
+            self.model = model
 
     def fit(
         self,
@@ -400,15 +447,21 @@ class LSTMPrecipitationPredictor:
                 keras.callbacks.EarlyStopping(**early_stopping_kwargs)
             )
 
-        self.history = self.model.fit(
-            X_train,
-            y_train,
-            validation_data=validation_data,
-            epochs=epochs,
-            batch_size=batch_size,
-            verbose=verbose,
-            callbacks=callbacks,
+        device_context = (
+            tf.device(self.device_name)
+            if self.device_name is not None
+            else nullcontext()
         )
+        with device_context:
+            self.history = self.model.fit(
+                X_train,
+                y_train,
+                validation_data=validation_data,
+                epochs=epochs,
+                batch_size=batch_size,
+                verbose=verbose,
+                callbacks=callbacks,
+            )
 
         return self.history
 
@@ -424,7 +477,13 @@ class LSTMPrecipitationPredictor:
         if self.model is None:
             raise RuntimeError("Model has not been built. Call fit() first.")
 
-        return self.model.predict(X, verbose=0)
+        device_context = (
+            tf.device(self.device_name)
+            if self.device_name is not None
+            else nullcontext()
+        )
+        with device_context:
+            return self.model.predict(X, verbose=0)
 
     def evaluate(
         self,
@@ -444,7 +503,13 @@ class LSTMPrecipitationPredictor:
         if self.model is None:
             raise RuntimeError("Model has not been built. Call fit() first.")
 
-        loss, mae, mse = self.model.evaluate(X_test, y_test, verbose=0)
+        device_context = (
+            tf.device(self.device_name)
+            if self.device_name is not None
+            else nullcontext()
+        )
+        with device_context:
+            loss, mae, mse = self.model.evaluate(X_test, y_test, verbose=0)
         rmse = np.sqrt(mse)
 
         return {

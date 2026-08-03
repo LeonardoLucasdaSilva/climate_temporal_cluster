@@ -1179,6 +1179,17 @@ def create_window_split_data(
             "requires the original window time axis."
         )
     if (
+        not run_only_cluster
+        and variance_threshold is not None
+        and not pca_for_clustering_only
+        and not config.cluster_only_precipitation
+    ):
+        raise ValueError(
+            "PCA cannot be applied to LSTM inputs because PCA over flattened "
+            "windows removes the temporal axis. Set "
+            "pca_for_clustering_only=True or disable PCA."
+        )
+    if (
         normalize is not None
         or scaler_type is not None
         or precipitation_scaler_type is not None
@@ -1504,9 +1515,44 @@ def create_window_split_data(
     )
 
 
-def to_lstm_shape(X: np.ndarray) -> np.ndarray:
-    """Represent each flattened window as a one-step LSTM sequence."""
-    return X.reshape(X.shape[0], 1, X.shape[1])
+def to_lstm_shape(X: np.ndarray, sequence_length: int) -> np.ndarray:
+    """Restore flattened windows to ``(samples, timesteps, features)``.
+
+    Sliding windows are flattened only for preprocessing and clustering. Their
+    row-major layout is reversible as long as the original window length is
+    supplied, so the LSTM can consume one recurrent timestep per day.
+    """
+    if (
+        isinstance(sequence_length, (bool, np.bool_))
+        or not isinstance(sequence_length, (int, np.integer))
+        or sequence_length <= 0
+    ):
+        raise ValueError("sequence_length must be a positive integer.")
+
+    array = np.asarray(X)
+    if array.ndim == 3:
+        if array.shape[1] != int(sequence_length):
+            raise ValueError(
+                "Temporal LSTM input has a different timestep count than "
+                "sequence_length."
+            )
+        if array.shape[2] == 0:
+            raise ValueError("Temporal LSTM input must contain features.")
+        return array
+    if array.ndim != 2:
+        raise ValueError(
+            "LSTM input must be a flattened 2D window matrix or a temporal "
+            "3D tensor."
+        )
+
+    flattened_width = int(array.shape[1])
+    if flattened_width == 0 or flattened_width % int(sequence_length) != 0:
+        raise ValueError(
+            "Flattened LSTM feature width must be divisible by "
+            "sequence_length so the temporal axis can be restored."
+        )
+    n_features = flattened_width // int(sequence_length)
+    return array.reshape(array.shape[0], int(sequence_length), n_features)
 
 
 def _cluster_diagnostic_feature_splits(
@@ -2204,6 +2250,7 @@ def _train_single_cluster_model(
     loss_alpha: float,
     target_scaler: FeatureScaler | None,
     lstm_precipitation_transform: bool,
+    require_gpu: bool = False,
     tensorflow_worker_count: int = 1,
 ) -> ClusterTrainingResult:
     """Train one cluster LSTM and return serializable predictions/history."""
@@ -2224,7 +2271,7 @@ def _train_single_cluster_model(
         )
 
     model = LSTMPrecipitationPredictor(
-        input_shape=(1, X_train_lstm.shape[2]),
+        input_shape=tuple(X_train_lstm.shape[1:]),
         lstm_units=lstm_units,
         lstm_units_2=lstm_units_2,
         dropout_rate=dropout_rate,
@@ -2236,6 +2283,7 @@ def _train_single_cluster_model(
         loss_quantile_thresholds_mm=loss_thresholds,
         loss_quantile_weights=loss_weights,
         output_units=int(y_train_by_lead_day_scaled.shape[1]),
+        require_gpu=require_gpu,
     )
     history = model.fit(
         X_train_lstm[tr_mask],
@@ -2319,6 +2367,7 @@ def train_cluster_models(
     c_train: np.ndarray,
     c_val: np.ndarray,
     c_test: np.ndarray,
+    sequence_length: int,
     lstm_units: int,
     lstm_units_2: int | None,
     dropout_rate: float,
@@ -2341,6 +2390,7 @@ def train_cluster_models(
     target_scaler: FeatureScaler | None = None,
     loss_alpha: float = 1.0,
     lstm_precipitation_transform: bool = False,
+    require_gpu: bool = False,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -2353,9 +2403,9 @@ def train_cluster_models(
 ]:
     """Train cluster-specific LSTMs and merge their predictions."""
 
-    X_train_lstm = to_lstm_shape(X_train)
-    X_val_lstm = to_lstm_shape(X_val)
-    X_test_lstm = to_lstm_shape(X_test)
+    X_train_lstm = to_lstm_shape(X_train, sequence_length)
+    X_val_lstm = to_lstm_shape(X_val, sequence_length)
+    X_test_lstm = to_lstm_shape(X_test, sequence_length)
     y_train_by_lead_day = _lead_day_matrix(
         y_train_by_lead_day,
         "y_train_by_lead_day",
@@ -2458,6 +2508,7 @@ def train_cluster_models(
         "loss_alpha": loss_alpha,
         "target_scaler": target_scaler,
         "lstm_precipitation_transform": lstm_precipitation_transform,
+        "require_gpu": require_gpu,
         "tensorflow_worker_count": worker_count if use_parallel else 1,
     }
     if use_parallel:
@@ -2637,6 +2688,7 @@ def run_configuration(
     train_info: bool = True,
     silhouette_info: bool = True,
     lstm_precipitation_transform: bool = False,
+    require_gpu: bool = False,
 ) -> dict[str, float | int | str | None]:
     """Run one sweep configuration and save its artifacts."""
     if run_only_cluster and comparative_runs is not None:
@@ -2715,9 +2767,18 @@ def run_configuration(
         f"val={len(daily_splits.val)}, test={len(daily_splits.test)}",
         show_console_info,
     )
+    lstm_input_info = (
+        ""
+        if run_only_cluster
+        else (
+            f", LSTM input=({config.window_size}, "
+            f"{X_train.shape[1] // config.window_size})"
+        )
+    )
     print_info(
         f"  Windows={split_data.n_windows}, "
-        f"samples={len(split_data.all_targets)}, features={X_train.shape[1]}, "
+        f"samples={len(split_data.all_targets)}, features={X_train.shape[1]}"
+        f"{lstm_input_info}, "
         f"clusters={sorted(np.unique(split_data.all_cluster_labels).tolist())}",
         show_console_info,
     )
@@ -2769,6 +2830,8 @@ def run_configuration(
         },
         "lstm_units": lstm_units,
         "lstm_units_2": lstm_units_2,
+        "lstm_input_shape": [config.window_size, len(feature_columns)],
+        "lstm_activation": "tanh",
         "dense_units": [16, 8],
         "output_units": forecast_horizon,
         "dropout_rate": dropout_rate,
@@ -2872,6 +2935,7 @@ def run_configuration(
         c_train,
         c_val,
         c_test,
+        sequence_length=config.window_size,
         lstm_units=lstm_units,
         lstm_units_2=lstm_units_2,
         dropout_rate=dropout_rate,
@@ -2894,6 +2958,7 @@ def run_configuration(
         parallel_training=parallel_training,
         target_scaler=split_data.target_scaler,
         lstm_precipitation_transform=split_data.lstm_precipitation_transform,
+        require_gpu=require_gpu,
     )
 
     result = save_run_outputs(
@@ -3096,6 +3161,7 @@ def run_experiment(
     train_info: bool = True,
     silhouette_info: bool = True,
     lstm_precipitation_transform: bool = False,
+    require_gpu: bool = True,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
     clustering_algorithms = _normalize_clustering_algorithms(clustering_algorithm)
@@ -3413,6 +3479,7 @@ def run_experiment(
                 "create_report": create_report,
                 "train_info": bool(train_info),
                 "silhouette_info": bool(silhouette_info),
+                "require_gpu": bool(require_gpu),
             }
         )
     resolved_pivot_parameter = None
@@ -3486,6 +3553,10 @@ def run_experiment(
         print_info(f"LSTM loss: {lstm_loss_function}", show_console_info)
         print_info(
             f"Parallel LSTM training: {parallel_training}",
+            show_console_info,
+        )
+        print_info(
+            f"Require TensorFlow GPU: {bool(require_gpu)}",
             show_console_info,
         )
         print_info(
@@ -3621,6 +3692,7 @@ def run_experiment(
                     train_info=bool(train_info),
                     silhouette_info=bool(silhouette_info),
                     lstm_precipitation_transform=lstm_precipitation_transform,
+                    require_gpu=bool(require_gpu),
                 ),
             )
         )

@@ -120,7 +120,7 @@ Change experiment variables in `run_experiment.py`:
   `"centroid"` and `"knn"`; `CLUSTER_ASSIGNMENT_NEIGHBORS` sets K for KNN
 - dimensionality reduction: `PCA_VARIANCE_THRESHOLD` enables PCA and
   `PCA_FOR_CLUSTERING_ONLY` limits it to clustering while preserving the
-  original flattened-window dimensionality for LSTM inputs
+  original `(window_size, n_features)` temporal dimensions for LSTM inputs
 - normalization: `CLUSTERING_FEATURE_NORMALIZE` and
   `CLUSTERING_PRECIPITATION_NORMALIZE` control clustering space, while
   `LSTM_FEATURE_NORMALIZE` and `LSTM_PRECIPITATION_NORMALIZE` control the
@@ -155,7 +155,10 @@ Change experiment variables in `run_experiment.py`:
   negative targets can produce negative weights.
 - training settings: `EPOCHS`, `BATCH_SIZE`, `EARLY_STOPPING`, `PATIENCE`,
   `WARM_UP`, `EARLY_STOPPING_METRIC`, `VERBOSE_TRAINING`, `SHOW_CONSOLE_INFO`,
-  `PARALEL`, `CREATE_REPORT`, `TRAIN_INFO`. Set `TRAIN_INFO = False` to skip
+  `PARALEL`, `REQUIRE_GPU`, `CREATE_REPORT`, `TRAIN_INFO`. With
+  `REQUIRE_GPU = True`, full LSTM runs fail before model training unless
+  TensorFlow detects a GPU, and the model build, fit, prediction, and
+  evaluation calls are placed on `/GPU:0`. Set `TRAIN_INFO = False` to skip
   writing the supervised training diagnostic folder `train_performance/`.
 - data split: `TRAIN_RATIO`, `VAL_RATIO`, `RANDOM_STATE`
 - output and plot styling settings: `OUTPUT_CONFIG`, with details in
@@ -167,8 +170,8 @@ Configure PCA with `PCA_VARIANCE_THRESHOLD` and
 `PCA_FOR_CLUSTERING_ONLY` in `run_experiment.py`.
 
 To run without PCA, set the variance threshold to `None`. Clustering and the
-LSTM keep the original flattened-window dimensionality, each using its own
-configured normalizers:
+LSTM keep the original window information, each using its own configured
+normalizers; the LSTM restores one recurrent timestep per day:
 
 ```python
 PCA_VARIANCE_THRESHOLD = None
@@ -177,21 +180,20 @@ PCA_FOR_CLUSTERING_ONLY = False  # Ignored while PCA is disabled
 
 To apply PCA only during clustering, provide an explained-variance threshold
 between `0` and `1` and enable clustering-only mode. Clustering uses the PCA
-coordinates, while the LSTM inputs retain the original flattened-window
-dimensionality:
+coordinates, while the LSTM inputs retain the original temporal dimensions:
 
 ```python
 PCA_VARIANCE_THRESHOLD = 0.90
 PCA_FOR_CLUSTERING_ONLY = True
 ```
 
-To apply PCA to both clustering and LSTM inputs, provide an explained-variance
-threshold and disable clustering-only mode. Both stages receive the same
-PCA-transformed features:
+PCA over flattened windows cannot be applied to LSTM inputs because it removes
+the daily temporal axis. Disabling clustering-only mode while PCA is enabled
+therefore raises an error:
 
 ```python
 PCA_VARIANCE_THRESHOLD = 0.90
-PCA_FOR_CLUSTERING_ONLY = False
+PCA_FOR_CLUSTERING_ONLY = False  # Invalid for a complete LSTM run
 ```
 
 Change output naming and generated figure styling in `config_output.yaml`.
@@ -270,6 +272,11 @@ configuration folder, and sweep results retain configuration order. In a full
 LSTM run, cluster-specific LSTMs are parallelized within each configuration,
 and TensorFlow threads are limited inside each worker to reduce
 oversubscription. Set `PARALEL = False` for serial execution.
+
+Set `REQUIRE_GPU = True` to require TensorFlow GPU execution for LSTM training.
+If TensorFlow reports no physical GPU, the run raises a clear error instead of
+silently training on CPU. `RUN_ONLY_CLUSTER = True` does not require a GPU
+because no LSTM is trained.
 
 Set `TEST_ALL_MODELS = False` to skip the additional transfer analysis. Set
 `TEST_ALL_MODELS = True` to evaluate every test sample with every trained LSTM
@@ -362,8 +369,10 @@ folder. It contains:
   per test with the ideal identity line and aligned-date RMSE/R2;
 - `03_training_history_comparison.png`: cluster-weighted train and validation
   LOSS, MSE, MAE, and R2 histories;
-- `04_test_metrics_vs_<pivot>_lead_day_XX.png`: common-date MSE, RMSE, MAE, and
-  R2 against the selected pivot;
+- `04_test_metrics_vs_<pivot>_lead_day_XX.png`: common-date RMSE, MAE, and R2
+  against the selected pivot in one row of three panels;
+- `05_overall_test_metrics_vs_<pivot>.png`: RMSE, MAE, and R2 against the
+  selected pivot after pooling all forecast days;
 - `test_predictions_comparison.csv` and `aligned_test_predictions.csv`: full
   and common-date prediction rows;
 - `training_history_comparison.csv`, `comparative_metrics.csv`, and
@@ -375,7 +384,11 @@ folder. It contains:
   Scatter plot, Training History, and Test Metrics sections. The Cluster Step
   section skips silhouette plots for `K = 1` and avoids repeating the same
   fixed cluster diagnostic for every run when `K` is fixed across the sweep,
-  while keeping the run-specific `05_cluster_performance.png` plot per run.
+  while keeping the run-specific `05_cluster_performance.png` plot per run. The
+  Test Metrics section starts with an overall RMSE/MAE/R2 table and plot pooled
+  across all forecast days, followed by a compact lead-day summary table with
+  RMSE, MAE, and R2 grouped across all available D+k values for each compared
+  run. Best values are bolded in every metric table.
 
 When `TEST_ALL_MODELS = True`, each configuration also includes an
 **Análise de transferência entre clusters**. It is explicitly separated from
