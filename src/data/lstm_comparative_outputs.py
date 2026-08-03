@@ -12,6 +12,7 @@ import warnings
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -56,7 +57,7 @@ PIVOT_LABELS = {
     "silhouette_info": "Silhouette diagnostics",
 }
 
-COMPARATIVE_METRICS = ("MSE", "RMSE", "MAE", "R2")
+COMPARATIVE_METRICS = ("RMSE", "MAE", "R2")
 HISTORY_METRICS = ("loss", "mse", "mae", "r2")
 REPORT_COMPARE_TEX_NAME = "report_compare.tex"
 COMPARATIVE_ARTIFACT_NAMES = (
@@ -73,7 +74,13 @@ COMPARATIVE_ARTIFACT_PATTERNS = (
     "01_test_timeseries_comparison_lead_day_*.png",
     "02_test_scatter_comparison_lead_day_*.png",
     "04_test_metrics_vs_*_lead_day_*.png",
+    "05_overall_test_metrics_vs_*.png",
 )
+_OBSERVED_TIMESERIES_COLOR = "#465362"
+_OBSERVED_TIMESERIES_ALPHA = 0.52
+_OBSERVED_TIMESERIES_LINEWIDTH = 1.05
+_PREDICTED_TIMESERIES_ZORDER = 3
+_OBSERVED_TIMESERIES_ZORDER = 2
 
 
 @dataclass(frozen=True)
@@ -204,6 +211,10 @@ def save_comparative_outputs(
     aligned_predictions = align_predictions_on_common_dates(predictions)
     histories = comparative_histories_dataframe(runs, pivot)
     metrics = comparative_metrics_dataframe(aligned_predictions, pivot)
+    overall_metrics = comparative_overall_metrics_dataframe(
+        aligned_predictions,
+        pivot,
+    )
     manifest = comparative_manifest_dataframe(
         runs,
         aligned_predictions,
@@ -249,6 +260,11 @@ def save_comparative_outputs(
         pivot,
     )
     _save_metric_comparison_plots(metrics, comparison_dir, pivot)
+    _save_overall_metric_comparison_plot(
+        overall_metrics,
+        comparison_dir,
+        pivot,
+    )
     _write_comparison_summary(
         comparison_dir,
         pivot,
@@ -262,6 +278,7 @@ def save_comparative_outputs(
         pivot,
         metrics,
         runs,
+        overall_metrics=overall_metrics,
     )
     return comparison_dir
 
@@ -458,6 +475,39 @@ def comparative_metrics_dataframe(
     ).reset_index(drop=True)
 
 
+def comparative_overall_metrics_dataframe(
+    aligned_predictions: pd.DataFrame,
+    pivot_parameter: str,
+) -> pd.DataFrame:
+    """Recalculate metrics over every lead day in the common-date interval."""
+    rows = []
+    for run_name, values in aligned_predictions.groupby("run_name", sort=True):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            metrics = calculate_regression_metrics(
+                values["actual_mm"].to_numpy(dtype=float),
+                values["predicted_mm"].to_numpy(dtype=float),
+            )
+        rows.append(
+            {
+                "run_name": run_name,
+                "pivot_parameter": pivot_parameter,
+                "pivot_value": values["pivot_value"].iloc[0],
+                "n_common_test_points": int(len(values)),
+                "forecast_days": int(values["lead_day"].nunique()),
+                **metrics,
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values(
+        ["pivot_value", "run_name"],
+        key=lambda values: values.map(_pivot_sort_key)
+        if values.name == "pivot_value"
+        else values,
+    ).reset_index(drop=True)
+
+
 def comparative_manifest_dataframe(
     runs: Sequence[ComparativeRunData],
     aligned_predictions: pd.DataFrame,
@@ -508,6 +558,43 @@ def _save_timeseries_comparison_plots(
 ) -> None:
     run_labels = _run_display_labels(aligned_predictions, pivot_parameter)
     palette = _run_palette(aligned_predictions)
+    run_order = _ordered_run_names(aligned_predictions)
+    prediction_linewidth, prediction_alpha = (
+        _timeseries_prediction_aesthetics(len(run_order))
+    )
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            color=_OBSERVED_TIMESERIES_COLOR,
+            linewidth=1.6,
+            alpha=_OBSERVED_TIMESERIES_ALPHA,
+            linestyle=(0, (5, 2)),
+        ),
+        *[
+            Line2D(
+                [0],
+                [0],
+                color=palette[run_name],
+                linewidth=1.6,
+                alpha=prediction_alpha,
+            )
+            for run_name in run_order
+        ],
+    ]
+    legend_labels = [
+        "Observed",
+        *(run_labels[run_name] for run_name in run_order),
+    ]
+    legend_columns = min(len(legend_handles), 4)
+    legend_rows = ceil(len(legend_handles) / legend_columns)
+    legend_order = [
+        row_index * legend_columns + column_index
+        for column_index in range(legend_columns)
+        for row_index in range(legend_rows)
+        if row_index * legend_columns + column_index < len(legend_handles)
+    ]
+
     for lead_day, lead_values in aligned_predictions.groupby("lead_day", sort=True):
         target_dates = np.array(
             sorted(lead_values["target_date"].unique()),
@@ -517,68 +604,122 @@ def _save_timeseries_comparison_plots(
         date_splits = np.array_split(target_dates, effective_splits)
         n_columns = 2 if effective_splits > 1 else 1
         n_rows = ceil(effective_splits / n_columns)
-        fig, axes = plt.subplots(
-            n_rows,
-            n_columns,
-            figsize=(15, 4.6 * n_rows),
-            squeeze=False,
-            sharey=True,
-        )
-        for split_index, (axis, split_dates) in enumerate(
-            zip(axes.flat, date_splits),
-            start=1,
+        figure_height = 4.4 * n_rows + 0.8 + 0.32 * legend_rows
+        with sns.axes_style(
+            "whitegrid",
+            rc={
+                "axes.edgecolor": "#C8D0D9",
+                "axes.facecolor": "#FCFCFD",
+                "grid.color": "#DCE2E8",
+                "grid.linewidth": 0.65,
+            },
         ):
-            split_values = lead_values[
-                lead_values["target_date"].isin(split_dates)
-            ]
-            actual = (
-                split_values.groupby("target_date", as_index=False)["actual_mm"]
-                .first()
-                .sort_values("target_date")
+            fig, axes = plt.subplots(
+                n_rows,
+                n_columns,
+                figsize=(16, figure_height),
+                squeeze=False,
+                sharey=True,
             )
-            axis.plot(
-                actual["target_date"],
-                actual["actual_mm"],
-                color="black",
-                linewidth=2.2,
-                label="Actual",
-                zorder=5,
-            )
-            for run_name, run_values in split_values.groupby("run_name", sort=False):
-                run_values = run_values.sort_values("target_date")
-                axis.plot(
-                    run_values["target_date"],
-                    run_values["predicted_mm"],
-                    linewidth=1.5,
-                    alpha=0.9,
-                    color=palette[run_name],
-                    label=run_labels[run_name],
+            for split_index, (axis, split_dates) in enumerate(
+                zip(axes.flat, date_splits),
+                start=1,
+            ):
+                split_values = lead_values[
+                    lead_values["target_date"].isin(split_dates)
+                ].sort_values(["target_date", "run_name"])
+                actual = (
+                    split_values.groupby("target_date", as_index=False)["actual_mm"]
+                    .first()
+                    .sort_values("target_date")
                 )
-            axis.set_title(
-                f"Common test period - part {split_index} of {effective_splits}"
-            )
-            axis.set_xlabel("Target date")
-            axis.set_ylabel("Precipitation (mm)")
-            axis.xaxis.set_major_locator(mdates.AutoDateLocator())
-            axis.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m/%Y"))
-            axis.tick_params(axis="x", rotation=30)
-            axis.grid(True, alpha=0.3)
-        for axis in axes.flat[len(date_splits) :]:
-            axis.set_visible(False)
-        handles, labels = axes.flat[0].get_legend_handles_labels()
+                sns.lineplot(
+                    data=actual,
+                    x="target_date",
+                    y="actual_mm",
+                    estimator=None,
+                    sort=False,
+                    color=_OBSERVED_TIMESERIES_COLOR,
+                    linewidth=_OBSERVED_TIMESERIES_LINEWIDTH,
+                    alpha=_OBSERVED_TIMESERIES_ALPHA,
+                    linestyle=(0, (5, 2)),
+                    zorder=_OBSERVED_TIMESERIES_ZORDER,
+                    legend=False,
+                    ax=axis,
+                )
+                sns.lineplot(
+                    data=split_values,
+                    x="target_date",
+                    y="predicted_mm",
+                    hue="run_name",
+                    hue_order=run_order,
+                    palette=palette,
+                    estimator=None,
+                    sort=False,
+                    linewidth=prediction_linewidth,
+                    alpha=prediction_alpha,
+                    zorder=_PREDICTED_TIMESERIES_ZORDER,
+                    legend=False,
+                    ax=axis,
+                )
+
+                start_date = pd.Timestamp(actual["target_date"].iloc[0])
+                end_date = pd.Timestamp(actual["target_date"].iloc[-1])
+                axis.set_title(
+                    f"Period {split_index}/{effective_splits} | "
+                    f"{start_date:%d/%m/%Y} - {end_date:%d/%m/%Y}",
+                    fontsize=11,
+                    fontweight="semibold",
+                )
+                axis.set_xlabel("Target date")
+                axis.set_ylabel(
+                    "Precipitation (mm)"
+                    if (split_index - 1) % n_columns == 0
+                    else ""
+                )
+                date_locator = mdates.AutoDateLocator(minticks=3, maxticks=6)
+                axis.xaxis.set_major_locator(date_locator)
+                axis.xaxis.set_major_formatter(
+                    mdates.ConciseDateFormatter(date_locator)
+                )
+                axis.tick_params(axis="x", rotation=15)
+                axis.margins(x=0.01)
+                axis.set_axisbelow(True)
+                axis.grid(False)
+                axis.yaxis.grid(True, alpha=0.55)
+                sns.despine(ax=axis, top=True, right=True)
+
+            if (
+                lead_values[["actual_mm", "predicted_mm"]]
+                .to_numpy(dtype=float)
+                .min()
+                >= 0.0
+            ):
+                axes.flat[0].set_ylim(bottom=0.0)
+            for axis in axes.flat[len(date_splits) :]:
+                axis.set_visible(False)
+
         fig.legend(
-            handles,
-            labels,
+            [legend_handles[index] for index in legend_order],
+            [legend_labels[index] for index in legend_order],
             loc="upper center",
-            bbox_to_anchor=(0.5, 0.99),
-            ncol=min(len(labels), 4),
+            bbox_to_anchor=(0.5, 0.955),
+            ncol=legend_columns,
+            frameon=False,
+            handlelength=2.8,
+            columnspacing=1.5,
+            fontsize=9.5,
         )
         fig.suptitle(
-            f"Test Time-Series Comparison - D+{int(lead_day)}",
-            y=1.02,
-            fontsize=14,
+            f"Test time-series comparison - lead day D+{int(lead_day)}",
+            y=0.995,
+            fontsize=15,
+            fontweight="semibold",
         )
-        fig.tight_layout(rect=(0, 0, 1, 0.94))
+        top_margin_inches = 0.78 + 0.32 * legend_rows
+        fig.tight_layout(
+            rect=(0, 0, 1, 1 - top_margin_inches / figure_height)
+        )
         fig.savefig(
             output_dir
             / f"01_test_timeseries_comparison_lead_day_{int(lead_day):02d}.png",
@@ -715,96 +856,133 @@ def _save_metric_comparison_plots(
     output_dir: Path,
     pivot_parameter: str,
 ) -> None:
+    for lead_day, lead_values in metrics.groupby("lead_day", sort=True):
+        _save_metric_comparison_panels(
+            lead_values,
+            output_dir,
+            pivot_parameter,
+            title=(
+                f"Common-Date Test Metrics vs "
+                f"{PIVOT_LABELS.get(pivot_parameter, pivot_parameter.replace('_', ' ').title())} "
+                f"- D+{int(lead_day)}"
+            ),
+            filename=(
+                f"04_test_metrics_vs_{pivot_parameter}_"
+                f"lead_day_{int(lead_day):02d}.png"
+            ),
+        )
+
+
+def _save_overall_metric_comparison_plot(
+    overall_metrics: pd.DataFrame,
+    output_dir: Path,
+    pivot_parameter: str,
+) -> None:
+    """Save the three-panel metric plot for the complete forecast horizon."""
+    if overall_metrics.empty:
+        return
     pivot_label = PIVOT_LABELS.get(
         pivot_parameter,
         pivot_parameter.replace("_", " ").title(),
     )
-    for lead_day, lead_values in metrics.groupby("lead_day", sort=True):
-        fig, axes = plt.subplots(2, 2, figsize=(13, 9), squeeze=False)
-        pivot_values = sorted(
-            lead_values["pivot_value"].unique(),
-            key=_pivot_sort_key,
+    _save_metric_comparison_panels(
+        overall_metrics,
+        output_dir,
+        pivot_parameter,
+        title=f"Overall Test Metrics Across Forecast Horizon vs {pivot_label}",
+        filename=f"05_overall_test_metrics_vs_{pivot_parameter}.png",
+    )
+
+
+def _save_metric_comparison_panels(
+    metrics: pd.DataFrame,
+    output_dir: Path,
+    pivot_parameter: str,
+    *,
+    title: str,
+    filename: str,
+) -> None:
+    """Render one row of RMSE, MAE, and R2 panels for a metric dataframe."""
+    pivot_label = PIVOT_LABELS.get(
+        pivot_parameter,
+        pivot_parameter.replace("_", " ").title(),
+    )
+    fig, axes = plt.subplots(
+        1,
+        len(COMPARATIVE_METRICS),
+        figsize=(18, 5.5),
+        squeeze=False,
+    )
+    pivot_values = sorted(metrics["pivot_value"].unique(), key=_pivot_sort_key)
+    numeric_pivot = all(_is_number(value) for value in pivot_values)
+    use_log_scale = (
+        pivot_parameter == "learning_rate"
+        and numeric_pivot
+        and all(
+            np.isfinite(float(value)) and float(value) > 0
+            for value in pivot_values
         )
-        numeric_pivot = all(_is_number(value) for value in pivot_values)
-        use_log_scale = (
-            pivot_parameter == "learning_rate"
-            and numeric_pivot
-            and all(
-                np.isfinite(float(value)) and float(value) > 0
-                for value in pivot_values
+    )
+    x_lookup = {
+        value: float(value) if numeric_pivot else index
+        for index, value in enumerate(pivot_values)
+    }
+    individual_x = metrics["pivot_value"].map(x_lookup).to_numpy(dtype=float)
+    for axis, metric_name in zip(axes.flat, COMPARATIVE_METRICS):
+        individual_y = metrics[metric_name].to_numpy(dtype=float)
+        axis.scatter(
+            individual_x,
+            individual_y,
+            s=58,
+            color="#4C78A8",
+            alpha=0.85,
+            label="Compared test",
+            zorder=3,
+        )
+        means = metrics.groupby("pivot_value", sort=False)[metric_name].mean()
+        means = means.reindex(pivot_values)
+        mean_x = np.array([x_lookup[value] for value in pivot_values], dtype=float)
+        axis.plot(
+            mean_x,
+            means.to_numpy(dtype=float),
+            color="#F58518",
+            linewidth=2,
+            marker="o",
+            label="Mean by pivot",
+            zorder=2,
+        )
+        finite_values = metrics[np.isfinite(metrics[metric_name])]
+        if not finite_values.empty:
+            best_index = (
+                finite_values[metric_name].idxmax()
+                if metric_name == "R2"
+                else finite_values[metric_name].idxmin()
             )
-        )
-        x_lookup = {
-            value: float(value) if numeric_pivot else index
-            for index, value in enumerate(pivot_values)
-        }
-        individual_x = lead_values["pivot_value"].map(x_lookup).to_numpy(dtype=float)
-        for axis, metric_name in zip(axes.flat, COMPARATIVE_METRICS):
-            individual_y = lead_values[metric_name].to_numpy(dtype=float)
+            best = finite_values.loc[best_index]
             axis.scatter(
-                individual_x,
-                individual_y,
-                s=58,
-                color="#4C78A8",
-                alpha=0.85,
-                label="Compared test",
-                zorder=3,
+                [x_lookup[best["pivot_value"]]],
+                [best[metric_name]],
+                marker="*",
+                s=180,
+                color="#E45756",
+                edgecolor="black",
+                linewidth=0.6,
+                label="Best",
+                zorder=4,
             )
-            means = lead_values.groupby("pivot_value", sort=False)[metric_name].mean()
-            means = means.reindex(pivot_values)
-            mean_x = np.array([x_lookup[value] for value in pivot_values], dtype=float)
-            axis.plot(
-                mean_x,
-                means.to_numpy(dtype=float),
-                color="#F58518",
-                linewidth=2,
-                marker="o",
-                label="Mean by pivot",
-                zorder=2,
-            )
-            finite_values = lead_values[np.isfinite(lead_values[metric_name])]
-            if not finite_values.empty:
-                best_index = (
-                    finite_values[metric_name].idxmax()
-                    if metric_name == "R2"
-                    else finite_values[metric_name].idxmin()
-                )
-                best = finite_values.loc[best_index]
-                axis.scatter(
-                    [x_lookup[best["pivot_value"]]],
-                    [best[metric_name]],
-                    marker="*",
-                    s=180,
-                    color="#E45756",
-                    edgecolor="black",
-                    linewidth=0.6,
-                    label="Best",
-                    zorder=4,
-                )
-            axis.set_title(metric_name)
-            axis.set_xlabel(pivot_label)
-            axis.set_ylabel(_metric_axis_label(metric_name))
-            if use_log_scale:
-                axis.set_xscale("log")
-            axis.set_xticks([x_lookup[value] for value in pivot_values])
-            axis.set_xticklabels([_format_parameter_value(value) for value in pivot_values])
-            axis.grid(True, alpha=0.3)
-            axis.legend(fontsize=8)
-        fig.suptitle(
-            f"Common-Date Test Metrics vs {pivot_label} - D+{int(lead_day)}",
-            fontsize=14,
-            y=1.01,
-        )
-        fig.tight_layout()
-        fig.savefig(
-            output_dir
-            / (
-                f"04_test_metrics_vs_{pivot_parameter}_"
-                f"lead_day_{int(lead_day):02d}.png"
-            ),
-            bbox_inches="tight",
-        )
-        plt.close(fig)
+        axis.set_title(metric_name)
+        axis.set_xlabel(pivot_label)
+        axis.set_ylabel(_metric_axis_label(metric_name))
+        if use_log_scale:
+            axis.set_xscale("log")
+        axis.set_xticks([x_lookup[value] for value in pivot_values])
+        axis.set_xticklabels([_format_parameter_value(value) for value in pivot_values])
+        axis.grid(True, alpha=0.3)
+        axis.legend(fontsize=8)
+    fig.suptitle(title, fontsize=14, y=1.01)
+    fig.tight_layout()
+    fig.savefig(output_dir / filename, bbox_inches="tight")
+    plt.close(fig)
 
 
 def _write_comparison_summary(
@@ -874,6 +1052,8 @@ def _write_report_compare(
     pivot_parameter: str,
     metrics: pd.DataFrame,
     runs: Sequence[ComparativeRunData],
+    *,
+    overall_metrics: pd.DataFrame | None = None,
 ) -> None:
     """Write a LaTeX report that gathers the comparative plots and tables."""
     (comparison_dir / REPORT_COMPARE_TEX_NAME).write_text(
@@ -883,6 +1063,7 @@ def _write_report_compare(
             pivot_parameter,
             metrics,
             runs,
+            overall_metrics=overall_metrics,
         ),
         encoding="utf-8",
     )
@@ -894,6 +1075,8 @@ def render_report_compare(
     pivot_parameter: str,
     metrics: pd.DataFrame,
     runs: Sequence[ComparativeRunData],
+    *,
+    overall_metrics: pd.DataFrame | None = None,
 ) -> str:
     """Return the LaTeX source for the sweep-level comparative report."""
     comparison_dir = Path(comparison_dir)
@@ -982,7 +1165,19 @@ def render_report_compare(
         lines.append(_unavailable_text("Training-history comparison plot not found."))
 
     lines.append(r"\section{Test Metrics}")
+    if overall_metrics is None:
+        overall_metrics = _fallback_overall_metrics_dataframe(metrics)
+    lines.append(_overall_metric_summary_table(overall_metrics, metrics))
+    lines.append(r"\subsection{overall horizon}")
+    overall_plot = comparison_dir / (
+        f"05_overall_test_metrics_vs_{pivot_parameter}.png"
+    )
+    if overall_plot.exists():
+        lines.extend(_figure_block(comparison_dir, overall_plot))
+    else:
+        lines.append(_unavailable_text("Overall horizon metric plot not found."))
     lines.append(_metrics_latex_table(metrics))
+    lines.append(_lead_day_metric_summary_table(metrics))
     for lead_day in lead_days:
         lines.append(rf"\subsection{{day {lead_day}}}")
         lines.extend(
@@ -1106,7 +1301,6 @@ def _metrics_latex_table(metrics: pd.DataFrame) -> str:
             "n_common_test_dates",
             "start_date",
             "end_date",
-            "MSE",
             "RMSE",
             "MAE",
             "R2",
@@ -1126,6 +1320,11 @@ def _metrics_latex_table(metrics: pd.DataFrame) -> str:
     ]
     header = " & ".join(_latex_table_header(column) for column in header_labels) + r" \\"
     rows = []
+    best_indices = {
+        metric: _best_metric_indices(table, metric, ("lead_day",))
+        for metric in COMPARATIVE_METRICS
+        if metric in table.columns
+    }
     previous_lead_day: object | None = None
     for _, row in table.iterrows():
         current_lead_day = row.get("lead_day")
@@ -1134,21 +1333,271 @@ def _metrics_latex_table(metrics: pd.DataFrame) -> str:
             and current_lead_day != previous_lead_day
         ):
             rows.append(r"\midrule")
-        rows.append(
-            " & ".join(_latex_table_value(row[column]) for column in table.columns)
-            + r" \\"
-        )
+        row_values = []
+        for column in table.columns:
+            value = _latex_table_value(row[column])
+            if column in best_indices and row.name in best_indices[column]:
+                value = _latex_bold_value(value)
+            row_values.append(value)
+        rows.append(" & ".join(row_values) + r" \\")
         previous_lead_day = current_lead_day
     return "\n".join(
         [
             r"\begin{longtable}{" + alignment + r"}",
             r"\caption*{Common-Date Test Metrics}\\",
+            r"\caption*{\textit{Bold values identify the best model for each metric.}}\\",
             r"\toprule",
             header,
             r"\midrule",
             *rows,
             r"\bottomrule",
             r"\end{longtable}",
+        ]
+    )
+
+
+def _overall_metric_summary_table(
+    overall_metrics: pd.DataFrame,
+    lead_day_metrics: pd.DataFrame,
+) -> str:
+    """Render one row per pivot value with metrics pooled across the horizon."""
+    required = {"run_name", "pivot_value", "RMSE", "MAE", "R2"}
+    if overall_metrics.empty or not required.issubset(overall_metrics.columns):
+        return _unavailable_text(
+            "Overall horizon metric summary requires run, pivot, RMSE, MAE, and R2."
+        )
+    pivot_parameter = _metrics_pivot_parameter(
+        overall_metrics
+        if "pivot_parameter" in overall_metrics.columns
+        else lead_day_metrics
+    )
+    pivot_column = _pivot_table_column_label(pivot_parameter)
+    table = (
+        overall_metrics[["run_name", "pivot_value", "RMSE", "MAE", "R2"]]
+        .drop_duplicates()
+        .assign(_sort_key=lambda frame: frame["pivot_value"].map(_pivot_sort_key))
+        .sort_values(["_sort_key", "run_name"])
+    )
+    best_indices = {
+        metric: _best_metric_indices(table, metric)
+        for metric in COMPARATIVE_METRICS
+    }
+    rows = []
+    for _, row in table.iterrows():
+        row_values = []
+        for column in ("run_name", "pivot_value", "RMSE", "MAE", "R2"):
+            value = _latex_table_value(row[column])
+            if column in best_indices and row.name in best_indices[column]:
+                value = _latex_bold_value(value)
+            row_values.append(value)
+        rows.append(
+            " & ".join(row_values)
+            + r" \\"
+        )
+    return "\n".join(
+        [
+            r"\begin{table}[!htbp]",
+            r"\centering",
+            r"\caption*{Overall Test Metrics Across Forecast Horizon}",
+            r"\caption*{\textit{Bold values identify the best model for each metric.}}",
+            r"\begin{tabular}{llrrr}",
+            r"\toprule",
+            " & ".join(
+                _latex_table_header(value)
+                for value in ("Run", pivot_column, "RMSE", "MAE", "R2")
+            )
+            + r" \\",
+            r"\midrule",
+            *rows,
+            r"\bottomrule",
+            r"\end{tabular}",
+            r"\end{table}",
+        ]
+    )
+
+
+def _best_metric_indices(
+    frame: pd.DataFrame,
+    metric: str,
+    group_columns: Sequence[str] = (),
+) -> set[object]:
+    """Return row indices tied for best metric, optionally within groups."""
+    if metric not in frame.columns:
+        return set()
+    groups = (
+        frame.groupby(list(group_columns), dropna=False, sort=False)
+        if group_columns
+        else [(None, frame)]
+    )
+    best_indices: set[object] = set()
+    for _group_key, values in groups:
+        numeric_values = pd.to_numeric(values[metric], errors="coerce")
+        finite_mask = np.isfinite(numeric_values.to_numpy(dtype=float))
+        if not finite_mask.any():
+            continue
+        finite_values = numeric_values[finite_mask]
+        target = (
+            finite_values.max()
+            if metric == "R2"
+            else finite_values.min()
+        )
+        tied = values.index[
+            finite_mask & np.isclose(numeric_values.to_numpy(dtype=float), target)
+        ]
+        best_indices.update(tied.tolist())
+    return best_indices
+
+
+def _latex_bold_value(value: str) -> str:
+    return rf"\textbf{{{value}}}"
+
+
+def _fallback_overall_metrics_dataframe(metrics: pd.DataFrame) -> pd.DataFrame:
+    """Approximate pooled metrics for callers that only provide lead-day rows."""
+    required = {"run_name", "pivot_value", "RMSE", "MAE", "R2"}
+    if metrics.empty or not required.issubset(metrics.columns):
+        return pd.DataFrame()
+    rows = []
+    for (run_name, pivot_value), values in metrics.groupby(
+        ["run_name", "pivot_value"],
+        sort=False,
+    ):
+        weights = (
+            values["n_common_test_dates"].to_numpy(dtype=float)
+            if "n_common_test_dates" in values
+            else np.ones(len(values), dtype=float)
+        )
+        finite_weights = np.isfinite(weights) & (weights > 0)
+        if not finite_weights.any():
+            finite_weights = np.ones(len(values), dtype=bool)
+            weights = np.ones(len(values), dtype=float)
+        selected = values.loc[finite_weights]
+        selected_weights = weights[finite_weights]
+        mse_values = (
+            selected["MSE"].to_numpy(dtype=float)
+            if "MSE" in selected
+            else selected["RMSE"].to_numpy(dtype=float) ** 2
+        )
+        rows.append(
+            {
+                "run_name": run_name,
+                "pivot_parameter": _metrics_pivot_parameter(metrics),
+                "pivot_value": pivot_value,
+                "RMSE": float(
+                    np.sqrt(np.average(mse_values, weights=selected_weights))
+                ),
+                "MAE": float(
+                    np.average(
+                        selected["MAE"].to_numpy(dtype=float),
+                        weights=selected_weights,
+                    )
+                ),
+                "R2": float(
+                    np.average(
+                        selected["R2"].to_numpy(dtype=float),
+                        weights=selected_weights,
+                    )
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _lead_day_metric_summary_table(metrics: pd.DataFrame) -> str:
+    if metrics.empty:
+        return _unavailable_text("Lead-day metric summary is empty.")
+    required = {"run_name", "pivot_value", "lead_day", "RMSE", "MAE", "R2"}
+    if not required.issubset(metrics.columns):
+        return _unavailable_text(
+            "Lead-day metric summary requires run_name, pivot_value, lead_day, "
+            "RMSE, MAE, and R2."
+        )
+
+    pivot_parameter = _metrics_pivot_parameter(metrics)
+    pivot_column = _pivot_table_column_label(pivot_parameter)
+    lead_days = sorted(int(day) for day in metrics["lead_day"].dropna().unique())
+    if not lead_days:
+        return _unavailable_text("Lead-day metric summary has no lead days.")
+
+    run_order = (
+        metrics[["run_name", "pivot_value"]]
+        .drop_duplicates()
+        .assign(_sort_key=lambda frame: frame["pivot_value"].map(_pivot_sort_key))
+        .sort_values(["_sort_key", "run_name"])
+    )
+    lookup = metrics.set_index(["run_name", "lead_day"])
+    metric_names = ("RMSE", "MAE", "R2")
+    best_indices = {
+        metric: _best_metric_indices(metrics, metric, ("lead_day",))
+        for metric in metric_names
+    }
+    alignment = "ll" + "r" * (len(lead_days) * len(metric_names))
+
+    first_header = [
+        "Run",
+        pivot_column,
+        *[
+            rf"\multicolumn{{{len(metric_names)}}}{{c}}{{D+{lead_day}}}"
+            for lead_day in lead_days
+        ],
+    ]
+    second_header = [
+        "",
+        "",
+        *[
+            metric
+            for _lead_day in lead_days
+            for metric in metric_names
+        ],
+    ]
+    rows = []
+    for row in run_order.itertuples(index=False):
+        row_values = [
+            _latex_table_value(row.run_name),
+            _latex_table_value(row.pivot_value),
+        ]
+        for lead_day in lead_days:
+            if (row.run_name, lead_day) not in lookup.index:
+                row_values.extend(["N/A"] * len(metric_names))
+                continue
+            metric_row = lookup.loc[(row.run_name, lead_day)]
+            original_index = metrics[
+                (metrics["run_name"] == row.run_name)
+                & (metrics["lead_day"] == lead_day)
+            ].index[0]
+            for metric in metric_names:
+                value = _latex_table_value(metric_row[metric])
+                if original_index in best_indices[metric]:
+                    value = _latex_bold_value(value)
+                row_values.append(value)
+        rows.append(" & ".join(row_values) + r" \\")
+
+    return "\n".join(
+        [
+            r"\begin{table}[!htbp]",
+            r"\centering",
+            r"\caption*{Lead-Day Metric Summary}",
+            r"\caption*{\textit{Bold values identify the best model for each metric.}}",
+            r"\scriptsize",
+            r"\setlength{\tabcolsep}{3pt}",
+            r"\resizebox{\textwidth}{!}{%",
+            r"\begin{tabular}{" + alignment + r"}",
+            r"\toprule",
+            " & ".join(
+                _latex_table_header(value)
+                if not str(value).startswith(r"\multicolumn")
+                else str(value)
+                for value in first_header
+            )
+            + r" \\",
+            " & ".join(_latex_table_header(value) for value in second_header)
+            + r" \\",
+            r"\midrule",
+            *rows,
+            r"\bottomrule",
+            r"\end{tabular}",
+            r"}",
+            r"\end{table}",
         ]
     )
 
@@ -1163,6 +1612,8 @@ def _test_metrics_column_label(column: str, metrics: pd.DataFrame) -> str:
         return _RawLatex(r"$t_0$")
     if column == "end_date":
         return _RawLatex(r"$t_f$")
+    if column in {"RMSE", "MAE", "R2"}:
+        return column
     return column.replace("_", " ").title()
 
 
@@ -1378,6 +1829,15 @@ def _run_palette(values: pd.DataFrame) -> dict[str, object]:
     run_order = _ordered_run_names(values)
     colors = sns.color_palette("colorblind", n_colors=max(len(run_order), 1))
     return dict(zip(run_order, colors))
+
+
+def _timeseries_prediction_aesthetics(run_count: int) -> tuple[float, float]:
+    """Return line width and alpha that scale with comparison density."""
+    if run_count <= 8:
+        return 1.1, 0.82
+    if run_count <= 16:
+        return 0.95, 0.72
+    return 0.8, 0.62
 
 
 def _ordered_run_names(values: pd.DataFrame) -> list[str]:

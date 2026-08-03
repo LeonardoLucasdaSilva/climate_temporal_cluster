@@ -16,6 +16,8 @@ and cluster-specific LSTM precipitation models.
 - `experiments/`: experiment notes and older runnable scripts.
   - Active LSTM-by-cluster sweep runner:
     `src/methods/lstm_cluster/run_experiment.py`.
+  - `create_meta_analysis_report.py`: cross-experiment MSE/MAE/R2 LaTeX
+    comparison runner for saved LSTM and ARMA artifacts.
   - `temporary_experiments/`: older analysis scripts kept for review.
 - `tests/`: unit tests for loaders and window feature creation.
 - `data/`: local INMET data tree. Treat data files as local-only inputs.

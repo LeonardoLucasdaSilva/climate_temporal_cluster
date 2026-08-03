@@ -35,6 +35,12 @@ Run the ARMA baseline from the project root:
 python run_arma.py
 ```
 
+Create a cross-experiment metric report:
+
+```powershell
+python experiments\create_meta_analysis_report.py <experiment_1> <experiment_2> --output outputs\meta_analysis.tex
+```
+
 Run tests:
 
 ```powershell
@@ -48,6 +54,7 @@ climate_temporal_cluster/
 |-- data/                         # Raw INMET data files
 |-- experiments/
 |   |-- create_beamer_report.py      # Build Beamer decks from saved run plots
+|   |-- create_meta_analysis_report.py # Compare saved experiment metrics
 |   |-- temporary_experiments/     # Older scripts kept for review
 |   `-- experiments.md
 |-- outputs/                       # Generated experiment outputs
@@ -60,6 +67,7 @@ climate_temporal_cluster/
 |   |   |-- arma_outputs.py        # ARMA baseline output writers
 |   |   |-- lstm_outputs.py        # Per-configuration LSTM output writers
 |   |   |-- lstm_comparative_outputs.py # Sweep comparison writer
+|   |   |-- meta_analysis_report.py # Cross-experiment LaTeX metric tables
 |   |   `-- visualize_data.py      # Starter visualization module
 |   |-- methods/
 |   |   |-- arma/
@@ -129,6 +137,7 @@ SILHOUETTE_INFO = True  # Save cluster_diagnostics/08_silhouette_analysis.png
 PLOT_CLUSTER_TIMESERIES = True  # Save per-cluster input precipitation series diagnostics
 CLUSTER_TIMESERIES_PLOT_LIMIT = 100  # None saves every individual test-window series
 PARALEL = True  # Parallel cluster-only configs or cluster LSTMs
+REQUIRE_GPU = True  # Full LSTM runs fail unless TensorFlow detects a GPU
 CREATE_REPORT = False  # Write .tex and skip PDF compilation for faster runs
 WARM_UP = 25  # Epochs before early stopping starts counting
 EARLY_STOPPING_METRIC = "loss"  # "loss", "mse", "mae", or "r2"
@@ -152,12 +161,13 @@ Set `PCA_VARIANCE_THRESHOLD` and `PCA_FOR_CLUSTERING_ONLY` in
 
 | Mode | `PCA_VARIANCE_THRESHOLD` | `PCA_FOR_CLUSTERING_ONLY` | Features used by the LSTM |
 | --- | --- | --- | --- |
-| No PCA | `None` | `False` (ignored) | Original flattened windows |
-| PCA only for clustering | A value between `0` and `1`, such as `0.90` | `True` | Original flattened windows |
-| PCA for clustering and LSTM | A value between `0` and `1`, such as `0.90` | `False` | PCA-transformed windows |
+| No PCA | `None` | `False` (ignored) | Original temporal windows `(window_size, n_features)` |
+| PCA only for clustering | A value between `0` and `1`, such as `0.90` | `True` | Original temporal windows `(window_size, n_features)` |
 
 PCA is always fitted on training windows only. Validation and test windows use
-the fitted training transform. See
+the fitted training transform. PCA over flattened windows cannot feed the LSTM
+because it removes the daily time axis; a complete LSTM run therefore requires
+`PCA_FOR_CLUSTERING_ONLY = True` whenever PCA is enabled. See
 `src/methods/lstm_cluster/lstm_cluster.md` for complete configuration examples.
 
 When `RUN_ONLY_CLUSTER = True`, the run stops after train-only clustering and
@@ -174,6 +184,12 @@ and the number of configurations. Complete LSTM runs dispatch the trainable
 cluster LSTMs within each configuration, capped by CPU cores and the number of
 clusters. Results and sweep summaries retain the original configuration order.
 Set `PARALEL = False` for serial execution.
+
+When `REQUIRE_GPU = True`, complete LSTM runs require a TensorFlow-detected GPU
+and place model build, training, prediction, and evaluation on `/GPU:0`. If no
+GPU is visible to TensorFlow, the run raises an error instead of silently using
+CPU. `RUN_ONLY_CLUSTER = True` does not require a GPU because no LSTM is
+trained.
 
 ### Comparative sweep analysis
 
@@ -248,10 +264,10 @@ For each configuration, the experiment runs these stages:
    previous behavior. `"knn"` uses a majority vote among the
    `CLUSTER_ASSIGNMENT_NEIGHBORS` nearest labeled training windows.
    With `PCA_FOR_CLUSTERING_ONLY = True`, clustering uses PCA coordinates while
-   each LSTM receives the retained pre-PCA flattened window features.
+   each LSTM receives the retained pre-PCA temporal window tensor.
 7. Create one precipitation target column per lead day from D+1 through the
    configured forecast horizon inside each split.
-8. Rebuild the LSTM feature matrix from the original window dimensions, fit
+8. Rebuild the LSTM feature tensor as `(samples, window_size, n_features)`, fit
    `LSTM_FEATURE_NORMALIZE` and `LSTM_PRECIPITATION_NORMALIZE` on training
    rows/windows only, train one LSTM model per training cluster with one output
    unit per lead day, then inverse-transform predictions before metrics and
@@ -328,6 +344,63 @@ Each configuration folder includes `metrics_summary.csv`,
 `test_prediction_by_lead_day.csv`,
 `test_prediction_metrics_by_lead_day.csv`, lead-day error curves, and
 true-vs-predicted plots.
+
+## Cross-Experiment Meta-Analysis
+
+`experiments/create_meta_analysis_report.py` creates one `.tex` report from
+multiple saved LSTM and/or ARMA experiments. Inputs may be sweep folders,
+individual configuration folders, broader output folders, or supported metric
+CSV files:
+
+- `test_prediction_metrics_by_lead_day.csv`
+- `metrics_summary.csv`
+- `sweep_results.csv`
+- `comparative_metrics.csv`
+
+The default raw mode recursively discovers every physical run, including a
+completed configuration that has not yet been aggregated into
+`sweep_results.csv`. Overlapping input roots are deduplicated by the resolved
+run folder, while identical `run_name` values from different experiment
+folders remain separate runs. Pass a `comparative_analysis/` folder or its
+`comparative_metrics.csv` directly to make a separate common-date-aligned
+report; raw and aligned scopes cannot be mixed silently.
+When more than one aligned comparative artifact is supplied, its lead-day
+sets, common date intervals, and common test sample counts must be identical.
+
+The report assigns one global number from `1` through the total number of
+runs. Each metric table places runs in columns under a grouped `Run` header.
+Overall tables use MSE, MAE, and R2; lead-day tables use RMSE, MAE, and R2.
+Long comparisons are split into sequential column blocks without restarting
+the run numbering, and the global best value for each metric is bold. A
+registry maps every number back to its experiment, original run name, test
+sample count, and forecast horizon. When lead-day CSVs are available, the
+overall table uses the configured forecast horizon and the same layout is
+generated separately for every available D+k.
+
+Set `START_DATE` and `END_DATE` in the runner, or pass `--start-date` and
+`--end-date`, to also generate Seaborn time-series comparison plots under
+`meta_analysis_timeseries/` beside the `.tex` file. Each lead-day plot compares
+the shared observed precipitation series with `Run 1`, `Run 2`, ... in the same
+global order used by the registry, restricted to the common target dates inside
+the selected period.
+
+Edit `EXPERIMENT_PATHS`, `OUTPUT_PATH`, `RUNS_PER_TABLE`, `START_DATE`, and
+`END_DATE` at the top of the runner and execute it without arguments, or use
+the CLI:
+
+```powershell
+python experiments\create_meta_analysis_report.py `
+  outputs\dd_mm_yy\lstm_cluster_sweep_RS_A801_<timestamp> `
+  outputs\dd_mm_yy\ARMA\arma_sweep_RS_A801_<timestamp> `
+  --output outputs\meta_analysis.tex `
+  --start-date 2018-10-01 `
+  --end-date 2018-12-31 `
+  --runs-per-table 10
+```
+
+The values are reproduced from saved test artifacts rather than statistically
+pooled. Compare rankings only after checking the registry for differing test
+sizes, forecast horizons, stations, and time intervals.
 
 ## Data Loading
 
@@ -597,10 +670,11 @@ Implementation:
 - `src/models/lstm.py`
 - class: `LSTMPrecipitationPredictor`
 
-The experiment reshapes each flattened window into one LSTM timestep:
+The experiment reverses the temporary flattened representation and restores
+one LSTM timestep per day in the input window:
 
 ```python
-X_lstm = X.reshape(X.shape[0], 1, X.shape[1])
+X_lstm = X.reshape(X.shape[0], window_size, n_features)
 ```
 
 For each cluster, the training loop:
@@ -660,15 +734,24 @@ Series by lead day, Prediction Scatter plot, Training History, and Test Metrics
 sections. Its Cluster Step section skips silhouette plots for `K = 1` and
 deduplicates fixed cluster diagnostics when `K` is fixed across the sweep,
 while keeping `05_cluster_performance.png` for each run. The time-series
-panels show one real curve and one prediction curve per test; the scatter
-panels use shared axes and an identity line; the history panel compares
-cluster-weighted training and validation LOSS, MSE, MAE, and R2; and the metric
-panels compare MSE, RMSE, MAE, and R2 against `PIVOT_PARAMETER` on the
-common-date test interval.
+`01_test_timeseries_comparison_lead_day_XX.png` panels use Seaborn line plots
+for each lead day. The shared observed series is rendered as a subdued,
+semi-transparent reference behind thin, semi-transparent prediction curves
+from a colorblind palette, preserving overlapping temporal behavior across
+the common-date splits. The scatter panels use shared axes and an identity
+line; the history panel compares cluster-weighted training and validation
+LOSS, MSE, MAE, and R2; and the metric panels compare RMSE, MAE, and R2 against
+`PIVOT_PARAMETER` on the common-date test interval in one row of three columns.
+The Test Metrics section starts with an overall RMSE/MAE/R2 table pooled across
+all forecast days for each pivot value, followed by a compact lead-day summary
+table grouped across all available D+k columns for each compared run. It also
+writes an overall three-panel pivot-versus-metric plot and bolds the best model
+for each metric in every report table.
 
 `sweep_summary.txt` records the PCA variance threshold and whether PCA was
-disabled, applied only to clustering, or applied to both clustering and LSTM
-inputs. The best-configuration section also includes these PCA fields.
+disabled or applied only to clustering. Applying flattened-window PCA to LSTM
+inputs is rejected because it would remove the temporal axis. The
+best-configuration section also includes these PCA fields.
 
 Each configuration folder contains:
 
@@ -831,6 +914,7 @@ EARLY_STOPPING_METRIC = "loss"
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True
 PARALEL = False
+REQUIRE_GPU = True
 ```
 
 Set `LSTM_LOSS_FUNCTION = "mean_squared_error"` to keep the standard MSE

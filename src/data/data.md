@@ -20,20 +20,47 @@ It is separate from the root `data/` directory, which stores raw INMET files.
 - `lstm_comparative_outputs.py`: writes the optional sweep-level
   `comparative_analysis/` tree. It aligns same-cluster predictions on the
   intersection of real target dates, recalculates per-lead MSE, RMSE, MAE, and
-  R2 on that common interval, compares shared-scale scatter plots, and combines
-  cluster training histories using training-sample weights up to the last epoch
-  shared by every contributing cluster. Before writing, it removes only its own
-  known stale artifacts from a reused comparison folder. It also exports the
+  R2 on that common interval, and renders one Seaborn
+  `01_test_timeseries_comparison_lead_day_XX.png` panel per lead day. Each panel
+  uses a shared, subdued observed reference behind thin, semi-transparent
+  prediction curves from a colorblind palette so overlapping runs remain
+  legible. It compares shared-scale scatter plots and combines cluster training
+  histories using training-sample weights up to the last epoch shared by every
+  contributing cluster. Before writing, it removes only its own known stale
+  artifacts from a reused comparison folder. It also exports the
   full and aligned prediction rows, tidy histories, comparative metrics,
   manifest, text summary, and `report_compare.tex` used by the plots. The
   LaTeX report starts with a linked table of contents and gathers Cluster Step
   diagnostics plus the comparative Prediction Time Series, Prediction Scatter
-  plot, Training History, and Test Metrics sections. Cluster Step omits
-  silhouette plots for `K = 1` and, when `K` is fixed across the sweep, shows
-  fixed cluster diagnostics only once instead of repeating them for every run;
-  run-specific `05_cluster_performance.png` plots are still shown per run.
+  plot, Training History, and Test Metrics sections. Test Metrics first
+  provides one overall RMSE/MAE/R2 row per pivot value, pooled across all
+  forecast days, followed by the detailed common-date and lead-day tables.
+  The Test Metrics section also writes an overall three-panel plot with pivot
+  on x and RMSE, MAE, and R2 on y, while per-D+k plots show those same metrics
+  in a single row of three columns. Every report table bolds the best model for
+  each metric. Cluster Step omits silhouette plots for `K = 1`
+  and, when `K` is fixed across the sweep, shows fixed cluster diagnostics only
+  once instead of repeating them for every run; run-specific
+  `05_cluster_performance.png` plots are still shown per run.
   Pivot aliases such as `K` and `lr` are normalized here, and invalid dates or
   conflicting real values fail explicitly.
+- `meta_analysis_report.py`: discovers raw LSTM and ARMA metric artifacts across
+  multiple saved experiment trees, deduplicates overlapping roots by physical
+  run path, and creates a standalone LaTeX report for MSE, MAE, and R2 overall
+  metrics plus RMSE, MAE, and R2 lead-day metrics. Report tables place globally
+  numbered runs in columns, split wide comparisons into sequential blocks, bold
+  the best available metric, and repeat the comparison for every available lead
+  day. A longtable registry maps each number to its experiment metadata. When
+  `start_date` or `end_date` is supplied, it also
+  loads saved prediction rows and writes Seaborn
+  `meta_analysis_timeseries/01_meta_timeseries_comparison_lead_day_XX.png`
+  plots that compare observed precipitation with `Run 1`, `Run 2`, and the
+  remaining selected runs on the common target dates in that period. Explicit
+  `comparative_metrics.csv` inputs are supported as a separate
+  common-date-aligned scope and cannot be mixed with raw metrics; multiple
+  aligned sources must share lead days, date intervals, and common sample
+  counts. Overall lead-day values respect the configured forecast horizon
+  rather than assuming the greatest lead present in the CSV.
 - `lstm_outputs.py`: writes experiment metrics, predictions, summaries,
   cross-cluster test model selection reports, and diagnostic plots, including
   chronological actual-versus-predicted and residual plots for each cluster.

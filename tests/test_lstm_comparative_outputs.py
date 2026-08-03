@@ -13,7 +13,10 @@ import pandas as pd
 
 from data.lstm_comparative_outputs import (
     ComparativeRunData,
+    _save_metric_comparison_plots,
+    _save_timeseries_comparison_plots,
     _weighted_history_dataframe,
+    comparative_overall_metrics_dataframe,
     normalize_pivot_parameter,
     render_report_compare,
     save_comparative_outputs,
@@ -366,6 +369,7 @@ class LstmComparativeOutputTests(unittest.TestCase):
                 "02_test_scatter_comparison_lead_day_01.png",
                 "03_training_history_comparison.png",
                 "04_test_metrics_vs_window_size_lead_day_01.png",
+                "05_overall_test_metrics_vs_window_size.png",
                 "test_predictions_comparison.csv",
                 "aligned_test_predictions.csv",
                 "training_history_comparison.csv",
@@ -423,6 +427,10 @@ class LstmComparativeOutputTests(unittest.TestCase):
                 report_tex,
             )
             self.assertIn(
+                "05_overall_test_metrics_vs_window_size.png",
+                report_tex,
+            )
+            self.assertIn(
                 r"\detokenize{01_test_timeseries_comparison_lead_day_01.png}",
                 report_tex,
             )
@@ -440,6 +448,104 @@ class LstmComparativeOutputTests(unittest.TestCase):
             self.assertIn(r"$t_f$", report_tex)
             self.assertNotIn("start\\_date", report_tex)
             self.assertNotIn("end\\_date", report_tex)
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_timeseries_comparison_uses_subdued_seaborn_lines(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_comparative_timeseries_style_test_{uuid.uuid4().hex}"
+        )
+        dates = pd.date_range("2025-01-01", periods=3, freq="D")
+        aligned_predictions = pd.DataFrame(
+            [
+                {
+                    "run_name": run_name,
+                    "pivot_value": window_size,
+                    "lead_day": 1,
+                    "target_date": target_date,
+                    "actual_mm": actual_mm,
+                    "predicted_mm": predicted_mm,
+                }
+                for run_name, window_size, predictions in (
+                    ("w10", 10, [0.2, 1.2, 1.8]),
+                    ("w20", 20, [0.1, 0.8, 2.1]),
+                )
+                for target_date, actual_mm, predicted_mm in zip(
+                    dates,
+                    [0.0, 1.0, 2.0],
+                    predictions,
+                )
+            ]
+        )
+
+        def fake_lineplot(*_args: object, **kwargs: object) -> object:
+            return kwargs["ax"]
+
+        def fake_savefig(
+            _figure: object,
+            path: object,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            Path(path).write_bytes(b"plot")
+
+        try:
+            output_dir.mkdir()
+            with (
+                patch(
+                    "data.lstm_comparative_outputs.sns.lineplot",
+                    side_effect=fake_lineplot,
+                ) as lineplot,
+                patch(
+                    "matplotlib.axes.Axes.plot",
+                    side_effect=AssertionError(
+                        "Comparative time-series curves must use seaborn."
+                    ),
+                ),
+                patch("matplotlib.figure.Figure.savefig", fake_savefig),
+            ):
+                _save_timeseries_comparison_plots(
+                    aligned_predictions,
+                    output_dir,
+                    "window_size",
+                    n_splits=1,
+                )
+
+            self.assertEqual(lineplot.call_count, 2)
+            calls_by_value = {
+                call.kwargs["y"]: call.kwargs
+                for call in lineplot.call_args_list
+            }
+            observed = calls_by_value["actual_mm"]
+            predicted = calls_by_value["predicted_mm"]
+
+            self.assertEqual(len(observed["data"]), 3)
+            self.assertEqual(observed["data"]["target_date"].nunique(), 3)
+            self.assertEqual(len(predicted["data"]), 6)
+            self.assertEqual(predicted["hue"], "run_name")
+            self.assertEqual(predicted["hue_order"], ["w10", "w20"])
+            self.assertIsNone(observed["estimator"])
+            self.assertIsNone(predicted["estimator"])
+            self.assertFalse(observed["sort"])
+            self.assertFalse(predicted["sort"])
+            self.assertNotIn(
+                str(observed["color"]).lower(),
+                {"black", "#000000"},
+            )
+            self.assertLess(observed["linewidth"], 2.2)
+            self.assertLess(predicted["linewidth"], 1.5)
+            self.assertGreater(observed["alpha"], 0.0)
+            self.assertLess(observed["alpha"], 1.0)
+            self.assertGreater(predicted["alpha"], observed["alpha"])
+            self.assertGreater(predicted["zorder"], observed["zorder"])
+            self.assertTrue(
+                (
+                    output_dir
+                    / "01_test_timeseries_comparison_lead_day_01.png"
+                ).exists()
+            )
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
 
@@ -488,10 +594,109 @@ class LstmComparativeOutputTests(unittest.TestCase):
             report_tex,
         )
         self.assertIn("01/01/2025 & 03/01/2025", report_tex)
-        self.assertIn("0.9 \\\\\n\\midrule\n2 & 3", report_tex)
+        self.assertIn(r"\textbf{0.9}", report_tex)
         self.assertNotIn("run\\_name", report_tex)
         self.assertNotIn("start\\_date", report_tex)
         self.assertNotIn("end\\_date", report_tex)
+
+    def test_report_compare_adds_compact_lead_day_metric_summary(self) -> None:
+        metrics = pd.DataFrame(
+            [
+                {
+                    "run_name": run_name,
+                    "pivot_parameter": "window_size",
+                    "pivot_value": pivot_value,
+                    "lead_day": lead_day,
+                    "n_common_test_dates": 3,
+                    "start_date": "2025-01-01",
+                    "end_date": "2025-01-03",
+                    "MSE": float(lead_day),
+                    "RMSE": lead_day + pivot_value / 100.0,
+                    "MAE": lead_day / 10.0,
+                    "R2": 1.0 - lead_day / 10.0,
+                }
+                for run_name, pivot_value in (("w10", 10), ("w20", 20))
+                for lead_day in range(1, 6)
+            ]
+        )
+
+        report_tex = render_report_compare(
+            PROJECT_ROOT / "tests" / "comparative_analysis",
+            PROJECT_ROOT / "tests",
+            "window_size",
+            metrics,
+            [],
+        )
+
+        self.assertIn(r"\caption*{Lead-Day Metric Summary}", report_tex)
+        self.assertIn(
+            r"\caption*{Overall Test Metrics Across Forecast Horizon}",
+            report_tex,
+        )
+        self.assertIn(r"\multicolumn{3}{c}{D+5}", report_tex)
+        self.assertIn("Run & WINDOW\\_SIZE", report_tex)
+        self.assertIn("RMSE & MAE & R2", report_tex)
+        self.assertIn(
+            r"w10 & 10 & \textbf{1.1} & \textbf{0.1} & \textbf{0.9}",
+            report_tex,
+        )
+        self.assertIn("w20 & 20", report_tex)
+        self.assertNotIn(" & MSE", report_tex)
+
+    def test_overall_metrics_pool_all_forecast_days(self) -> None:
+        aligned_predictions = pd.DataFrame(
+            [
+                {
+                    "run_name": "w10",
+                    "pivot_value": 10,
+                    "lead_day": lead_day,
+                    "actual_mm": actual,
+                    "predicted_mm": predicted,
+                }
+                for lead_day, actual, predicted in (
+                    (1, 1.0, 2.0),
+                    (2, 1.0, 1.0),
+                )
+            ]
+        )
+
+        overall = comparative_overall_metrics_dataframe(
+            aligned_predictions,
+            "window_size",
+        )
+
+        self.assertEqual(overall["forecast_days"].tolist(), [2])
+        self.assertEqual(overall["n_common_test_points"].tolist(), [2])
+        self.assertAlmostEqual(overall["RMSE"].iloc[0], 2**-0.5)
+        self.assertAlmostEqual(overall["MAE"].iloc[0], 0.5)
+
+    def test_metric_comparison_plot_has_three_side_by_side_panels(self) -> None:
+        metrics = pd.DataFrame(
+            [
+                {
+                    "lead_day": 1,
+                    "pivot_value": pivot_value,
+                    "RMSE": 1.0,
+                    "MAE": 0.5,
+                    "R2": 0.2,
+                }
+                for pivot_value in (10, 20)
+            ]
+        )
+        saved_figures: list[object] = []
+
+        def fake_savefig(figure: object, *_args: object, **_kwargs: object) -> None:
+            saved_figures.append(figure)
+
+        with patch("matplotlib.figure.Figure.savefig", fake_savefig):
+            _save_metric_comparison_plots(
+                metrics,
+                PROJECT_ROOT / "tests",
+                "window_size",
+            )
+
+        self.assertEqual(len(saved_figures), 1)
+        self.assertEqual(len(saved_figures[0].axes), 3)
 
     def test_history_aggregation_uses_fixed_clusters_and_common_epochs(self) -> None:
         histories = pd.DataFrame(

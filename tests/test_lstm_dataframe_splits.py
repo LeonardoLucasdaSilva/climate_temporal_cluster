@@ -35,6 +35,7 @@ from methods.lstm_cluster.pipeline import (  # noqa: E402
     create_window_split_data,
     quantile_weighted_mse_config,
     split_daily_dataframe,
+    to_lstm_shape,
     validate_early_stopping_metric,
     validate_loss_function,
 )
@@ -223,6 +224,18 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
                         config,
                         ["TEMPERATURA_MAXIMA", "PRECIPITACAO_TOTAL"],
                     )
+
+    def test_to_lstm_shape_restores_window_timesteps(self) -> None:
+        flattened = np.arange(24, dtype=float).reshape(2, 12)
+
+        temporal = to_lstm_shape(flattened, sequence_length=4)
+
+        self.assertEqual(temporal.shape, (2, 4, 3))
+        np.testing.assert_array_equal(temporal, flattened.reshape(2, 4, 3))
+
+    def test_to_lstm_shape_rejects_non_reversible_width(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must be divisible"):
+            to_lstm_shape(np.ones((2, 10)), sequence_length=4)
 
     def test_minmax_scaler_is_fit_only_on_training_rows(self) -> None:
         config = ExperimentConfig(
@@ -1039,7 +1052,7 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             expected_precipitation,
         )
 
-    def test_pca_still_feeds_lstm_when_clustering_only_is_disabled(self) -> None:
+    def test_pca_cannot_remove_the_lstm_temporal_axis(self) -> None:
         config = ExperimentConfig(
             state="RS",
             station_id="A801",
@@ -1049,26 +1062,21 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             sigma=None,
         )
 
-        split_data, _splits = create_window_split_data(
-            self.df,
-            config,
-            ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
-            normalize=True,
-            scaler_type="standard",
-            precipitation_scaler_type=None,
-            variance_threshold=0.9,
-            forecast_horizon=1,
-            train_ratio=0.5,
-            val_ratio=0.2,
-            random_state=42,
-            manual_zero_tolerance=0.0,
-        )
-
-        self.assertEqual(
-            split_data.X_train.shape,
-            split_data.cluster_X_train.shape,
-        )
-        np.testing.assert_allclose(split_data.X_train, split_data.cluster_X_train)
+        with self.assertRaisesRegex(ValueError, "removes the temporal axis"):
+            create_window_split_data(
+                self.df,
+                config,
+                ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
+                normalize=True,
+                scaler_type="standard",
+                precipitation_scaler_type=None,
+                variance_threshold=0.9,
+                forecast_horizon=1,
+                train_ratio=0.5,
+                val_ratio=0.2,
+                random_state=42,
+                manual_zero_tolerance=0.0,
+            )
 
     def test_run_only_cluster_skips_lstm_space_and_target_scaler(self) -> None:
         config = ExperimentConfig(

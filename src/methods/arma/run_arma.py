@@ -17,11 +17,11 @@ STATION_ID = "A801"
 
 # Forecast alignment. WINDOW_SIZES mirrors the LSTM runner's input-window
 # alignment so test samples and lead-day plots can be compared directly.
-WINDOW_SIZES = [5, 10, 15]
+WINDOW_SIZES = [45]
 FORECAST_HORIZON = 5
 
 # Traditional ARMA(p, q) baselines. ARMA is fit as ARIMA(order=(p, 0, q)).
-ARMA_ORDERS = [(1, 1), (2, 1), (5, 1)]
+ARMA_ORDERS = [(1,1),(2,2),(3,1),(4,1),(5,1)]
 TREND = "c"
 CLIP_NEGATIVE_PREDICTIONS = True
 CONTINUE_ON_ERROR = True

@@ -28,6 +28,9 @@ def _load_lstm_module_with_numpy_backend():
     tensorflow_stub.cast = lambda value, dtype: np.asarray(value, dtype=dtype)
     tensorflow_stub.square = np.square
     tensorflow_stub.reduce_mean = np.mean
+    tensorflow_stub.config = types.SimpleNamespace(
+        list_physical_devices=lambda _kind: [],
+    )
     tensorflow_stub.keras = types.SimpleNamespace(
         layers=types.SimpleNamespace(),
     )
@@ -140,11 +143,15 @@ class WeightedMseLossTest(unittest.TestCase):
             self.assertEqual(os.environ["TF_CPP_MIN_LOG_LEVEL"], "2")
             self.assertEqual(os.environ["TF_ENABLE_ONEDNN_OPTS"], "0")
 
+    def test_required_gpu_fails_when_tensorflow_detects_none(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "did not detect a GPU"):
+            self.lstm.configure_tensorflow_gpu(require_gpu=True)
+
     def test_lstm_units_2_none_builds_single_recurrent_layer(self) -> None:
         lstm = _load_lstm_module_with_recording_keras()
 
         predictor = lstm.LSTMPrecipitationPredictor(
-            input_shape=(1, 3),
+            input_shape=(4, 3),
             lstm_units=8,
             lstm_units_2=None,
             loss_function="mse",
@@ -155,13 +162,14 @@ class WeightedMseLossTest(unittest.TestCase):
         ]
         self.assertEqual(len(recurrent_layers), 1)
         self.assertEqual(recurrent_layers[0].args, (8,))
+        self.assertEqual(recurrent_layers[0].kwargs["activation"], "tanh")
         self.assertFalse(recurrent_layers[0].kwargs["return_sequences"])
 
     def test_lstm_units_2_value_builds_two_recurrent_layers(self) -> None:
         lstm = _load_lstm_module_with_recording_keras()
 
         predictor = lstm.LSTMPrecipitationPredictor(
-            input_shape=(1, 3),
+            input_shape=(4, 3),
             lstm_units=8,
             lstm_units_2=4,
             loss_function="mse",
@@ -171,6 +179,8 @@ class WeightedMseLossTest(unittest.TestCase):
             layer for layer in predictor.model.layers if layer.kind == "LSTM"
         ]
         self.assertEqual(len(recurrent_layers), 2)
+        self.assertEqual(recurrent_layers[0].kwargs["activation"], "tanh")
+        self.assertEqual(recurrent_layers[1].kwargs["activation"], "tanh")
         self.assertTrue(recurrent_layers[0].kwargs["return_sequences"])
         self.assertEqual(recurrent_layers[1].args, (4,))
         self.assertFalse(recurrent_layers[1].kwargs["return_sequences"])
