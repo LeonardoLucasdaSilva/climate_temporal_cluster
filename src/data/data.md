@@ -17,6 +17,9 @@ It is separate from the root `data/` directory, which stores raw INMET files.
   `outputs/dd_mm_yy/ARMA/`.
   Its sweep summary records whether independent ARMA order configurations ran
   in parallel.
+- `hyperparam_tuning_outputs.py`: checkpoints trial results for the LSTM
+  random/grid tuner, writes a readable tuning summary, and persists the best
+  validation-selected hyperparameters as JSON.
 - `lstm_comparative_outputs.py`: writes the optional sweep-level
   `comparative_analysis/` tree. It aligns same-cluster predictions on the
   intersection of real target dates, recalculates per-lead MSE, RMSE, MAE, and

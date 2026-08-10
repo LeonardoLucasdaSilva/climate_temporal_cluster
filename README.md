@@ -29,6 +29,12 @@ Run the main experiment from the project root:
 lstm-cluster
 ```
 
+Run budgeted LSTM hyperparameter tuning:
+
+```powershell
+lstm-hyperparam-tuning
+```
+
 Run the ARMA baseline from the project root:
 
 ```powershell
@@ -67,6 +73,7 @@ climate_temporal_cluster/
 |   |   |-- arma_outputs.py        # ARMA baseline output writers
 |   |   |-- lstm_outputs.py        # Per-configuration LSTM output writers
 |   |   |-- lstm_comparative_outputs.py # Sweep comparison writer
+|   |   |-- hyperparam_tuning_outputs.py # Tuning checkpoints and best-trial writer
 |   |   |-- meta_analysis_report.py # Cross-experiment LaTeX metric tables
 |   |   `-- visualize_data.py      # Starter visualization module
 |   |-- methods/
@@ -84,6 +91,7 @@ climate_temporal_cluster/
 |   |   |   `-- cluster_pipeline.py
 |   |   |-- lstm_cluster/
 |   |   |   |-- run_experiment.py  # Main LSTM+Cluster runner
+|   |   |   |-- hiperparam_tuning.py # Random/grid hyperparameter tuner
 |   |   |   |-- config_output.yaml # Output and plot styling settings
 |   |   |   |-- console.py         # Console output helpers
 |   |   |   |-- lstm_cluster.md    # Folder documentation
@@ -292,6 +300,28 @@ For each configuration, the experiment runs these stages:
     and `prediction_timeseries_splits/lead_day_XX/` plots for every forecast
     horizon. Set `TRAIN_INFO = False` to skip this folder. Cluster-only runs do
     not create it.
+
+### Hyperparameter tuning
+
+`src/methods/lstm_cluster/hiperparam_tuning.py` reuses all fixed settings from
+`run_experiment.py` and initially tunes a configurable subset of
+`WINDOW_SIZES`, `N_CLUSTERS_LIST`, `LSTM_UNITS`, `LSTM_UNITS_2`,
+`DROPOUT_RATE`, `LEARNING_RATE`, and `WEIGHT_DECAY`. Remove a key from
+`HYPERPARAMETER_SPACE` to keep that parameter fixed at the first base-runner
+value.
+
+The default random search evaluates up to `N_TRIALS` unique combinations with
+a reproducible seed. Set `SEARCH_STRATEGY = "grid"` for Cartesian order or
+`N_TRIALS = None` for the complete candidate space. The best trial is selected
+only from the configured validation metric: R2 is maximized and the supported
+error metrics are minimized. The normal pipeline still produces test outputs
+for each trial, but those values do not participate in tuning selection.
+
+The generated tuning folder contains `tuning_results.csv`,
+`tuning_summary.txt`, `best_hyperparameters.json`, and an ordinary
+single-configuration sweep folder for every `trial_XXXX`. Results are
+checkpointed after each attempt; with `FAIL_FAST = False`, failed candidates
+are recorded without cancelling the remaining search.
 
 ### Cluster dissimilarity metric
 

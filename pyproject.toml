@@ -21,6 +21,7 @@ climate-cluster = "methods.cluster.cluster_pipeline:main"
 cluster-eigengap = "methods.cluster.eigengap:main"
 cluster-auto-sigma = "methods.cluster.automatic_sigma:main"
 lstm-cluster = "methods.lstm_cluster.run_experiment:main"
+lstm-hyperparam-tuning = "methods.lstm_cluster.hiperparam_tuning:main"
 arma-baseline = "methods.arma.run_arma:main"
 
 [tool.setuptools]

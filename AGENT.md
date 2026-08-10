@@ -16,6 +16,8 @@ and cluster-specific LSTM precipitation models.
 - `experiments/`: experiment notes and older runnable scripts.
   - Active LSTM-by-cluster sweep runner:
     `src/methods/lstm_cluster/run_experiment.py`.
+  - Budgeted LSTM hyperparameter tuning runner:
+    `src/methods/lstm_cluster/hiperparam_tuning.py`.
   - `create_meta_analysis_report.py`: cross-experiment MSE/MAE/R2 LaTeX
     comparison runner for saved LSTM and ARMA artifacts.
   - `temporary_experiments/`: older analysis scripts kept for review.

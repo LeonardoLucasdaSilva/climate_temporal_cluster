@@ -1,6 +1,7 @@
 """Small entry point for the LSTM cluster experiment."""
 
 from __future__ import annotations
+from collections.abc import Mapping
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -15,7 +16,7 @@ STATE = "RS"
 STATION_ID = "A801"
 
 # Data setting
-WINDOW_SIZES = [45]
+WINDOW_SIZES = [15]
 WINDOW_STRIDE = 1                                 # Days between consecutive window starts;
 FORECAST_HORIZON = 5
 USE_ALL_FEATURES = True
@@ -35,7 +36,7 @@ LSTM_PRECIPITATION_TRANSFORM = False             # Apply log(1+x) before LSTM pr
 
 
 # Clustering parameters
-N_CLUSTERS_LIST = [7,9]
+N_CLUSTERS_LIST = [5]
 CLUSTERING_ALGORITHM = ["kmeans"]                # "kmeans", "kshape", "spectral", "manual", or a list
 CLUSTER_ONLY_PRECIPITATION = False               # Cluster on precipitation time series only
 CLUSTER_DISSIMILARITY_METRIC = "euclidean"       # "euclidean" or "dtw"
@@ -53,8 +54,8 @@ PLOT_CLUSTER_TIMESERIES = False                  # Save test-window precipitatio
 CLUSTER_TIMESERIES_PLOT_LIMIT = 3                # None saves every test-window series
 
 # Model hyperparameters. Use LSTM_UNITS_2=None for a single LSTM layer.
-LSTM_UNITS: int | list[int] = [64]
-LSTM_UNITS_2: int | None | list[int | None] = [32]
+LSTM_UNITS: int | list[int] = [1024]
+LSTM_UNITS_2: int | None | list[int | None] = None
 DROPOUT_RATE: float | list[float] = 0.2
 LEARNING_RATE: float | list[float] = 1e-3
 WEIGHT_DECAY: float | list[float] = [1e-4]         # Decoupled weight decay used by AdamW
@@ -68,7 +69,7 @@ TEST_ALL_MODELS = False
 # LSTM Loss and metrics
 LSTM_LOSS_FUNCTION = "quantile_weighted_mse"     # Supported: "mean_squared_error", "mae", "huber", "weighted_mse_loss", "quantile_weighted_mse"
 LOSS_ALPHA = 1e-2                                # Positive coefficient used only by weighted_mse_loss
-LOSS_QUANTILES = [0.95]
+LOSS_QUANTILES = [0.9]
 LOSS_QUANTILE_WEIGHTS = "auto"                   # "auto" or one positive weight per quantile bin
 
 # Training settings. Numeric settings may also be lists in a comparative grid.
@@ -97,76 +98,95 @@ RANDOM_STATE = 42
 OUTPUT_CONFIG = Path(__file__).with_name("config_output.yaml")
 
 
-def main() -> None:
-    """Run the experiment using the variables above and config_output.yaml."""
+def experiment_kwargs(
+    overrides: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Return pipeline arguments from this runner's current settings."""
     sigma_mode = SIGMA_MODE.lower()
     if sigma_mode not in {"auto", "manual"}:
         raise ValueError("SIGMA_MODE must be either 'auto' or 'manual'.")
 
     output_config = load_output_config(OUTPUT_CONFIG)
-    run_experiment(
-        state=STATE,
-        station_id=STATION_ID,
-        window_sizes=WINDOW_SIZES,
-        window_stride=WINDOW_STRIDE,
-        clustering_feature_normalize=CLUSTERING_FEATURE_NORMALIZE,
-        clustering_precipitation_normalize=CLUSTERING_PRECIPITATION_NORMALIZE,
-        lstm_feature_normalize=LSTM_FEATURE_NORMALIZE,
-        lstm_precipitation_normalize=LSTM_PRECIPITATION_NORMALIZE,
-        lstm_precipitation_transform=LSTM_PRECIPITATION_TRANSFORM,
-        variance_threshold=PCA_VARIANCE_THRESHOLD,
-        pca_for_clustering_only=PCA_FOR_CLUSTERING_ONLY,
-        run_only_cluster=RUN_ONLY_CLUSTER,
-        train_info=TRAIN_INFO,
-        silhouette_info=SILHOUETTE_INFO,
-        plot_cluster_timeseries=PLOT_CLUSTER_TIMESERIES,
-        cluster_timeseries_plot_limit=CLUSTER_TIMESERIES_PLOT_LIMIT,
-        n_clusters_list=N_CLUSTERS_LIST,
-        clustering_algorithm=CLUSTERING_ALGORITHM,
-        cluster_only_precipitation=CLUSTER_ONLY_PRECIPITATION,
-        cluster_dissimilarity_metric=CLUSTER_DISSIMILARITY_METRIC,
-        manual_clustering_method=MANUAL_CLUSTERING_METHOD,
-        manual_zero_tolerance=MANUAL_ZERO_TOLERANCE,
-        cluster_assignment_method=CLUSTER_ASSIGNMENT_METHOD,
-        cluster_assignment_neighbors=CLUSTER_ASSIGNMENT_NEIGHBORS,
-        n_sigma_values=N_SIGMA_VALUES,
-        sigma_values=MANUAL_SIGMA_VALUES if sigma_mode == "manual" else None,
-        use_all_features=USE_ALL_FEATURES,
-        forecast_horizon=FORECAST_HORIZON,
-        quantitative_metrics=QUANTITATIVE_METRICS,
-        lstm_units=LSTM_UNITS,
-        lstm_units_2=LSTM_UNITS_2,
-        dropout_rate=DROPOUT_RATE,
-        learning_rate=LEARNING_RATE,
-        test_all_models=TEST_ALL_MODELS,
-        weight_decay=WEIGHT_DECAY,
-        epochs=EPOCHS,
-        batch_size=BATCH_SIZE,
-        early_stopping=EARLY_STOPPING,
-        patience=PATIENCE,
-        warm_up=WARM_UP,
-        early_stopping_metric=EARLY_STOPPING_METRIC,
-        lstm_loss_function=LSTM_LOSS_FUNCTION,
-        loss_alpha=LOSS_ALPHA,
-        loss_quantiles=LOSS_QUANTILES,
-        loss_quantile_weights=LOSS_QUANTILE_WEIGHTS,
-        verbose_training=VERBOSE_TRAINING,
-        train_ratio=TRAIN_RATIO,
-        val_ratio=VAL_RATIO,
-        random_state=RANDOM_STATE,
-        data_root=DATA_ROOT,
-        output_root=output_root_from_config(output_config),
-        sweep_name=output_config.get("sweep_name") or None,
-        sweep_name_prefix=str(output_config.get("sweep_name_prefix", "lstm_cluster_sweep")),
-        timestamp_format=str(output_config.get("timestamp_format", "%Y%m%d_%H%M%S")),
-        plot_style=output_config.get("plot_style"),
-        show_console_info=SHOW_CONSOLE_INFO,
-        comparative_run=COMPARATIVE_RUN,
-        pivot_parameter=PIVOT_PARAMETER,
-        parallel_training=PARALEL,
-        require_gpu=REQUIRE_GPU,
-        create_report=False,
-    )
+    parameters: dict[str, object] = {
+        "state": STATE,
+        "station_id": STATION_ID,
+        "window_sizes": WINDOW_SIZES,
+        "window_stride": WINDOW_STRIDE,
+        "clustering_feature_normalize": CLUSTERING_FEATURE_NORMALIZE,
+        "clustering_precipitation_normalize": CLUSTERING_PRECIPITATION_NORMALIZE,
+        "lstm_feature_normalize": LSTM_FEATURE_NORMALIZE,
+        "lstm_precipitation_normalize": LSTM_PRECIPITATION_NORMALIZE,
+        "lstm_precipitation_transform": LSTM_PRECIPITATION_TRANSFORM,
+        "variance_threshold": PCA_VARIANCE_THRESHOLD,
+        "pca_for_clustering_only": PCA_FOR_CLUSTERING_ONLY,
+        "run_only_cluster": RUN_ONLY_CLUSTER,
+        "train_info": TRAIN_INFO,
+        "silhouette_info": SILHOUETTE_INFO,
+        "plot_cluster_timeseries": PLOT_CLUSTER_TIMESERIES,
+        "cluster_timeseries_plot_limit": CLUSTER_TIMESERIES_PLOT_LIMIT,
+        "n_clusters_list": N_CLUSTERS_LIST,
+        "clustering_algorithm": CLUSTERING_ALGORITHM,
+        "cluster_only_precipitation": CLUSTER_ONLY_PRECIPITATION,
+        "cluster_dissimilarity_metric": CLUSTER_DISSIMILARITY_METRIC,
+        "manual_clustering_method": MANUAL_CLUSTERING_METHOD,
+        "manual_zero_tolerance": MANUAL_ZERO_TOLERANCE,
+        "cluster_assignment_method": CLUSTER_ASSIGNMENT_METHOD,
+        "cluster_assignment_neighbors": CLUSTER_ASSIGNMENT_NEIGHBORS,
+        "n_sigma_values": N_SIGMA_VALUES,
+        "sigma_values": MANUAL_SIGMA_VALUES if sigma_mode == "manual" else None,
+        "use_all_features": USE_ALL_FEATURES,
+        "forecast_horizon": FORECAST_HORIZON,
+        "quantitative_metrics": QUANTITATIVE_METRICS,
+        "lstm_units": LSTM_UNITS,
+        "lstm_units_2": LSTM_UNITS_2,
+        "dropout_rate": DROPOUT_RATE,
+        "learning_rate": LEARNING_RATE,
+        "test_all_models": TEST_ALL_MODELS,
+        "weight_decay": WEIGHT_DECAY,
+        "epochs": EPOCHS,
+        "batch_size": BATCH_SIZE,
+        "early_stopping": EARLY_STOPPING,
+        "patience": PATIENCE,
+        "warm_up": WARM_UP,
+        "early_stopping_metric": EARLY_STOPPING_METRIC,
+        "lstm_loss_function": LSTM_LOSS_FUNCTION,
+        "loss_alpha": LOSS_ALPHA,
+        "loss_quantiles": LOSS_QUANTILES,
+        "loss_quantile_weights": LOSS_QUANTILE_WEIGHTS,
+        "verbose_training": VERBOSE_TRAINING,
+        "train_ratio": TRAIN_RATIO,
+        "val_ratio": VAL_RATIO,
+        "random_state": RANDOM_STATE,
+        "data_root": DATA_ROOT,
+        "output_root": output_root_from_config(output_config),
+        "sweep_name": output_config.get("sweep_name") or None,
+        "sweep_name_prefix": str(
+            output_config.get("sweep_name_prefix", "lstm_cluster_sweep")
+        ),
+        "timestamp_format": str(
+            output_config.get("timestamp_format", "%Y%m%d_%H%M%S")
+        ),
+        "plot_style": output_config.get("plot_style"),
+        "show_console_info": SHOW_CONSOLE_INFO,
+        "comparative_run": COMPARATIVE_RUN,
+        "pivot_parameter": PIVOT_PARAMETER,
+        "parallel_training": PARALEL,
+        "require_gpu": REQUIRE_GPU,
+        "create_report": CREATE_REPORT,
+    }
+    if overrides:
+        unknown = sorted(set(overrides) - set(parameters))
+        if unknown:
+            raise ValueError(
+                "Unknown run_experiment override(s): " + ", ".join(unknown)
+            )
+        parameters.update(overrides)
+    return parameters
+
+
+def main() -> None:
+    """Run the experiment using the variables above and config_output.yaml."""
+    run_experiment(**experiment_kwargs())
 
 
 if __name__ == "__main__":
