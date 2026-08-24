@@ -1,11 +1,31 @@
 import ast
 from datetime import date, datetime
+import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = PROJECT_ROOT / "data" / "inmet"
 OUTPUTS_BASE_DIR = PROJECT_ROOT / "outputs"
+MIKTEX_STATE_DIR = OUTPUTS_BASE_DIR / ".miktex"
 DEFAULT_OUTPUT_DATE_FORMAT = "%d_%m_%y"
+
+
+def miktex_compile_environment() -> dict[str, str]:
+    """Return an environment with shared writable MiKTeX user state."""
+    env = os.environ.copy()
+    user_config = MIKTEX_STATE_DIR / "config"
+    user_data = MIKTEX_STATE_DIR / "data"
+    user_install = MIKTEX_STATE_DIR / "install"
+    for directory in (user_config, user_data, user_install):
+        directory.mkdir(parents=True, exist_ok=True)
+    env.update(
+        {
+            "MIKTEX_USERCONFIG": str(user_config),
+            "MIKTEX_USERDATA": str(user_data),
+            "MIKTEX_USERINSTALL": str(user_install),
+        }
+    )
+    return env
 
 
 def output_date_folder(

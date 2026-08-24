@@ -21,6 +21,54 @@ from methods.lstm_cluster.report import config_summary_list, render_report  # no
 
 
 class LstmReportTests(unittest.TestCase):
+    def test_cluster_only_report_excludes_supervised_sections(self) -> None:
+        output_dir = (
+            PROJECT_ROOT
+            / "tests"
+            / f"_cluster_only_report_test_{uuid.uuid4().hex}"
+        )
+        output_dir.mkdir()
+        pd.DataFrame(
+            [
+                {
+                    "split": "Training",
+                    "cluster": 0,
+                    "n_samples": 3,
+                    "target_mean_mm": 2.0,
+                }
+            ]
+        ).to_csv(output_dir / "cluster_summary.csv", index=False)
+
+        try:
+            tex = render_report(
+                output_dir,
+                {
+                    "state": "RS",
+                    "station_id": "A801",
+                    "run_only_cluster": True,
+                    "forecast_horizon": 5,
+                    "test_all_models": True,
+                    "clustering_feature_normalize": "standard",
+                    "clustering_precipitation_normalize": None,
+                    "lstm_feature_normalize": "minmax",
+                    "lstm_precipitation_normalize": "standard",
+                },
+            )
+
+            self.assertIn("Cluster-only Experiment", tex)
+            self.assertIn(r"\section*{Cluster Configuration}", tex)
+            self.assertIn(r"\section*{Cluster Analysis}", tex)
+            self.assertIn(r"Run Only Cluster", tex)
+            self.assertIn("Cluster Assignment Summary", tex)
+            self.assertNotIn(r"\section*{LSTM Configs}", tex)
+            self.assertNotIn(r"\section*{Metrics}", tex)
+            self.assertNotIn("LSTM Feature Scaler", tex)
+            self.assertNotIn("LSTM Precipitation Scaler", tex)
+            self.assertNotIn("Forecast Horizon", tex)
+            self.assertNotIn("Test Samples on All Models", tex)
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
     def test_report_configuration_includes_selected_scalers(self) -> None:
         tex = render_report(
             PROJECT_ROOT / "tests" / "_missing_report_dir",
@@ -28,14 +76,26 @@ class LstmReportTests(unittest.TestCase):
                 "state": "RS",
                 "station_id": "A801",
                 "window_size": 8,
+                "window_stride": 3,
+                "cluster_dissimilarity_metric": "dtw",
                 "n_clusters": 3,
-                "algorithm": "kmeans",
+                "algorithm": "manual",
+                "manual_clustering_method": "rain_level",
+                "manual_zero_tolerance": 0.0,
+                "cluster_assignment_method": "knn",
+                "cluster_assignment_neighbors": 7,
                 "forecast_horizon": 2,
-                "normalize": True,
-                "scaler_type": "standard",
-                "precipitation_scaler_type": "minmax",
-                "target_scale": "normalized",
+                "clustering_feature_normalize": "standard",
+                "clustering_precipitation_normalize": None,
+                "lstm_feature_normalize": "minmax",
+                "lstm_precipitation_normalize": "standard",
+                "lstm_precipitation_transform": True,
+                "target_scale": "log1p + normalized",
                 "optimizer": "AdamW",
+                "loss": "weighted_mse_loss",
+                "loss_alpha": 0.5,
+                "early_stopping": True,
+                "early_stopping_metric": "r2",
                 "weight_decay": 1e-4,
                 "pca_variance_threshold": 0.9,
                 "pca_for_clustering_only": True,
@@ -43,13 +103,61 @@ class LstmReportTests(unittest.TestCase):
         )
 
         self.assertIn(r"\section*{Configuration}", tex)
-        self.assertIn(r"\item \textbf{Covariate Scaler:} standard", tex)
-        self.assertIn(r"\item \textbf{Precipitation Scaler:} minmax", tex)
-        self.assertIn(r"\item \textbf{LSTM Target Scale:} normalized", tex)
+        self.assertIn(r"\item \textbf{Window Stride:} 3", tex)
+        self.assertIn(
+            r"\item \textbf{Cluster Dissimilarity Metric:} dtw",
+            tex,
+        )
+        self.assertIn(r"\item \textbf{Clustering Feature Scaler:} standard", tex)
+        self.assertIn(r"\item \textbf{Clustering Precipitation Scaler:} none", tex)
+        self.assertIn(r"\item \textbf{LSTM Feature Scaler:} minmax", tex)
+        self.assertIn(r"\item \textbf{LSTM Precipitation Scaler:} standard", tex)
+        self.assertIn(r"\item \textbf{LSTM Precipitation Transform:} log1p", tex)
+        self.assertIn(
+            r"\item \textbf{LSTM Target Scale:} log1p + normalized",
+            tex,
+        )
         self.assertIn(r"\item \textbf{Optimizer:} AdamW", tex)
+        self.assertIn(r"\item \textbf{Loss:} weighted\_mse\_loss", tex)
+        self.assertIn(r"\item \textbf{Loss alpha:} 0.5", tex)
+        self.assertIn(r"\item \textbf{Early stopping metric:} r2", tex)
         self.assertIn(r"\item \textbf{Weight decay:} 0.0001", tex)
         self.assertIn(r"\item \textbf{PCA Variance Threshold:} 0.9", tex)
         self.assertIn(r"\item \textbf{PCA Mode:} clustering only", tex)
+        self.assertIn(r"\item \textbf{Manual Clustering Method:} rain\_level", tex)
+        self.assertNotIn("Manual Zero Tolerance", tex)
+        self.assertIn(r"\item \textbf{Cluster Assignment Method:} knn", tex)
+        self.assertIn(r"\item \textbf{Cluster Assignment Neighbors:} 7", tex)
+
+    def test_report_title_and_feature_list_use_latex_safe_breaks(self) -> None:
+        tex = render_report(
+            PROJECT_ROOT / "tests" / "_missing_report_dir",
+            {
+                "state": "RS",
+                "station_id": "A801",
+                "features": [
+                    "TEMPERATURA_MAXIMA",
+                    "TEMPERATURA_MIN",
+                    "UMIDADE_MAX",
+                    "UMIDADE_MIN",
+                    "PRESSAO_MAX",
+                    "PRESSAO_MIN",
+                ],
+            },
+        )
+
+        self.assertIn(
+            r"\title{LSTM+Cluster Experiment --- RS --- A801}",
+            tex,
+        )
+        self.assertIn(
+            "\\item \\textbf{Features:} "
+            "TEMPERATURA\\_MAXIMA, TEMPERATURA\\_MIN, "
+            "UMIDADE\\_MAX, UMIDADE\\_MIN,\\\\\n"
+            "  PRESSAO\\_MAX, PRESSAO\\_MIN",
+            tex,
+        )
+        self.assertNotIn(r"\textbackslash{}", tex)
 
     def test_config_summary_reports_disabled_and_shared_pca_modes(self) -> None:
         disabled_tex = config_summary_list(
@@ -82,15 +190,18 @@ class LstmReportTests(unittest.TestCase):
         tex = config_summary_list(
             {
                 "window_size": 8,
-                "normalize": False,
-                "scaler_type": "standard",
-                "precipitation_scaler_type": "minmax",
+                "clustering_feature_normalize": None,
+                "clustering_precipitation_normalize": None,
+                "lstm_feature_normalize": None,
+                "lstm_precipitation_normalize": None,
                 "target_scale": "mm",
             }
         )
 
-        self.assertIn(r"\item \textbf{Covariate Scaler:} none", tex)
-        self.assertIn(r"\item \textbf{Precipitation Scaler:} none", tex)
+        self.assertIn(r"\item \textbf{Clustering Feature Scaler:} none", tex)
+        self.assertIn(r"\item \textbf{Clustering Precipitation Scaler:} none", tex)
+        self.assertIn(r"\item \textbf{LSTM Feature Scaler:} none", tex)
+        self.assertIn(r"\item \textbf{LSTM Precipitation Scaler:} none", tex)
         self.assertIn(r"\item \textbf{LSTM Target Scale:} mm", tex)
         self.assertNotIn("standard", tex)
         self.assertNotIn("minmax", tex)

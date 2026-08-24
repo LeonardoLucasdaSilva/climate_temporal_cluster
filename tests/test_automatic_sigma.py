@@ -12,9 +12,40 @@ from methods.cluster.automatic_sigma import (
     generate_sigma_candidates_from_features,
     run_automatic_sigma_selection,
 )
+from methods.tools.sigma_choosing import calculate_sigma_values
 
 
 class AutomaticSigmaTests(unittest.TestCase):
+    def test_sigma_selection_supports_dtw(self) -> None:
+        df = pd.DataFrame({"feature": [0.0, 1.0, 0.0, 2.0, 0.0, 3.0]})
+
+        sigma_values = calculate_sigma_values(
+            df,
+            n_values=2,
+            window_size=2,
+            normalize=False,
+            dissimilarity_metric="DWT",
+        )
+
+        self.assertEqual(sigma_values.shape, (2,))
+        self.assertTrue(np.all(np.isfinite(sigma_values)))
+        self.assertTrue(np.all(sigma_values > 0.0))
+
+    def test_sigma_selection_respects_window_stride(self) -> None:
+        df = pd.DataFrame({"feature": np.arange(5, dtype=float)})
+
+        sigmas = calculate_sigma_values(
+            df,
+            n_values=1,
+            window_size=2,
+            normalize=False,
+            lower_quantile=0.0,
+            upper_quantile=1.0,
+            window_stride=2,
+        )
+
+        np.testing.assert_allclose(sigmas, [np.sqrt(8.0)])
+
     def test_generates_candidates_from_prepared_features(self) -> None:
         features = np.array([[0.0], [1.0], [3.0]])
 

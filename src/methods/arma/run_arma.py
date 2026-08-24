@@ -17,14 +17,15 @@ STATION_ID = "A801"
 
 # Forecast alignment. WINDOW_SIZES mirrors the LSTM runner's input-window
 # alignment so test samples and lead-day plots can be compared directly.
-WINDOW_SIZES = [5, 10, 15]
+WINDOW_SIZES = [45]
 FORECAST_HORIZON = 5
 
 # Traditional ARMA(p, q) baselines. ARMA is fit as ARIMA(order=(p, 0, q)).
-ARMA_ORDERS = [(1, 0), (2, 1), (5, 1)]
+ARMA_ORDERS = [(1,1),(2,2),(3,1),(4,1),(5,1)]
 TREND = "c"
 CLIP_NEGATIVE_PREDICTIONS = True
 CONTINUE_ON_ERROR = True
+PARALEL = True                                    # Run independent ARMA orders in parallel
 
 # Train/validation/test split
 TRAIN_RATIO = 0.6
@@ -55,10 +56,10 @@ def main() -> None:
         trend=TREND,
         clip_negative_predictions=CLIP_NEGATIVE_PREDICTIONS,
         continue_on_error=CONTINUE_ON_ERROR,
+        parallel_orders=PARALEL,
     )
     print(f"ARMA outputs saved to: {sweep_dir}")
 
 
 if __name__ == "__main__":
     main()
-

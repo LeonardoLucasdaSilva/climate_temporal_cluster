@@ -28,11 +28,16 @@ sys.modules["models.lstm"] = stub_lstm
 
 from methods.lstm_cluster.pipeline import (  # noqa: E402
     ExperimentConfig,
+    _assign_held_out_cluster_labels,
     _cluster_window_splits,
     _normalize_precipitation_scaler_type,
+    clipped_predictions,
     create_window_split_data,
     quantile_weighted_mse_config,
     split_daily_dataframe,
+    to_lstm_shape,
+    validate_early_stopping_metric,
+    validate_loss_function,
 )
 
 
@@ -60,6 +65,60 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         self.assertEqual(splits.val["Data"].iloc[0], pd.Timestamp("2025-01-16"))
         self.assertEqual(splits.test["Data"].iloc[0], pd.Timestamp("2025-01-22"))
 
+    def test_validate_early_stopping_metric_accepts_supported_metrics(self) -> None:
+        for metric in ("loss", "mse", "mae", "r2"):
+            self.assertEqual(validate_early_stopping_metric(metric.upper()), metric)
+
+    def test_validate_early_stopping_metric_rejects_unknown_metric(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unsupported early_stopping_metric"):
+            validate_early_stopping_metric("rmse")
+
+    def test_validate_loss_function_accepts_weighted_mse_loss(self) -> None:
+        self.assertEqual(
+            validate_loss_function("WEIGHTED_MSE_LOSS"),
+            "weighted_mse_loss",
+        )
+
+    def test_rain_level_manual_clustering_uses_raw_mean_of_full_input_window(self) -> None:
+        df = pd.DataFrame(
+            {
+                "Data": pd.date_range("2025-01-01", periods=30),
+                "TEMPERATURA_MAXIMA": np.arange(30, dtype=float),
+                "PRECIPITACAO_TOTAL": np.arange(30, dtype=float),
+            }
+        )
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=3,
+            n_clusters=3,
+            algorithm="manual",
+            sigma=None,
+            manual_clustering_method="rain_level",
+        )
+
+        split_data, _splits = create_window_split_data(
+            df,
+            config,
+            ["TEMPERATURA_MAXIMA", "PRECIPITACAO_TOTAL"],
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize="standard",
+            variance_threshold=None,
+            forecast_horizon=1,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+            run_only_cluster=True,
+        )
+
+        # Training window means are 1..12 mm. Equal-width thresholds are
+        # [0, 4, 8, 12], with internal upper bounds assigned to the next bin.
+        np.testing.assert_array_equal(
+            split_data.c_train,
+            [0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2],
+        )
+
     def test_window_splits_do_not_share_raw_rows(self) -> None:
         config = ExperimentConfig(
             state="RS",
@@ -73,9 +132,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             self.df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
-            normalize=True,
-            scaler_type="standard",
-            precipitation_scaler_type="standard",
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize="standard",
+            lstm_feature_normalize="standard",
+            lstm_precipitation_normalize="standard",
             variance_threshold=None,
             forecast_horizon=1,
             train_ratio=0.5,
@@ -105,6 +165,78 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         self.assertFalse(train_rows & test_rows)
         self.assertFalse(val_rows & test_rows)
 
+    def test_window_stride_preserves_original_indices_and_target_alignment(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            window_stride=2,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+        self.assertIn("_w04_s02_k02_", config.name)
+
+        split_data, _splits = create_window_split_data(
+            self.df,
+            config,
+            ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize="standard",
+            lstm_feature_normalize="standard",
+            lstm_precipitation_normalize=None,
+            variance_threshold=None,
+            forecast_horizon=1,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+        )
+
+        self.assertEqual(split_data.i_train.tolist(), [0, 2, 4, 6, 8, 10])
+        self.assertEqual(split_data.i_val.tolist(), [15])
+        self.assertEqual(split_data.i_test.tolist(), [21, 23, 25])
+        np.testing.assert_array_equal(split_data.y_train, [4, 1, 3, 0, 2, 4])
+        np.testing.assert_array_equal(
+            split_data.train_target_dates_by_lead_day[:, 0],
+            pd.date_range("2025-01-05", periods=6, freq="2D").to_numpy(),
+        )
+        self.assertEqual(split_data.n_windows, 11)
+
+    def test_window_stride_must_be_a_positive_integer(self) -> None:
+        for invalid_stride in (0, -1, 1.5, True):
+            with self.subTest(window_stride=invalid_stride):
+                config = ExperimentConfig(
+                    state="RS",
+                    station_id="A801",
+                    window_size=4,
+                    window_stride=invalid_stride,  # type: ignore[arg-type]
+                    n_clusters=2,
+                    algorithm="kmeans",
+                    sigma=None,
+                )
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "window_stride must be a positive integer",
+                ):
+                    create_window_split_data(
+                        self.df,
+                        config,
+                        ["TEMPERATURA_MAXIMA", "PRECIPITACAO_TOTAL"],
+                    )
+
+    def test_to_lstm_shape_restores_window_timesteps(self) -> None:
+        flattened = np.arange(24, dtype=float).reshape(2, 12)
+
+        temporal = to_lstm_shape(flattened, sequence_length=4)
+
+        self.assertEqual(temporal.shape, (2, 4, 3))
+        np.testing.assert_array_equal(temporal, flattened.reshape(2, 4, 3))
+
+    def test_to_lstm_shape_rejects_non_reversible_width(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must be divisible"):
+            to_lstm_shape(np.ones((2, 10)), sequence_length=4)
+
     def test_minmax_scaler_is_fit_only_on_training_rows(self) -> None:
         config = ExperimentConfig(
             state="RS",
@@ -118,9 +250,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             self.df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN"],
-            normalize=True,
-            scaler_type="minmax",
-            precipitation_scaler_type="standard",
+            clustering_feature_normalize="minmax",
+            clustering_precipitation_normalize="standard",
+            lstm_feature_normalize="minmax",
+            lstm_precipitation_normalize="standard",
             variance_threshold=None,
             forecast_horizon=1,
             train_ratio=0.5,
@@ -146,9 +279,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             self.df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
-            normalize=True,
-            scaler_type="standard",
-            precipitation_scaler_type="minmax",
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize="minmax",
+            lstm_feature_normalize="standard",
+            lstm_precipitation_normalize="minmax",
             variance_threshold=None,
             forecast_horizon=2,
             train_ratio=0.5,
@@ -193,9 +327,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             self.df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
-            normalize=True,
-            scaler_type="standard",
-            precipitation_scaler_type=None,
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize=None,
+            lstm_feature_normalize="standard",
+            lstm_precipitation_normalize=None,
             variance_threshold=None,
             forecast_horizon=2,
             train_ratio=0.5,
@@ -233,6 +368,184 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             split_data.y_val_by_lead_day,
         )
 
+    def test_log1p_transform_is_lstm_only_and_precedes_normalization(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+        feature_columns = [
+            "TEMPERATURA_MAXIMA",
+            "TEMPERATURA_MIN",
+            "PRECIPITACAO_TOTAL",
+        ]
+        common_options = {
+            "clustering_feature_normalize": "standard",
+            "clustering_precipitation_normalize": "minmax",
+            "lstm_feature_normalize": "standard",
+            "lstm_precipitation_normalize": "minmax",
+            "variance_threshold": None,
+            "forecast_horizon": 2,
+            "train_ratio": 0.5,
+            "val_ratio": 0.2,
+            "random_state": 42,
+            "manual_zero_tolerance": 0.0,
+        }
+        untransformed, _ = create_window_split_data(
+            self.df,
+            config,
+            feature_columns,
+            lstm_precipitation_transform=False,
+            **common_options,
+        )
+        transformed, _ = create_window_split_data(
+            self.df,
+            config,
+            feature_columns,
+            lstm_precipitation_transform=True,
+            **common_options,
+        )
+
+        np.testing.assert_allclose(
+            transformed.cluster_X_train,
+            untransformed.cluster_X_train,
+        )
+        np.testing.assert_array_equal(transformed.c_train, untransformed.c_train)
+
+        precipitation_positions = np.arange(2, transformed.X_train.shape[1], 3)
+        expected_logged_precipitation = np.log1p(
+            np.array(
+                [
+                    self.df["PRECIPITACAO_TOTAL"]
+                    .iloc[int(start) : int(start) + config.window_size]
+                    .to_numpy(dtype=float)
+                    for start in transformed.i_train
+                ]
+            )
+        ) / np.log1p(4.0)
+        np.testing.assert_allclose(
+            transformed.X_train[:, precipitation_positions],
+            expected_logged_precipitation,
+        )
+        np.testing.assert_allclose(
+            transformed.y_train_by_lead_day_scaled,
+            np.log1p(transformed.y_train_by_lead_day) / np.log1p(4.0),
+        )
+        self.assertTrue(transformed.lstm_precipitation_transform)
+
+    def test_prediction_is_denormalized_before_expm1(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+        split_data, _ = create_window_split_data(
+            self.df,
+            config,
+            ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
+            lstm_feature_normalize="standard",
+            lstm_precipitation_normalize="standard",
+            lstm_precipitation_transform=True,
+            variance_threshold=None,
+            forecast_horizon=2,
+            train_ratio=0.5,
+            val_ratio=0.2,
+        )
+        expected_mm = np.array([[0.0, 1.0], [4.0, 15.0]])
+        scaled_log_predictions = split_data.target_scaler.transform(
+            np.log1p(expected_mm).reshape(-1, 1)
+        ).reshape(expected_mm.shape)
+
+        class FixedPredictionModel:
+            def predict(self, _X: np.ndarray) -> np.ndarray:
+                return scaled_log_predictions
+
+        actual_mm = clipped_predictions(
+            FixedPredictionModel(),
+            np.zeros((len(expected_mm), 1, 1)),
+            target_scaler=split_data.target_scaler,
+            lstm_precipitation_transform=True,
+        )
+
+        np.testing.assert_allclose(actual_mm, expected_mm)
+
+    def test_lstm_precipitation_transform_requires_boolean(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "lstm_precipitation_transform must be a boolean",
+        ):
+            create_window_split_data(
+                self.df,
+                config,
+                ["TEMPERATURA_MAXIMA", "PRECIPITACAO_TOTAL"],
+                lstm_precipitation_transform="log1p",  # type: ignore[arg-type]
+            )
+
+    def test_clustering_scalers_do_not_change_lstm_feature_space(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+        feature_columns = [
+            "TEMPERATURA_MAXIMA",
+            "TEMPERATURA_MIN",
+            "PRECIPITACAO_TOTAL",
+        ]
+        split_data, _splits = create_window_split_data(
+            self.df,
+            config,
+            feature_columns,
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize="minmax",
+            lstm_feature_normalize=None,
+            lstm_precipitation_normalize=None,
+            variance_threshold=None,
+            forecast_horizon=1,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+        )
+        expected_train_windows = np.array(
+            [
+                self.df[feature_columns]
+                .iloc[int(start) : int(start) + config.window_size]
+                .to_numpy(dtype=float)
+                .reshape(-1)
+                for start in split_data.i_train
+            ]
+        )
+
+        np.testing.assert_allclose(split_data.X_train, expected_train_windows)
+        with self.assertRaises(AssertionError):
+            np.testing.assert_allclose(
+                split_data.X_cluster_train,
+                expected_train_windows,
+            )
+        np.testing.assert_allclose(
+            split_data.y_train_by_lead_day_scaled,
+            split_data.y_train_by_lead_day,
+        )
+        self.assertIsNone(split_data.target_scaler)
+
     def test_precipitation_scaler_type_accepts_disabled_values(self) -> None:
         self.assertIsNone(_normalize_precipitation_scaler_type(None))
         self.assertIsNone(_normalize_precipitation_scaler_type("none"))
@@ -254,9 +567,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             self.df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
-            normalize=False,
-            scaler_type="standard",
-            precipitation_scaler_type="standard",
+            clustering_feature_normalize=None,
+            clustering_precipitation_normalize=None,
+            lstm_feature_normalize=None,
+            lstm_precipitation_normalize=None,
             variance_threshold=None,
             forecast_horizon=2,
             train_ratio=0.5,
@@ -277,6 +591,15 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         )
         np.testing.assert_allclose(split_data.current_val, [3.0])
         np.testing.assert_allclose(split_data.current_test, [4.0, 0.0, 1.0, 2.0])
+        np.testing.assert_allclose(
+            split_data.input_window_mean_train,
+            [1.5, 2.5, 2.25, 2.0, 1.75, 1.5, 2.5, 2.25, 2.0, 1.75],
+        )
+        np.testing.assert_allclose(split_data.input_window_mean_val, [1.5])
+        np.testing.assert_allclose(
+            split_data.input_window_mean_test,
+            [2.5, 2.25, 2.0, 1.75],
+        )
         np.testing.assert_allclose(
             split_data.y_train,
             [0.0, 1.0, 2.0, 3.0, 4.0, 0.0, 1.0, 2.0, 3.0, 4.0],
@@ -309,6 +632,24 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             ],
         )
         np.testing.assert_array_equal(
+            split_data.train_target_dates_by_lead_day,
+            np.array(
+                [
+                    ["2025-01-05", "2025-01-06"],
+                    ["2025-01-06", "2025-01-07"],
+                    ["2025-01-07", "2025-01-08"],
+                    ["2025-01-08", "2025-01-09"],
+                    ["2025-01-09", "2025-01-10"],
+                    ["2025-01-10", "2025-01-11"],
+                    ["2025-01-11", "2025-01-12"],
+                    ["2025-01-12", "2025-01-13"],
+                    ["2025-01-13", "2025-01-14"],
+                    ["2025-01-14", "2025-01-15"],
+                ],
+                dtype="datetime64[ns]",
+            ),
+        )
+        np.testing.assert_array_equal(
             split_data.test_target_dates_by_lead_day,
             np.array(
                 [
@@ -323,6 +664,26 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         np.testing.assert_allclose(
             split_data.all_current_precipitation,
             [3.0, 4.0, 0.0, 1.0, 2.0, 3.0, 4.0, 0.0, 1.0, 2.0, 3.0, 4.0, 0.0, 1.0, 2.0],
+        )
+        np.testing.assert_allclose(
+            split_data.all_input_window_mean_precipitation,
+            [
+                1.5,
+                2.5,
+                2.25,
+                2.0,
+                1.75,
+                1.5,
+                2.5,
+                2.25,
+                2.0,
+                1.75,
+                1.5,
+                2.5,
+                2.25,
+                2.0,
+                1.75,
+            ],
         )
         np.testing.assert_allclose(
             split_data.test_targets_by_lead_day,
@@ -350,9 +711,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN"],
-            normalize=False,
-            scaler_type="standard",
-            precipitation_scaler_type="standard",
+            clustering_feature_normalize=None,
+            clustering_precipitation_normalize=None,
+            lstm_feature_normalize=None,
+            lstm_precipitation_normalize=None,
             variance_threshold=None,
             forecast_horizon=2,
             train_ratio=0.5,
@@ -408,11 +770,201 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         np.testing.assert_array_equal(c_val, nearest_labels(X_val))
         np.testing.assert_array_equal(c_test, nearest_labels(X_test))
 
+    def test_held_out_windows_can_use_knn_assignment(self) -> None:
+        X_train = np.array(
+            [
+                [0.0, 0.0],
+                [0.1, 0.0],
+                [100.0, 0.0],
+                [10.0, 0.0],
+                [10.1, 0.0],
+                [10.2, 0.0],
+            ]
+        )
+        X_val = np.array([[0.2, 0.0]])
+        X_test = np.array([[10.15, 0.0]])
+        y_train = np.array([0.0, 0.0, 0.0, 1.0, 2.0, 3.0])
+        base_config = {
+            "state": "RS",
+            "station_id": "A801",
+            "window_size": 2,
+            "n_clusters": 2,
+            "algorithm": "manual",
+            "sigma": None,
+            "cluster_assignment_neighbors": 3,
+        }
+
+        _, centroid_val, _ = _cluster_window_splits(
+            ExperimentConfig(
+                **base_config,
+                cluster_assignment_method="centroid",
+            ),
+            X_train,
+            X_val,
+            X_test,
+            y_train,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+        )
+        _, knn_val, knn_test = _cluster_window_splits(
+            ExperimentConfig(
+                **base_config,
+                cluster_assignment_method="knn",
+            ),
+            X_train,
+            X_val,
+            X_test,
+            y_train,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+        )
+
+        np.testing.assert_array_equal(centroid_val, [1])
+        np.testing.assert_array_equal(knn_val, [0])
+        np.testing.assert_array_equal(knn_test, [1])
+
+    def test_held_out_windows_can_use_dtw_knn_assignment(self) -> None:
+        train_windows = np.array(
+            [
+                [[0.0], [0.0], [1.0]],
+                [[5.0], [5.0], [5.0]],
+            ]
+        )
+        held_out_windows = np.array([[[0.0], [1.0], [1.0]]])
+
+        labels = _assign_held_out_cluster_labels(
+            train_windows.reshape(2, -1),
+            np.array([0, 1]),
+            held_out_windows.reshape(1, -1),
+            method="knn",
+            n_clusters=2,
+            n_neighbors=1,
+            dissimilarity_metric="DWT",
+            train_windows=train_windows,
+            held_out_windows=held_out_windows,
+        )
+
+        np.testing.assert_array_equal(labels, [0])
+
+    def test_dtw_configuration_rejects_pca(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="spectral",
+            sigma=1.0,
+            cluster_dissimilarity_metric="dtw",
+            cluster_assignment_method="knn",
+        )
+
+        with self.assertRaisesRegex(ValueError, "PCA must be disabled"):
+            create_window_split_data(
+                self.df,
+                config,
+                ["TEMPERATURA_MAXIMA", "PRECIPITACAO_TOTAL"],
+                variance_threshold=0.9,
+            )
+
+    def test_spectral_pipeline_uses_dtw_windows_and_knn_routing(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=3,
+            window_stride=2,
+            n_clusters=2,
+            algorithm="spectral",
+            sigma=1.0,
+            cluster_dissimilarity_metric="DWT",
+            cluster_assignment_method="knn",
+            cluster_assignment_neighbors=1,
+        )
+
+        split_data, _splits = create_window_split_data(
+            self.df,
+            config,
+            ["TEMPERATURA_MAXIMA", "PRECIPITACAO_TOTAL"],
+            clustering_feature_normalize="minmax",
+            clustering_precipitation_normalize="minmax",
+            variance_threshold=None,
+            forecast_horizon=1,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            run_only_cluster=True,
+        )
+
+        self.assertEqual(split_data.cluster_windows_train.ndim, 3)
+        self.assertEqual(split_data.cluster_windows_train.shape[1:], (3, 2))
+        self.assertEqual(len(split_data.c_train), len(split_data.i_train))
+        self.assertEqual(len(split_data.c_val), len(split_data.i_val))
+        self.assertEqual(len(split_data.c_test), len(split_data.i_test))
+
+    def test_dtw_configuration_rejects_kmeans(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=2,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+            cluster_dissimilarity_metric="dtw",
+            cluster_assignment_method="knn",
+        )
+        windows = np.array(
+            [
+                [[0.0], [0.0]],
+                [[0.0], [1.0]],
+                [[5.0], [5.0]],
+                [[5.0], [6.0]],
+            ]
+        )
+
+        with self.assertRaisesRegex(ValueError, "kmeans.*does not support"):
+            _cluster_window_splits(
+                config,
+                windows.reshape(4, -1),
+                windows[:1].reshape(1, -1),
+                windows[:1].reshape(1, -1),
+                np.array([0.0, 0.0, 1.0, 1.0]),
+                random_state=42,
+                manual_zero_tolerance=0.0,
+                train_windows=windows,
+                val_windows=windows[:1],
+                test_windows=windows[:1],
+            )
+
+    def test_cluster_assignment_method_is_validated(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=2,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+            cluster_assignment_method="unsupported",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported cluster_assignment_method",
+        ):
+            _cluster_window_splits(
+                config,
+                np.array([[0.0], [0.1], [10.0], [10.1]]),
+                np.array([[0.2]]),
+                np.array([[9.9]]),
+                np.array([0.0, 0.0, 1.0, 1.0]),
+                random_state=42,
+                manual_zero_tolerance=0.0,
+            )
+
     def test_pca_can_be_limited_to_clustering_features(self) -> None:
         config = ExperimentConfig(
             state="RS",
             station_id="A801",
             window_size=4,
+            window_stride=2,
             n_clusters=2,
             algorithm="kmeans",
             sigma=None,
@@ -422,9 +974,10 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             self.df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
-            normalize=True,
-            scaler_type="standard",
-            precipitation_scaler_type=None,
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize=None,
+            lstm_feature_normalize=None,
+            lstm_precipitation_normalize=None,
             variance_threshold=0.9,
             forecast_horizon=1,
             train_ratio=0.5,
@@ -435,9 +988,19 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
         )
 
         original_feature_count = config.window_size * 3
+        self.assertEqual(split_data.i_train.tolist(), [0, 2, 4, 6, 8, 10])
         self.assertEqual(split_data.X_train.shape[1], original_feature_count)
         self.assertEqual(split_data.X_val.shape[1], original_feature_count)
         self.assertEqual(split_data.X_test.shape[1], original_feature_count)
+        expected_first_window = (
+            self.df[
+                ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"]
+            ]
+            .iloc[: config.window_size]
+            .to_numpy(dtype=float)
+            .reshape(-1)
+        )
+        np.testing.assert_allclose(split_data.X_train[0], expected_first_window)
         self.assertLess(
             split_data.cluster_X_train.shape[1],
             original_feature_count,
@@ -451,7 +1014,71 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             split_data.cluster_X_test.shape[1],
         )
 
-    def test_pca_still_feeds_lstm_when_clustering_only_is_disabled(self) -> None:
+    def test_cluster_only_precipitation_uses_one_series_for_clustering(
+        self,
+    ) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+            cluster_only_precipitation=True,
+        )
+
+        split_data, _splits = create_window_split_data(
+            self.df,
+            config,
+            ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
+            clustering_feature_normalize=None,
+            clustering_precipitation_normalize=None,
+            lstm_feature_normalize=None,
+            lstm_precipitation_normalize=None,
+            variance_threshold=None,
+            forecast_horizon=1,
+            train_ratio=0.5,
+            val_ratio=0.2,
+            random_state=42,
+            manual_zero_tolerance=0.0,
+        )
+
+        self.assertEqual(split_data.cluster_windows_train.shape[2], 1)
+        self.assertEqual(split_data.cluster_X_train.shape[1], config.window_size)
+        self.assertEqual(split_data.X_train.shape[1], config.window_size * 3)
+        expected_precipitation = self.df["PRECIPITACAO_TOTAL"].iloc[:4]
+        np.testing.assert_allclose(
+            split_data.cluster_windows_train[0, :, 0],
+            expected_precipitation,
+        )
+
+    def test_pca_cannot_remove_the_lstm_temporal_axis(self) -> None:
+        config = ExperimentConfig(
+            state="RS",
+            station_id="A801",
+            window_size=4,
+            n_clusters=2,
+            algorithm="kmeans",
+            sigma=None,
+        )
+
+        with self.assertRaisesRegex(ValueError, "removes the temporal axis"):
+            create_window_split_data(
+                self.df,
+                config,
+                ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
+                normalize=True,
+                scaler_type="standard",
+                precipitation_scaler_type=None,
+                variance_threshold=0.9,
+                forecast_horizon=1,
+                train_ratio=0.5,
+                val_ratio=0.2,
+                random_state=42,
+                manual_zero_tolerance=0.0,
+            )
+
+    def test_run_only_cluster_skips_lstm_space_and_target_scaler(self) -> None:
         config = ExperimentConfig(
             state="RS",
             station_id="A801",
@@ -465,22 +1092,27 @@ class LSTMDataframeSplitsTest(unittest.TestCase):
             self.df,
             config,
             ["TEMPERATURA_MAXIMA", "TEMPERATURA_MIN", "PRECIPITACAO_TOTAL"],
-            normalize=True,
-            scaler_type="standard",
-            precipitation_scaler_type=None,
+            clustering_feature_normalize="standard",
+            clustering_precipitation_normalize="minmax",
+            lstm_feature_normalize="minmax",
+            lstm_precipitation_normalize="standard",
             variance_threshold=0.9,
             forecast_horizon=1,
             train_ratio=0.5,
             val_ratio=0.2,
             random_state=42,
             manual_zero_tolerance=0.0,
+            pca_for_clustering_only=True,
+            run_only_cluster=True,
         )
 
-        self.assertEqual(
-            split_data.X_train.shape,
-            split_data.cluster_X_train.shape,
-        )
         np.testing.assert_allclose(split_data.X_train, split_data.cluster_X_train)
+        self.assertLess(split_data.X_train.shape[1], config.window_size * 3)
+        self.assertIsNone(split_data.target_scaler)
+        np.testing.assert_allclose(
+            split_data.y_train_by_lead_day_scaled,
+            split_data.y_train_by_lead_day,
+        )
 
     def test_quantile_weighted_mse_config_uses_cluster_rain_values(self) -> None:
         thresholds, weights = quantile_weighted_mse_config(

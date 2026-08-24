@@ -6,10 +6,17 @@ This folder contains clustering algorithms used by the project.
   `numeric_feature_columns`, `create_cluster_feature_matrix`, and
   `create_pipeline_clustering_features`, which reproduces the LSTM pipeline's
   train-only scaling and optional PCA for standalone analyses, plus
-  `cluster_feature_matrix`, which dispatches K-means, spectral, or manual
-  clustering. It also contains
+  `cluster_feature_matrix`, which dispatches K-means, K-Shape, spectral, or
+  manual clustering. It also contains
   `run_clustering_pipeline` and `main`, the CLI entrypoint used by the
   `climate-cluster` command.
+- `dtw.py`: exact dependent multivariate Dynamic Time Warping, pairwise and
+  cross-distance matrices, and normalization of the supported cluster
+  dissimilarity metric names.
+- `kshape.py`: K-Shape estimator and functional interface. It implements
+  z-normalization, normalized cross-correlation shape distance, temporal
+  alignment, shape extraction, multiple initializations, and held-out
+  prediction from learned shape centroids.
 - `ng.py`: custom spectral clustering implementation. It builds a
   Gaussian affinity matrix, normalizes it, extracts the largest eigenvectors,
   row-normalizes the embedding, and clusters that embedding.
@@ -20,11 +27,9 @@ This folder contains clustering algorithms used by the project.
 - `automatic_sigma.py`: standalone and reusable adapter for the project's
   pairwise-distance sigma heuristic. It loads a station when run as a command,
   or accepts a dataframe or prepared feature matrix when imported.
-- `manual.py`: horizon-rain-guided clustering. It reserves cluster `0` for
-  windows with a known zero-rain horizon, divides known rainy horizons into
-  `k - 1` ordered groups from lower to heavier rain, and assigns windows with
-  unavailable horizons to the nearest cluster centroid in window-feature
-  space.
+- `manual.py`: rule-based clustering with `legacy` horizon-rain groups and
+  `rain_level` equal-width bins of mean input-window precipitation. Both learn
+  feature-space centroids from the resulting training labels.
 
 K-means is currently provided by scikit-learn:
 
@@ -34,6 +39,20 @@ from sklearn.cluster import KMeans
 
 The project uses `KMeans(...).fit_predict(...)` directly for K-means runs and
 inside the last step of the spectral clustering implementation.
+
+K-Shape is implemented locally and has no dependency beyond NumPy and SciPy.
+Use the canonical algorithm alias `kshape`. A 2D array is treated as a batch of
+univariate series; a 3D array uses `(samples, timestamps, features)`, with one
+temporal shift shared by all feature channels. Constant feature channels are
+handled as zero-valued normalized shapes.
+
+The active LSTM+cluster pipeline can instead build spectral affinity from DTW
+distances between scaled 3D weather windows. DTW uses a shared temporal path
+for all features. Because scikit-learn K-means and arithmetic centroids do not
+support an arbitrary DTW metric, this mode requires spectral or manual
+training labels plus KNN held-out assignment. PCA must remain disabled so the
+window time axis is preserved. `dwt` is accepted as an alias and normalized to
+the canonical name `dtw`.
 
 Typical usage:
 
@@ -58,6 +77,22 @@ labels = cluster_feature_matrix(
 )
 ```
 
+K-Shape usage with the original temporal windows:
+
+```python
+from methods.cluster.kshape import KShape
+
+model = KShape(n_clusters=3, random_state=42)
+labels = model.fit_predict(windows)
+held_out_labels = model.predict(held_out_windows)
+```
+
+In the LSTM pipeline, K-Shape always fits on training window tensors and uses
+its learned shape centroids for validation and test. PCA must be disabled
+because it removes the temporal axis required for shape alignment. K-Shape has
+its own shape-based distance, so it cannot be combined with
+`CLUSTER_DISSIMILARITY_METRIC="dtw"`.
+
 For manual clustering, pass horizon-aligned precipitation through the same
 dispatcher:
 
@@ -75,8 +110,8 @@ labels = cluster_feature_matrix(
 
 ## Manual rain clustering
 
-Manual rain clustering uses the precipitation observed at a selected forecast
-horizon to define the clusters:
+`ManualRainClustering(method="legacy")` uses the precipitation observed at a
+selected forecast horizon to define the clusters:
 
 1. Cluster `0` contains every window whose known horizon precipitation is zero.
 2. Known positive-rain windows are sorted by precipitation and divided as
@@ -89,6 +124,17 @@ horizon to define the clusters:
 For example, with `k=3`, the resulting labels represent zero rain, lower rain,
 and heavier rain. The positive-rain groups contain similar numbers of known
 samples; they are not based on fixed millimeter thresholds.
+
+`ManualRainClustering(method="rain_level")` instead receives one raw mean
+precipitation value per input window. For `K` clusters it builds `K + 1` edges
+with `numpy.linspace(0, max_training_mean, K + 1)`. Internal intervals are
+`[a, b)`, so a value exactly equal to `b` enters the next cluster. The overall
+training maximum is included in cluster `K - 1`. Unlike `legacy`, this method
+does not use forecast-horizon precipitation to construct training labels.
+
+The active LSTM pipeline calculates those means directly from raw
+`PRECIPITACAO_TOTAL` across all `J` days of each training window. Validation and
+test remain assigned afterward with the configured centroid or KNN router.
 
 Use `horizon_precipitation` to align dataframe precipitation with every sliding
 window. `horizon=1` selects the day immediately after the window, while larger
@@ -126,17 +172,19 @@ labels = manual_clustering(
 Requirements and behavior:
 
 - `k` must be at least `2`.
-- At least one known zero-rain horizon is required.
-- At least `k - 1` known positive-rain horizons are required.
+- `legacy` requires at least one known zero-rain horizon and at least `k - 1`
+  known positive-rain horizons.
+- `rain_level` requires finite non-negative window means, a positive training
+  maximum, and at least one training window in every equal-width interval.
 - Known precipitation values cannot be negative.
 - Window features must be finite and use the same feature representation for
   fitting and prediction.
-- `zero_tolerance` can classify very small precipitation measurements as zero
-  when exact zero comparison is unsuitable.
+- In `legacy`, `zero_tolerance` can classify very small precipitation
+  measurements as zero when exact zero comparison is unsuitable.
 
-The learned `rain_ranges_` maps each label to the minimum and maximum known
-precipitation used for that cluster. `centroids_` stores the corresponding
-feature-space centroids.
+The learned `rain_ranges_` maps each label to the minimum and maximum rain value
+used for that cluster. `rain_level` also exposes the `K + 1` interval edges in
+`thresholds_`. `centroids_` stores the corresponding feature-space centroids.
 
 ## Eigengap analysis
 

@@ -6,7 +6,11 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.distance import pdist, squareform
 
-from methods.tools.sliding_windows import create_windows
+from methods.cluster.dtw import (
+    normalize_dissimilarity_metric,
+    pairwise_dtw_distances,
+)
+from methods.tools.sliding_windows import create_windows, validate_window_stride
 
 
 SIGMA_WINDOW_SIZE = 5
@@ -113,6 +117,8 @@ def calculate_sigma_values(
     normalize: bool = True,
     lower_quantile: float = SIGMA_LOWER_QUANTILE,
     upper_quantile: float = SIGMA_UPPER_QUANTILE,
+    window_stride: int = 1,
+    dissimilarity_metric: str = "euclidean",
 ) -> np.ndarray:
     """Calculate distance-based sigma candidates for spectral clustering.
 
@@ -123,13 +129,22 @@ def calculate_sigma_values(
         normalize: Whether to standardize feature columns before windowing.
         lower_quantile: Lower distance quantile used as the first sigma.
         upper_quantile: Upper distance quantile used as the last sigma.
+        window_stride: Days between consecutive window starts included in the
+            pairwise distance distribution.
+        dissimilarity_metric: Pairwise window metric, either Euclidean or DTW.
 
     Returns:
         Array of sigma candidates for spectral clustering.
     """
     windows, _ = create_windows(df, window_size=window_size, normalize=normalize)
-    windows_flat = windows.reshape(windows.shape[0], -1)
-    distances = euclidian_distances(windows_flat)
+    window_stride = validate_window_stride(window_stride)
+    metric = normalize_dissimilarity_metric(dissimilarity_metric)
+    selected_windows = windows[::window_stride]
+    if metric == "dtw":
+        distances = pairwise_dtw_distances(selected_windows)
+    else:
+        windows_flat = selected_windows.reshape(selected_windows.shape[0], -1)
+        distances = euclidian_distances(windows_flat)
     return sigma_values_from_distance_distribution(
         distances,
         n_values=n_values,

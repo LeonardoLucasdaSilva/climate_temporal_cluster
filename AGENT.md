@@ -16,6 +16,10 @@ and cluster-specific LSTM precipitation models.
 - `experiments/`: experiment notes and older runnable scripts.
   - Active LSTM-by-cluster sweep runner:
     `src/methods/lstm_cluster/run_experiment.py`.
+  - Budgeted LSTM hyperparameter tuning runner:
+    `src/methods/lstm_cluster/hiperparam_tuning.py`.
+  - `create_meta_analysis_report.py`: cross-experiment MSE/MAE/R2 LaTeX
+    comparison runner for saved LSTM and ARMA artifacts.
   - `temporary_experiments/`: older analysis scripts kept for review.
 - `tests/`: unit tests for loaders and window feature creation.
 - `data/`: local INMET data tree. Treat data files as local-only inputs.
@@ -56,6 +60,12 @@ and cluster-specific LSTM precipitation models.
 - Avoid broad cleanup or formatting churn unrelated to the task.
 - Keep generated outputs, data files, and local environment files out of code
   changes.
+- Whenever making any code change, whether in one file or many, suggest a
+  commit description following Conventional Commits 1.0.0:
+  `<type>[optional scope]: <description>`. Use clear lowercase types such as
+  `feat`, `fix`, `docs`, `refactor`, `test`, or `chore`; include a scope when
+  it helps, and mark breaking changes with `!` or a `BREAKING CHANGE:` footer.
+  Example: `feat(cluster): add scatter plot by cluster`.
 
 ## Testing Procedure
 

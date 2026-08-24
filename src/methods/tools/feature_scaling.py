@@ -58,7 +58,7 @@ def scale_weather_features(
     df: pd.DataFrame,
     columns: list[str],
     scalers: FeatureScalingState,
-    covariate_scaler_type: str,
+    covariate_scaler_type: str | None,
     precipitation_scaler_type: str | None,
     fit_scalers: bool,
 ) -> tuple[pd.DataFrame, FeatureScalingState]:
@@ -78,7 +78,7 @@ def scale_weather_features(
             create_feature_scaler(covariate_scaler_type).fit(
                 values_df[covariate_columns].to_numpy(dtype=float)
             )
-            if covariate_columns
+            if covariate_columns and covariate_scaler_type is not None
             else None
         )
         precipitation_scaler = (

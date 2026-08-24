@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
+import os
 from pathlib import Path
 from typing import Iterable, Sequence
 import sys
@@ -544,6 +546,70 @@ def run_arma_configuration(
     )
 
 
+def _parallel_worker_count(job_count: int) -> int:
+    """Return a bounded worker count for independent ARMA configurations."""
+    if job_count <= 0:
+        return 1
+    return max(1, min(job_count, os.cpu_count() or 1))
+
+
+def _run_arma_configuration_process(
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+    plot_style: dict[str, object] | None,
+) -> dict[str, float | int | str | None]:
+    """Configure process-local plotting before executing one ARMA run."""
+    setup_styling(plot_style)
+    return run_arma_configuration(*args, **kwargs)
+
+
+def _execute_arma_configuration_jobs(
+    jobs: Sequence[tuple[tuple[object, ...], dict[str, object]]],
+    *,
+    parallel: bool,
+    continue_on_error: bool,
+    plot_style: dict[str, object] | None = None,
+) -> list[tuple[dict[str, float | int | str | None] | None, Exception | None]]:
+    """Run independent ARMA jobs and retain their input order and failures."""
+    outcomes: list[
+        tuple[dict[str, float | int | str | None] | None, Exception | None]
+    ] = [(None, None) for _ in jobs]
+
+    if not parallel:
+        for index, (args, kwargs) in enumerate(jobs):
+            try:
+                outcomes[index] = (
+                    _run_arma_configuration_process(args, kwargs, plot_style),
+                    None,
+                )
+            except Exception as exc:
+                if not continue_on_error:
+                    raise
+                outcomes[index] = (None, exc)
+        return outcomes
+
+    worker_count = _parallel_worker_count(len(jobs))
+    with ProcessPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(
+                _run_arma_configuration_process,
+                args,
+                kwargs,
+                plot_style,
+            ): index
+            for index, (args, kwargs) in enumerate(jobs)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                outcomes[index] = (future.result(), None)
+            except Exception as exc:
+                if not continue_on_error:
+                    raise
+                outcomes[index] = (None, exc)
+    return outcomes
+
+
 def run_arma_experiment(
     state: str,
     station_id: str,
@@ -562,10 +628,13 @@ def run_arma_experiment(
     clip_negative_predictions: bool = True,
     precipitation_column: str = DEFAULT_PRECIPITATION_COLUMN,
     continue_on_error: bool = True,
+    parallel_orders: bool = False,
 ) -> Path:
     """Run an ARMA sweep and save comparison artifacts under the output root."""
     if forecast_horizon <= 0:
         raise ValueError("forecast_horizon must be positive.")
+    if not isinstance(parallel_orders, (bool, np.bool_)):
+        raise ValueError("parallel_orders must be a boolean.")
 
     ensure_statsmodels_available()
     setup_styling(plot_style or DEFAULT_PLOT_STYLE)
@@ -588,30 +657,40 @@ def run_arma_experiment(
     sweep_dir = arma_root / sweep_folder_name
     sweep_dir.mkdir(parents=True, exist_ok=True)
 
-    rows: list[dict[str, float | int | str | None]] = []
-    failures: list[dict[str, str]] = []
+    configuration_jobs = []
     for config in configs:
         output_dir = sweep_dir / config.name
         output_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            rows.append(
-                run_arma_configuration(
-                    df=df,
-                    config=config,
-                    output_dir=output_dir,
-                    forecast_horizon=forecast_horizon,
-                    train_ratio=train_ratio,
-                    val_ratio=val_ratio,
-                    trend=trend,
-                    clip_negative_predictions=clip_negative_predictions,
-                    precipitation_column=precipitation_column,
-                )
+        configuration_jobs.append(
+            (
+                (df, config, output_dir),
+                {
+                    "forecast_horizon": forecast_horizon,
+                    "train_ratio": train_ratio,
+                    "val_ratio": val_ratio,
+                    "trend": trend,
+                    "clip_negative_predictions": clip_negative_predictions,
+                    "precipitation_column": precipitation_column,
+                },
             )
-        except Exception as exc:
-            if not continue_on_error:
-                raise
-            failures.append({"run_name": config.name, "error": str(exc)})
-            (output_dir / "error.txt").write_text(str(exc), encoding="utf-8")
+        )
+
+    parallel_configurations = bool(parallel_orders) and len(configuration_jobs) > 1
+    outcomes = _execute_arma_configuration_jobs(
+        configuration_jobs,
+        parallel=parallel_configurations,
+        continue_on_error=continue_on_error,
+        plot_style=plot_style or DEFAULT_PLOT_STYLE,
+    )
+    rows: list[dict[str, float | int | str | None]] = []
+    failures: list[dict[str, str]] = []
+    for config, (result, error) in zip(configs, outcomes):
+        output_dir = sweep_dir / config.name
+        if error is not None:
+            failures.append({"run_name": config.name, "error": str(error)})
+            (output_dir / "error.txt").write_text(str(error), encoding="utf-8")
+        elif result is not None:
+            rows.append(result)
 
     save_arma_sweep_outputs(
         sweep_dir=sweep_dir,
@@ -622,6 +701,7 @@ def run_arma_experiment(
         forecast_horizon=forecast_horizon,
         arma_orders=arma_orders,
         window_sizes=window_sizes,
+        parallel_orders=parallel_configurations,
     )
     return sweep_dir
 

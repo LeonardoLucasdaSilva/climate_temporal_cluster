@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import os
+import inspect
+from contextlib import nullcontext
 from typing import Callable, Sequence, Tuple
 
 import numpy as np
+
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+
 import tensorflow as tf
 from tensorflow import keras
 
@@ -17,8 +24,77 @@ SUPPORTED_LOSS_FUNCTIONS = (
     "mean_absolute_error",
     "mae",
     "huber",
+    "weighted_mse_loss",
     "quantile_weighted_mse",
 )
+SUPPORTED_EARLY_STOPPING_METRICS = ("loss", "mse", "mae", "r2")
+
+
+def configure_tensorflow_gpu(
+    require_gpu: bool = True,
+    gpu_index: int = 0,
+) -> str | None:
+    """Configure TensorFlow to use one GPU and return its device name."""
+    if isinstance(require_gpu, (bool, np.bool_)) and not require_gpu:
+        return None
+    if isinstance(gpu_index, (bool, np.bool_)) or int(gpu_index) < 0:
+        raise ValueError("gpu_index must be a non-negative integer.")
+
+    gpus = tf.config.list_physical_devices("GPU")
+    if not gpus:
+        raise RuntimeError(
+            "TensorFlow did not detect a GPU. Install a GPU-enabled TensorFlow "
+            "environment and compatible NVIDIA/CUDA drivers before running the "
+            "LSTM experiment."
+        )
+    if int(gpu_index) >= len(gpus):
+        raise RuntimeError(
+            f"Requested GPU index {gpu_index}, but TensorFlow detected only "
+            f"{len(gpus)} GPU(s): {gpus}"
+        )
+
+    selected_gpu = gpus[int(gpu_index)]
+    try:
+        tf.config.set_visible_devices(selected_gpu, "GPU")
+        tf.config.experimental.set_memory_growth(selected_gpu, True)
+    except RuntimeError:
+        # TensorFlow may already be initialized in this process. In that case,
+        # keep the detected GPU and still place model operations on it below.
+        pass
+    return f"/GPU:{int(gpu_index)}"
+
+
+def early_stopping_monitor(metric: str) -> tuple[str, str]:
+    """Return the validation monitor name and Keras mode for early stopping."""
+    normalized_metric = str(metric).strip().lower()
+    if normalized_metric not in SUPPORTED_EARLY_STOPPING_METRICS:
+        supported = ", ".join(SUPPORTED_EARLY_STOPPING_METRICS)
+        raise ValueError(
+            f"Unsupported early_stopping_metric: {metric!r}. Use one of: {supported}"
+        )
+    mode = "max" if normalized_metric == "r2" else "min"
+    return f"val_{normalized_metric}", mode
+
+
+def r2(y_true, y_pred):
+    """Return the coefficient of determination as a Keras metric."""
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+    residual_sum_of_squares = tf.reduce_sum(tf.square(y_true - y_pred))
+    centered_true = y_true - tf.reduce_mean(y_true)
+    total_sum_of_squares = tf.reduce_sum(tf.square(centered_true))
+    return 1.0 - tf.math.divide_no_nan(
+        residual_sum_of_squares,
+        total_sum_of_squares,
+    )
+
+
+def _r2_metric() -> object:
+    """Return the native R² metric when available, with a compatible fallback."""
+    r2_score = getattr(keras.metrics, "R2Score", None)
+    if r2_score is not None:
+        return r2_score(name="r2")
+    return r2
 
 
 def _create_adamw_optimizer(
@@ -88,10 +164,60 @@ def quantile_weighted_mse_loss(
     return loss
 
 
+def _validated_weighted_mse_alpha(alpha: float) -> float:
+    """Return alpha as a finite positive float."""
+    if isinstance(alpha, (bool, np.bool_)):
+        raise ValueError("alpha must be a finite positive number.")
+    try:
+        alpha_value = float(alpha)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("alpha must be a finite positive number.") from exc
+    if not np.isfinite(alpha_value) or alpha_value <= 0:
+        raise ValueError("alpha must be a finite positive number.")
+    return alpha_value
+
+
+def _weighted_mse_value(
+    y_real: tf.Tensor | np.ndarray,
+    y_pred: tf.Tensor | np.ndarray,
+    alpha: float,
+) -> tf.Tensor:
+    """Evaluate weighted MSE with an already validated alpha."""
+    y_real_float = tf.cast(y_real, tf.float32)
+    y_pred_float = tf.cast(y_pred, tf.float32)
+    sample_weights = 1.0 + alpha * y_real_float
+    return tf.reduce_mean(
+        sample_weights * tf.square(y_real_float - y_pred_float),
+        axis=-1,
+    )
+
+
+def weighted_mse_loss(
+    y_real: tf.Tensor | np.ndarray,
+    y_pred: tf.Tensor | np.ndarray,
+    alpha: float,
+) -> tf.Tensor:
+    """Return per-sample mean weighted squared errors for a positive alpha."""
+    alpha_value = _validated_weighted_mse_alpha(alpha)
+    return _weighted_mse_value(y_real, y_pred, alpha_value)
+
+
+def _configured_weighted_mse_loss(alpha: float) -> Callable:
+    """Bind alpha to `weighted_mse_loss` for the two-argument Keras API."""
+    alpha_value = _validated_weighted_mse_alpha(alpha)
+
+    def loss(y_real, y_pred):
+        return _weighted_mse_value(y_real, y_pred, alpha_value)
+
+    loss.__name__ = "weighted_mse_loss"
+    return loss
+
+
 def resolve_loss_function(
     loss_function: str,
     quantile_thresholds_mm: Sequence[float] | None = None,
     quantile_weights: Sequence[float] | None = None,
+    weighted_mse_alpha: float | None = None,
 ) -> str | Callable:
     """Return a Keras loss from a configured loss name and optional parameters."""
     normalized_loss = loss_function.lower()
@@ -109,6 +235,10 @@ def resolve_loss_function(
             quantile_thresholds_mm,
             quantile_weights,
         )
+    if normalized_loss == "weighted_mse_loss":
+        if weighted_mse_alpha is None:
+            raise ValueError("weighted_mse_loss requires alpha.")
+        return _configured_weighted_mse_loss(weighted_mse_alpha)
     return normalized_loss
 
 
@@ -119,8 +249,8 @@ class LSTMPrecipitationPredictor:
     one or more precipitation values after the window.
 
     Architecture:
-    - Input: (sequence_length, n_features) - typically flattened window features
-    - Two LSTM layers with dropout for regularization
+    - Input: (sequence_length, n_features), with one timestep per window day
+    - One or two LSTM layers with dropout for regularization
     - Dense layers for feature transformation
     - Output: One value per configured forecast lead day
     """
@@ -129,7 +259,7 @@ class LSTMPrecipitationPredictor:
         self,
         input_shape: Tuple[int, ...],
         lstm_units: int = 64,
-        lstm_units_2: int = 32,
+        lstm_units_2: int | None = 32,
         dropout_rate: float = 0.2,
         learning_rate: float = 0.001,
         weight_decay: float = 0.0,
@@ -138,23 +268,32 @@ class LSTMPrecipitationPredictor:
         loss_quantile_thresholds_mm: Sequence[float] | None = None,
         loss_quantile_weights: Sequence[float] | None = None,
         output_units: int = 1,
+        loss_alpha: float | None = None,
+        require_gpu: bool = False,
+        gpu_index: int = 0,
     ):
         """Initialize LSTM model.
 
         Args:
             input_shape: Shape of input data (sequence_length, n_features) or (n_features,)
             lstm_units: Number of units in first LSTM layer
-            lstm_units_2: Number of units in second LSTM layer
+            lstm_units_2: Number of units in second LSTM layer; set to `None`
+                to use a single LSTM layer.
             dropout_rate: Dropout rate for regularization
             learning_rate: Learning rate for optimizer
             weight_decay: Decoupled AdamW weight-decay coefficient
             random_state: Random seed for reproducibility
-            loss_function: Keras loss name or `quantile_weighted_mse`.
+            loss_function: Keras loss name, `weighted_mse_loss`, or
+                `quantile_weighted_mse`.
             loss_quantile_thresholds_mm: Cluster-specific rain thresholds in the
                 same scale as the training target used by `quantile_weighted_mse`.
             loss_quantile_weights: Target-bin weights used by
                 `quantile_weighted_mse`.
             output_units: Number of precipitation target columns to predict.
+            loss_alpha: Positive alpha coefficient used by `weighted_mse_loss`.
+            require_gpu: When true, fail unless TensorFlow detects a GPU and
+                place model operations on it.
+            gpu_index: GPU index used when `require_gpu` is true.
         """
         if output_units <= 0:
             raise ValueError("output_units must be positive.")
@@ -170,7 +309,9 @@ class LSTMPrecipitationPredictor:
         self.loss_function = loss_function
         self.loss_quantile_thresholds_mm = loss_quantile_thresholds_mm
         self.loss_quantile_weights = loss_quantile_weights
+        self.loss_alpha = loss_alpha
         self.output_units = output_units
+        self.device_name = configure_tensorflow_gpu(require_gpu, gpu_index)
         self.history = None
         self.model = None
 
@@ -182,53 +323,65 @@ class LSTMPrecipitationPredictor:
 
     def _build_model(self):
         """Build the LSTM model architecture."""
-        model = keras.Sequential([
-            # First LSTM layer
-            layers.LSTM(
-                self.lstm_units,
-                activation='relu',
-                input_shape=self.input_shape,
-                return_sequences=True,  # Return sequences for second LSTM
-            ),
-            layers.Dropout(self.dropout_rate),
-
-            # Second LSTM layer
-            layers.LSTM(
-                self.lstm_units_2,
-                activation='relu',
-                return_sequences=False,  # Return only last output
-            ),
-            layers.Dropout(self.dropout_rate),
-
-            # Dense layers for final prediction
-            layers.Dense(16, activation='relu'),
-            layers.Dropout(self.dropout_rate),
-            layers.Dense(8, activation='relu'),
-
-            # Output layer (one precipitation value per lead day)
-            layers.Dense(
-                self.output_units,
-                activation='linear',
-            ),
-        ])
-
-        # Compile model
-        optimizer = _create_adamw_optimizer(
-            learning_rate=self.learning_rate,
-            weight_decay=self.weight_decay,
+        device_context = (
+            tf.device(self.device_name)
+            if self.device_name is not None
+            else nullcontext()
         )
-        loss = resolve_loss_function(
-            self.loss_function,
-            quantile_thresholds_mm=self.loss_quantile_thresholds_mm,
-            quantile_weights=self.loss_quantile_weights,
-        )
-        model.compile(
-            optimizer=optimizer,
-            loss=loss,
-            metrics=['mae', 'mse'],
-        )
+        with device_context:
+            recurrent_layers = [
+                layers.Input(shape=self.input_shape),
+                layers.LSTM(
+                    self.lstm_units,
+                    activation='tanh',
+                    return_sequences=self.lstm_units_2 is not None,
+                ),
+                layers.Dropout(self.dropout_rate),
+            ]
+            if self.lstm_units_2 is not None:
+                recurrent_layers.extend(
+                    [
+                        layers.LSTM(
+                            self.lstm_units_2,
+                            activation='tanh',
+                            return_sequences=False,
+                        ),
+                        layers.Dropout(self.dropout_rate),
+                    ]
+                )
 
-        self.model = model
+            model = keras.Sequential([
+                *recurrent_layers,
+                # Dense layers for final prediction
+                layers.Dense(16, activation='relu'),
+                layers.Dropout(self.dropout_rate),
+                layers.Dense(8, activation='relu'),
+
+                # Output layer (one precipitation value per lead day)
+                layers.Dense(
+                    self.output_units,
+                    activation='linear',
+                ),
+            ])
+
+            # Compile model
+            optimizer = _create_adamw_optimizer(
+                learning_rate=self.learning_rate,
+                weight_decay=self.weight_decay,
+            )
+            loss = resolve_loss_function(
+                self.loss_function,
+                quantile_thresholds_mm=self.loss_quantile_thresholds_mm,
+                quantile_weights=self.loss_quantile_weights,
+                weighted_mse_alpha=self.loss_alpha,
+            )
+            model.compile(
+                optimizer=optimizer,
+                loss=loss,
+                metrics=['mae', 'mse', _r2_metric()],
+            )
+
+            self.model = model
 
     def fit(
         self,
@@ -241,6 +394,8 @@ class LSTMPrecipitationPredictor:
         verbose: int = 0,
         early_stopping: bool = True,
         patience: int = 10,
+        early_stopping_metric: str = "loss",
+        warm_up: int = 0,
     ) -> keras.callbacks.History:
         """Train the LSTM model.
 
@@ -255,6 +410,10 @@ class LSTMPrecipitationPredictor:
             verbose: Verbosity level (0, 1, or 2)
             early_stopping: Whether to use early stopping
             patience: Patience for early stopping
+            early_stopping_metric: Validation metric monitored by early stopping.
+                Supported values are "loss", "mse", "mae", and "r2".
+            warm_up: Number of initial epochs ignored by early stopping. A value
+                of 0 starts counting immediately.
 
         Returns:
             History object with training metrics
@@ -266,24 +425,43 @@ class LSTMPrecipitationPredictor:
             validation_data = (X_val, y_val)
 
         if early_stopping and validation_data is not None:
+            if (
+                isinstance(warm_up, (bool, np.bool_))
+                or not isinstance(warm_up, (int, np.integer))
+                or warm_up < 0
+            ):
+                raise ValueError("warm_up must be a non-negative integer.")
+            monitor, mode = early_stopping_monitor(early_stopping_metric)
+            early_stopping_kwargs = {
+                "monitor": monitor,
+                "mode": mode,
+                "patience": patience,
+                "restore_best_weights": True,
+                "verbose": verbose,
+            }
+            if "start_from_epoch" in inspect.signature(
+                keras.callbacks.EarlyStopping
+            ).parameters:
+                early_stopping_kwargs["start_from_epoch"] = warm_up
             callbacks.append(
-                keras.callbacks.EarlyStopping(
-                    monitor='val_loss',
-                    patience=patience,
-                    restore_best_weights=True,
-                    verbose=verbose,
-                )
+                keras.callbacks.EarlyStopping(**early_stopping_kwargs)
             )
 
-        self.history = self.model.fit(
-            X_train,
-            y_train,
-            validation_data=validation_data,
-            epochs=epochs,
-            batch_size=batch_size,
-            verbose=verbose,
-            callbacks=callbacks,
+        device_context = (
+            tf.device(self.device_name)
+            if self.device_name is not None
+            else nullcontext()
         )
+        with device_context:
+            self.history = self.model.fit(
+                X_train,
+                y_train,
+                validation_data=validation_data,
+                epochs=epochs,
+                batch_size=batch_size,
+                verbose=verbose,
+                callbacks=callbacks,
+            )
 
         return self.history
 
@@ -299,7 +477,13 @@ class LSTMPrecipitationPredictor:
         if self.model is None:
             raise RuntimeError("Model has not been built. Call fit() first.")
 
-        return self.model.predict(X, verbose=0)
+        device_context = (
+            tf.device(self.device_name)
+            if self.device_name is not None
+            else nullcontext()
+        )
+        with device_context:
+            return self.model.predict(X, verbose=0)
 
     def evaluate(
         self,
@@ -319,7 +503,13 @@ class LSTMPrecipitationPredictor:
         if self.model is None:
             raise RuntimeError("Model has not been built. Call fit() first.")
 
-        loss, mae, mse = self.model.evaluate(X_test, y_test, verbose=0)
+        device_context = (
+            tf.device(self.device_name)
+            if self.device_name is not None
+            else nullcontext()
+        )
+        with device_context:
+            loss, mae, mse = self.model.evaluate(X_test, y_test, verbose=0)
         rmse = np.sqrt(mse)
 
         return {

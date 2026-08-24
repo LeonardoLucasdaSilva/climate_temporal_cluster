@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import subprocess
 from dataclasses import asdict, is_dataclass
@@ -11,6 +10,8 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 import pandas as pd
+
+from config import miktex_compile_environment
 
 
 REPORT_TEX_NAME = "experiment_report.tex"
@@ -119,6 +120,7 @@ def render_report(
 ) -> str:
     """Return the LaTeX source for a configuration folder."""
     output_dir = Path(output_dir)
+    run_only_cluster = bool(config_mapping(config).get("run_only_cluster"))
     lines = [
         r"\documentclass[11pt]{article}",
         r"\usepackage[margin=0.7in]{geometry}",
@@ -141,18 +143,61 @@ def render_report(
         r"\vspace{-2em}",
         r"\section*{Dataset}",
         dataset_summary(config),
-        r"\section*{Configuration}",
-        config_summary_list(config),
-        r"\section*{LSTM Configs}",
-        lstm_configs_list(config),
-        r"\section*{Metrics}",
-        metrics_table(output_dir / "metrics_summary.csv"),
-        cluster_metrics_table(output_dir / "cluster_model_metrics.csv"),
-        forecast_horizon_section(output_dir),
-        test_model_selection_section(output_dir),
     ]
 
-    for section_title, patterns in FIGURE_SECTIONS:
+    if run_only_cluster:
+        lines.extend(
+            [
+                r"\section*{Cluster Configuration}",
+                config_summary_list(config),
+                r"\section*{Cluster Analysis}",
+                cluster_only_summary_section(output_dir),
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                r"\section*{Configuration}",
+                config_summary_list(config),
+                r"\section*{LSTM Configs}",
+                lstm_configs_list(config),
+                r"\section*{Metrics}",
+                metrics_table(output_dir / "metrics_summary.csv"),
+                cluster_metrics_table(output_dir / "cluster_model_metrics.csv"),
+                forecast_horizon_section(output_dir),
+                test_model_selection_section(output_dir),
+            ]
+        )
+
+    figure_sections = FIGURE_SECTIONS
+    if run_only_cluster:
+        figure_sections = (
+            (
+                "Cluster Diagnostics",
+                (
+                    "cluster_diagnostics/06_cluster_distribution.png",
+                    "cluster_diagnostics/07_precipitation_distribution_by_cluster.png",
+                    "cluster_diagnostics/08_silhouette_analysis.png",
+                ),
+            ),
+            (
+                "Cluster Timeline",
+                ("cluster_diagnostics/cluster_timeline.png",),
+            ),
+            (
+                "Input Precipitation",
+                (
+                    "input_precipitation_distribution_by_cluster/08_input_precipitation_distribution_by_cluster.png",
+                    "input_precipitation_distribution_by_cluster/*.png",
+                ),
+            ),
+            (
+                "Cluster Histograms",
+                ("cluster_precipitation_histograms/*.png",),
+            ),
+        )
+
+    for section_title, patterns in figure_sections:
         figures = collect_figures(output_dir, patterns)
         if figures:
             if section_title == "Prediction Time Series Splits":
@@ -176,9 +221,14 @@ def report_title(
     config_map = config_mapping(config)
     state = config_map.get("state")
     station_id = config_map.get("station_id")
+    prefix = (
+        "Cluster-only Experiment"
+        if config_map.get("run_only_cluster")
+        else "LSTM+Cluster Experiment"
+    )
     if state and station_id:
-        return f"LSTM+Cluster Experiment - {state} - {station_id}"
-    return f"LSTM+Cluster Experiment - {output_dir.name.replace('_', ' ')}"
+        return f"{prefix} --- {state} --- {station_id}"
+    return f"{prefix} --- {output_dir.name.replace('_', ' ')}"
 
 
 def config_mapping(config: object | Mapping[str, object] | None) -> dict[str, object]:
@@ -192,7 +242,23 @@ def config_mapping(config: object | Mapping[str, object] | None) -> dict[str, ob
     else:
         values = {
             key: getattr(config, key)
-            for key in ("state", "station_id", "window_size", "n_clusters", "algorithm", "sigma")
+            for key in (
+                "state",
+                "station_id",
+                "window_size",
+                "window_stride",
+                "cluster_dissimilarity_metric",
+                "n_clusters",
+                "algorithm",
+                "manual_clustering_method",
+                "cluster_assignment_method",
+                "cluster_assignment_neighbors",
+                "cluster_only_precipitation",
+                "plot_cluster_timeseries",
+                "cluster_timeseries_plot_limit",
+                "silhouette_info",
+                "sigma",
+            )
             if hasattr(config, key)
         }
     if hasattr(config, "name"):
@@ -207,22 +273,51 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
         ("state", "State"),
         ("station_id", "Station ID"),
         ("window_size", "Window Size"),
+        ("window_stride", "Window Stride"),
+        ("cluster_dissimilarity_metric", "Cluster Dissimilarity Metric"),
         ("n_clusters", "Number of Clusters"),
         ("algorithm", "Algorithm"),
+        ("cluster_only_precipitation", "Cluster Only Precipitation"),
+        ("plot_cluster_timeseries", "Plot Cluster Time-series"),
+        ("cluster_timeseries_plot_limit", "Cluster Time-series Plot Limit"),
+        ("silhouette_info", "Silhouette Diagnostics"),
+        ("manual_clustering_method", "Manual Clustering Method"),
+        ("cluster_assignment_method", "Cluster Assignment Method"),
         ("sigma", "Sigma"),
     )
-    trailing_labels = (
-        ("forecast_horizon", "Forecast Horizon"),
-        ("manual_zero_tolerance", "Manual Zero Tolerance"),
-        ("test_all_models", "Test Samples on All Models"),
-    )
+    trailing_labels: list[tuple[str, str]] = []
+    if not config_map.get("run_only_cluster"):
+        trailing_labels.append(("forecast_horizon", "Forecast Horizon"))
+    if (
+        config_map.get("algorithm") == "manual"
+        and config_map.get("manual_clustering_method", "legacy") == "legacy"
+    ):
+        trailing_labels.append(("manual_zero_tolerance", "Manual Zero Tolerance"))
+    if not config_map.get("run_only_cluster"):
+        trailing_labels.append(("test_all_models", "Test Samples on All Models"))
     rows = [
         (label, config_map.get(key))
         for key, label in leading_labels
         if key in config_map
+        and (
+            key != "manual_clustering_method"
+            or config_map.get("algorithm") == "manual"
+        )
     ]
+    if (
+        config_map.get("cluster_assignment_method") == "knn"
+        and "cluster_assignment_neighbors" in config_map
+    ):
+        rows.append(
+            (
+                "Cluster Assignment Neighbors",
+                config_map["cluster_assignment_neighbors"],
+            )
+        )
     if "normalize" in config_map:
         rows.append(("Normalize", config_map.get("normalize")))
+    if config_map.get("run_only_cluster"):
+        rows.append(("Run Only Cluster", "Yes"))
     if (
         "pca_variance_threshold" in config_map
         or "pca_for_clustering_only" in config_map
@@ -241,6 +336,8 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
                 "PCA Mode",
                 "disabled"
                 if pca_variance_threshold is None
+                else "clustering only"
+                if config_map.get("run_only_cluster")
                 else (
                     "clustering only"
                     if config_map.get("pca_for_clustering_only")
@@ -257,8 +354,44 @@ def config_summary_list(config: object | Mapping[str, object] | None) -> str:
     )
     if precipitation_scaler is not None:
         rows.append(("Precipitation Scaler", precipitation_scaler))
-    if "target_scale" in config_map:
-        rows.append(("LSTM Target Scale", config_map.get("target_scale")))
+    clustering_feature_scaler = configured_scaler_summary(
+        config_map,
+        "clustering_feature_normalize",
+    )
+    if clustering_feature_scaler is not None:
+        rows.append(("Clustering Feature Scaler", clustering_feature_scaler))
+    clustering_precipitation_scaler = configured_scaler_summary(
+        config_map,
+        "clustering_precipitation_normalize",
+    )
+    if clustering_precipitation_scaler is not None:
+        rows.append(
+            ("Clustering Precipitation Scaler", clustering_precipitation_scaler)
+        )
+    if not config_map.get("run_only_cluster"):
+        lstm_feature_scaler = configured_scaler_summary(
+            config_map,
+            "lstm_feature_normalize",
+        )
+        if lstm_feature_scaler is not None:
+            rows.append(("LSTM Feature Scaler", lstm_feature_scaler))
+        lstm_precipitation_scaler = configured_scaler_summary(
+            config_map,
+            "lstm_precipitation_normalize",
+        )
+        if lstm_precipitation_scaler is not None:
+            rows.append(("LSTM Precipitation Scaler", lstm_precipitation_scaler))
+        if "lstm_precipitation_transform" in config_map:
+            rows.append(
+                (
+                    "LSTM Precipitation Transform",
+                    "log1p"
+                    if config_map.get("lstm_precipitation_transform")
+                    else "disabled",
+                )
+            )
+        if "target_scale" in config_map:
+            rows.append(("LSTM Target Scale", config_map.get("target_scale")))
     rows.extend(
         (label, config_map.get(key))
         for key, label in trailing_labels
@@ -315,8 +448,12 @@ def lstm_configs_list(config: object | Mapping[str, object] | None) -> str:
         ("Batch size", config_map.get("batch_size")),
         ("Early stopping", config_map.get("early_stopping")),
         ("Patience", config_map.get("patience")),
+        ("Warm-up epochs", config_map.get("warm_up")),
+        ("Early stopping metric", config_map.get("early_stopping_metric")),
+        ("Train diagnostics", config_map.get("train_info")),
         ("Optimizer", config_map.get("optimizer")),
         ("Loss", config_map.get("loss")),
+        ("Loss alpha", config_map.get("loss_alpha")),
         ("Loss quantiles", config_map.get("loss_quantiles")),
         ("Loss quantile weights", config_map.get("loss_quantile_weights")),
         ("Metrics", config_map.get("metrics")),
@@ -331,6 +468,46 @@ def lstm_configs_list(config: object | Mapping[str, object] | None) -> str:
     return bullet_list(rows)
 
 
+def cluster_only_summary_section(output_dir: Path) -> str:
+    """Return the cluster-only assignment and silhouette summaries."""
+    lines = [
+        latex_escape(
+            "This run performed clustering and held-out cluster assignment only. "
+            "No supervised model was trained and no prediction metrics are included."
+        )
+    ]
+    summary_path = output_dir / "cluster_summary.csv"
+    if summary_path.exists():
+        summary = pd.read_csv(summary_path)
+        if not summary.empty:
+            lines.append(dataframe_table(summary, "Cluster Assignment Summary"))
+
+    silhouette_path = output_dir / "cluster_diagnostics" / "silhouette_scores.csv"
+    if silhouette_path.exists():
+        silhouette = pd.read_csv(silhouette_path)
+        if not silhouette.empty:
+            wanted = [
+                column
+                for column in (
+                    "split",
+                    "cluster",
+                    "n_samples",
+                    "n_clusters",
+                    "mean_silhouette",
+                    "status",
+                )
+                if column in silhouette.columns
+            ]
+            if wanted:
+                lines.append(
+                    dataframe_table(
+                        silhouette[wanted],
+                        "Silhouette Summary",
+                    )
+                )
+    return "\n".join(lines)
+
+
 def dataset_summary(config: object | Mapping[str, object] | None) -> str:
     """Return dataset feature, date range, and split details."""
     config_map = config_mapping(config)
@@ -340,7 +517,14 @@ def dataset_summary(config: object | Mapping[str, object] | None) -> str:
     if config_map.get("dataset_end_date") is not None:
         rows.append(("End date", config_map["dataset_end_date"]))
     if config_map.get("features") is not None:
-        rows.append(("Features", config_map["features"]))
+        rows.append(("Features", RawLatex(format_features(config_map["features"]))))
+    if config_map.get("clustering_features") is not None:
+        rows.append(
+            (
+                "Clustering Features",
+                RawLatex(format_features(config_map["clustering_features"])),
+            )
+        )
     if config_map.get("n_samples") is not None:
         rows.append(("Input samples", config_map["n_samples"]))
 
@@ -363,7 +547,7 @@ def dataset_summary(config: object | Mapping[str, object] | None) -> str:
 def bullet_list(rows: Sequence[tuple[str, object]]) -> str:
     """Return labeled rows as a compact LaTeX bullet list."""
     items = "\n".join(
-        rf"\item \textbf{{{latex_escape(label)}:}} {latex_escape(format_value(value))}"
+        rf"\item \textbf{{{latex_escape(label)}:}} {format_latex_value(value)}"
         for label, value in rows
     )
     return "\n".join(
@@ -374,6 +558,39 @@ def bullet_list(rows: Sequence[tuple[str, object]]) -> str:
             r"\end{itemize}",
         ]
     )
+
+
+class RawLatex(str):
+    """String that has already been escaped or intentionally contains LaTeX."""
+
+
+def format_latex_value(value: object) -> str:
+    """Format a value for LaTeX, preserving intentional report markup."""
+    if isinstance(value, RawLatex):
+        return str(value)
+    return latex_escape(format_value(value))
+
+
+def format_features(features: object) -> str:
+    """Format feature names with a controlled line break for long lists."""
+    if isinstance(features, Sequence) and not isinstance(features, str):
+        escaped_features = [latex_escape(format_value(feature)) for feature in features]
+    else:
+        escaped_features = [latex_escape(format_value(features))]
+    if not escaped_features:
+        return "N/A"
+
+    break_after = "UMIDADE\\_MIN"
+    if break_after in escaped_features:
+        index = escaped_features.index(break_after) + 1
+    else:
+        index = 6 if len(escaped_features) > 6 else len(escaped_features)
+
+    first_line = ", ".join(escaped_features[:index])
+    remaining = ", ".join(escaped_features[index:])
+    if not remaining:
+        return first_line
+    return first_line + r",\\" + "\n  " + remaining
 
 
 def unavailable_text(message: str) -> str:
@@ -606,7 +823,7 @@ def compile_tex(tex_path: Path) -> Path | None:
     """Compile a LaTeX file with the first working local compiler."""
     tex_path = Path(tex_path).resolve()
     compiler_runs = available_compiler_runs()
-    tex_env = tex_compile_environment(tex_path)
+    tex_env = miktex_compile_environment()
     bootstrap_miktex(tex_env, tex_path.parent)
     if not compiler_runs:
         return None
@@ -636,25 +853,6 @@ def compile_tex(tex_path: Path) -> Path | None:
     log_path = tex_path.with_name("experiment_report_compile.log")
     log_path.write_text("\n\n".join(failures), encoding="utf-8")
     return None
-
-
-def tex_compile_environment(tex_path: Path) -> dict[str, str]:
-    """Return an environment with writable MiKTeX user state."""
-    env = os.environ.copy()
-    state_root = tex_path.parent.parent / ".miktex"
-    user_config = state_root / "config"
-    user_data = state_root / "data"
-    user_install = state_root / "install"
-    for directory in (user_config, user_data, user_install):
-        directory.mkdir(parents=True, exist_ok=True)
-    env.update(
-        {
-            "MIKTEX_USERCONFIG": str(user_config),
-            "MIKTEX_USERDATA": str(user_data),
-            "MIKTEX_USERINSTALL": str(user_install),
-        }
-    )
-    return env
 
 
 def bootstrap_miktex(env: Mapping[str, str], cwd: Path) -> None:

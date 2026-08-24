@@ -7,8 +7,10 @@ from pathlib import Path
 import unittest
 
 from config import (
+    MIKTEX_STATE_DIR,
     PROJECT_ROOT,
     dated_output_root,
+    miktex_compile_environment,
     output_date_folder,
     output_root_from_config,
 )
@@ -41,6 +43,14 @@ class ConfigTests(unittest.TestCase):
             ),
             PROJECT_ROOT / "outputs",
         )
+
+    def test_miktex_compile_environment_uses_shared_outputs_state(self) -> None:
+        env = miktex_compile_environment()
+
+        self.assertEqual(MIKTEX_STATE_DIR, PROJECT_ROOT / "outputs" / ".miktex")
+        self.assertEqual(env["MIKTEX_USERCONFIG"], str(MIKTEX_STATE_DIR / "config"))
+        self.assertEqual(env["MIKTEX_USERDATA"], str(MIKTEX_STATE_DIR / "data"))
+        self.assertEqual(env["MIKTEX_USERINSTALL"], str(MIKTEX_STATE_DIR / "install"))
 
 
 if __name__ == "__main__":

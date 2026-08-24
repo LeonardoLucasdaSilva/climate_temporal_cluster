@@ -73,6 +73,30 @@ def affinity_matrix(
     return affinities
 
 
+def affinity_matrix_from_distances(
+    distance_matrix: np.ndarray,
+    sigma: float,
+) -> np.ndarray:
+    """Create a Gaussian affinity matrix from precomputed distances."""
+    if sigma <= 0:
+        raise ValueError(f"sigma must be positive, got {sigma}")
+
+    distances = np.asarray(distance_matrix, dtype=np.float64)
+    if distances.ndim != 2 or distances.shape[0] != distances.shape[1]:
+        raise ValueError("distance_matrix must be square.")
+    if not np.all(np.isfinite(distances)):
+        raise ValueError("distance_matrix must contain only finite values.")
+    if np.any(distances < 0):
+        raise ValueError("distance_matrix cannot contain negative values.")
+    if not np.allclose(distances, distances.T):
+        raise ValueError("distance_matrix must be symmetric.")
+
+    gamma = 1.0 / (2.0 * sigma**2)
+    affinities = np.exp(-gamma * distances**2)
+    np.fill_diagonal(affinities, 0.0)
+    return affinities
+
+
 def normalized_laplacian(
     affinities: np.ndarray,
     copy: bool = True,
@@ -154,6 +178,7 @@ def spectral_clustering(
     k: int = 3,
     random_state: int = 42,
     chunk_size: int = DEFAULT_AFFINITY_CHUNK_SIZE,
+    distance_matrix: np.ndarray | None = None,
 ) -> np.ndarray:
     """Perform spectral clustering using normalized Laplacian eigenvectors.
 
@@ -169,6 +194,8 @@ def spectral_clustering(
         k: Number of clusters (default: 3)
         random_state: Random seed for KMeans reproducibility
         chunk_size: Number of rows to process per affinity-matrix chunk.
+        distance_matrix: Optional precomputed pairwise distances. When given,
+            these replace Euclidean distances between sample rows.
 
     Returns:
         Cluster labels of shape (n_samples,) with values in [0, k-1]
@@ -180,7 +207,15 @@ def spectral_clustering(
         return np.array([], dtype=int)
 
     # Step 1: Affinity matrix
-    affinities = affinity_matrix(samples, sigma, chunk_size=chunk_size)
+    if distance_matrix is None:
+        affinities = affinity_matrix(samples, sigma, chunk_size=chunk_size)
+    else:
+        distances = np.asarray(distance_matrix, dtype=np.float64)
+        if distances.shape != (len(samples), len(samples)):
+            raise ValueError(
+                "distance_matrix shape must match the number of samples."
+            )
+        affinities = affinity_matrix_from_distances(distances, sigma)
 
     # Step 2: Normalized Laplacian
     laplacian = normalized_laplacian(affinities)
