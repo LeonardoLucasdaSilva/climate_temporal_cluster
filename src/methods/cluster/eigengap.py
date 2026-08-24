@@ -23,7 +23,7 @@ from methods.cluster.ng import affinity_matrix, normalized_laplacian
 
 STATE = "RS"
 STATION_ID = "A801"
-WINDOW_SIZES = [15, 30, 45]
+WINDOW_SIZES = [10,20,30,40,50,75,100]
 MAX_GAPS = 20
 NORMALIZE = True
 SCALER_TYPE = "standard"
