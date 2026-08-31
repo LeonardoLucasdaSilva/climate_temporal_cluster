@@ -1,0 +1,9 @@
+pandas
+numpy
+scipy
+scikit-learn
+matplotlib
+seaborn
+statsmodels>=0.14
+torch
+-e .

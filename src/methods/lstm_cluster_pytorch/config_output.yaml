@@ -1,0 +1,23 @@
+# Output settings for the local PyTorch run_experiment.py.
+
+# Relative paths are resolved from the project root.
+output_root: outputs/pytorch
+group_outputs_by_day: true
+date_folder_format: "%d_%m_%y"
+
+# Leave empty to create a timestamped sweep folder.
+sweep_name:
+sweep_name_prefix: pytorch_lstm_cluster_sweep
+timestamp_format: "%Y_%m_%d_%Hh%M"
+
+# Shared plotting defaults for generated figures.
+plot_style:
+  seaborn:
+    style: whitegrid
+    palette: deep
+  rc_params:
+    figure.facecolor: white
+    axes.labelsize: 10
+    xtick.labelsize: 9
+    ytick.labelsize: 9
+    savefig.dpi: 300
