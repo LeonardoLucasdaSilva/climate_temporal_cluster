@@ -150,9 +150,11 @@ outputs/**/
 !outputs/.gitkeep
 !outputs/pytorch/
 outputs/pytorch/*
+!outputs/pytorch/experiment_rankings.csv
 !outputs/pytorch/experiment_rankings.tex
 !outputs/tensorflow/
 outputs/tensorflow/*
+!outputs/tensorflow/experiment_rankings.csv
 !outputs/tensorflow/experiment_rankings.tex
 
 # Large pickle/numpy files
