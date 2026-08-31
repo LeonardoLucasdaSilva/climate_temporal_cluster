@@ -199,6 +199,22 @@ GPU is visible to TensorFlow, the run raises an error instead of silently using
 CPU. `RUN_ONLY_CLUSTER = True` does not require a GPU because no LSTM is
 trained.
 
+For legacy native-Windows GPU execution, create the pinned TensorFlow 2.10
+environment after installing Miniconda:
+
+```powershell
+conda env create -f environment-tf210-gpu.yml
+conda activate climate-tf210
+python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+python src\methods\lstm_cluster\run_experiment.py
+```
+
+This environment uses Python 3.10, CUDA Toolkit 11.2, and cuDNN 8.1. The model
+disables the TensorFlow 2.10 experimental AdamW optimizer's XLA JIT path, which
+is not needed for CUDA/cuDNN LSTM training. On a single GPU, keep
+`PARALEL = False` so cluster models train sequentially instead of competing for
+GPU memory.
+
 ### Comparative sweep analysis
 
 Set `COMPARATIVE_RUN = True` to create sweep-level plots after every test has
@@ -449,7 +465,9 @@ df = load_station_daily_data(
 
 The loader returns a daily dataframe with `Data` plus numeric weather columns
 such as temperature, humidity, pressure, wind, radiation, and
-`PRECIPITACAO_TOTAL`.
+`PRECIPITACAO_TOTAL`. If the source CSV contains the optional cyclic date
+features `DATA_SIN` and `DATA_COS`, the loader includes them and the experiment
+pipelines use them as numeric features.
 
 For exploratory plots without chronological train/validation/test splitting,
 edit `src/methods/lstm_cluster/data_science_run.py` and run:
@@ -794,8 +812,8 @@ Each configuration folder contains:
 - `evaluation_report.txt`
 - `summary.txt`
 - `experiment_report.tex`
-- `experiment_report.pdf`, only when `CREATE_REPORT = True` and a local LaTeX
-  compiler is available
+- optional `experiment_report.pdf` when `CREATE_REPORT = True`; the default
+  runners leave this disabled so only the cross-run ranking PDF is compiled
 - grouped prediction, residual, error, cluster-performance, and histogram plots
   under folders such as `prediction_overview/`,
   `prediction_timeseries_splits/lead_day_XX/`, `residual_diagnostics/`,
@@ -956,6 +974,25 @@ by precipitation quantile bins calculated from that cluster's own training rain
 targets across all lead days, in the active target scale. With
 `LOSS_QUANTILE_WEIGHTS = "auto"`, rarer rain-intensity bins receive larger
 weights automatically.
+
+Every completed LSTM configuration updates a backend-specific leaderboard in
+`outputs/tensorflow/` or `outputs/pytorch/`. The leaderboard is written as
+`experiment_rankings.csv`, `experiment_rankings.tex`, and
+`experiment_rankings.pdf`. This leaderboard PDF is independent from the
+optional per-configuration `experiment_report.pdf`. It records the run, window
+size, number of clusters, clustering method, loss (including quantile or
+weighted-loss parameters), MAE, MSE, R2, and an independent rank for each
+metric. Lower MAE/MSE and higher R2 receive better ranks. The PDF also repeats
+those metrics and ranks for samples whose actual precipitation is above 0, 10,
+20, or 30 mm and above the test set's 95th or 99th percentile.
+Each category table is ordered independently by its own MAE; MSE and R2 do not
+affect row order.
+For compactness, table run labels omit a leading `requested_`, loss names use
+abbreviations, and dedicated columns show the early-stopping patience metric
+and first LSTM layer size. Historical runs use MAE and 1024 respectively; the
+new reduced-network sweep records R2 and its configured 128/256 units.
+Parallel configuration workers serialize complete leaderboard updates, keeping
+every newly completed experiment in the recalculated CSV, TeX, and PDF tables.
 
 To silence pipeline progress messages and model-training output, set
 `SHOW_CONSOLE_INFO = False` in `run_experiment.py`. If using the root launcher,

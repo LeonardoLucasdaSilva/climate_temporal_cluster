@@ -9,6 +9,54 @@ from data.clean_data import normalize_decimal_columns
 
 DAILY_FILE_SUFFIX = "_daily.csv"
 
+NON_FEATURE_COLUMNS = frozenset({"DIRECAO_VENTO"})
+
+DEFAULT_DAILY_COLUMNS = [
+    "DATA",
+    "DATA_SIN",
+    "DATA_COS",
+    "TEMPERATURA_MAXIMA",
+    "TEMPERATURA_MIN",
+    "UMIDADE_MAX",
+    "UMIDADE_MIN",
+    "PRESSAO_MAX",
+    "PRESSAO_MIN",
+    "VELOCIDADE_VENTO",
+    "DIRECAO_VENTO_SIN",
+    "DIRECAO_VENTO_COS",
+    "RAJADA_VENTO",
+    "PRECIPITACAO_TOTAL",
+    "RADIACAO",
+]
+
+DAILY_AGGREGATIONS = {
+    "DATA_SIN": "mean",
+    "DATA_COS": "mean",
+    "TEMPERATURA_MAXIMA": "max",
+    "TEMPERATURA_MIN": "min",
+    "UMIDADE_MAX": "max",
+    "UMIDADE_MIN": "min",
+    "PRESSAO_MAX": "max",
+    "PRESSAO_MIN": "min",
+    "VELOCIDADE_VENTO": "mean",
+    "DIRECAO_VENTO_SIN": "mean",
+    "DIRECAO_VENTO_COS": "mean",
+    "RAJADA_VENTO": "mean",
+    "PRECIPITACAO_TOTAL": "sum",
+    "RADIACAO": "sum",
+}
+
+
+def daily_aggregation_for_column(column: str) -> str | None:
+    """Return the daily aggregation for one weather column."""
+    if column in NON_FEATURE_COLUMNS:
+        return None
+    if column.endswith(("_MAXIMA", "_MAX")):
+        return "max"
+    if column.endswith(("_MINIMA", "_MIN")):
+        return "min"
+    return DAILY_AGGREGATIONS.get(column)
+
 
 def iter_station_daily_files(data_root: Path) -> List[Path]:
     """Yield all station daily CSV files from the INMET data tree."""
@@ -46,7 +94,8 @@ def load_station_daily_data(
         state: State code (e.g., 'SP', 'TO')
         station_id: Station code (e.g., 'A701', 'A055')
         data_root: Root path to INMET data (data/inmet/)
-        cols: Columns to select. If None, uses all available columns.
+        cols: Columns to select. If None, uses the available columns from the
+            default weather and cyclic-date feature set.
 
     Returns:
         DataFrame with daily aggregated data, indexed by date.
@@ -59,23 +108,11 @@ def load_station_daily_data(
     if not file_path.exists():
         raise FileNotFoundError(f"Station file not found: {file_path}")
 
-    # Default columns matching INMET structure
+    # Default features are optional because station files can have different
+    # schemas. Explicitly requested columns retain pandas' strict validation.
     if cols is None:
-        cols = [
-            "DATA",
-            "TEMPERATURA_MAXIMA",
-            "TEMPERATURA_MIN",
-            "UMIDADE_MAX",
-            "UMIDADE_MIN",
-            "PRESSAO_MAX",
-            "PRESSAO_MIN",
-            "VELOCIDADE_VENTO",
-            "DIRECAO_VENTO_SIN",
-            "DIRECAO_VENTO_COS",
-            "RAJADA_VENTO",
-            "PRECIPITACAO_TOTAL",
-            "RADIACAO",
-        ]
+        available_columns = pd.read_csv(file_path, delimiter=";", nrows=0).columns
+        cols = [col for col in DEFAULT_DAILY_COLUMNS if col in available_columns]
 
     # Read CSV with semicolon delimiter
     df = pd.read_csv(file_path, delimiter=";", usecols=cols, na_values=[""])
@@ -88,31 +125,22 @@ def load_station_daily_data(
 
     # Convert string columns to numeric (handle commas as decimal separators)
     df = normalize_decimal_columns(df, exclude=("DATA",))
-    df = df.fillna(0)
 
     # Set date as index for daily grouping
     df.set_index("DATA", inplace=True)
 
-    # Define aggregation: mean for temperatures/humidity/pressure, sum for rain/radiation
-    agg_dict = {
-        "TEMPERATURA_MAXIMA": "mean",
-        "TEMPERATURA_MIN": "mean",
-        "UMIDADE_MAX": "mean",
-        "UMIDADE_MIN": "mean",
-        "PRESSAO_MAX": "mean",
-        "PRESSAO_MIN": "mean",
-        "VELOCIDADE_VENTO": "mean",
-        "DIRECAO_VENTO": "mean",
-        "RAJADA_VENTO": "mean",
-        "PRECIPITACAO_TOTAL": "sum",
-        "RADIACAO": "sum",
-    }
-
     # Keep only columns that exist in the dataframe
-    agg_dict = {col: func for col, func in agg_dict.items() if col in df.columns}
+    agg_dict = {
+        col: aggregation
+        for col in df.columns
+        if (aggregation := daily_aggregation_for_column(col)) is not None
+    }
 
     # Resample daily (already daily granularity, but ensures consistency)
     df_daily = df.resample("D").agg(agg_dict)
+    # Aggregate valid observations first so missing extrema do not become false
+    # zero-valued minima. Preserve the loader's zero-filled output afterward.
+    df_daily = df_daily.fillna(0)
 
     # Reset index to make date a column again
     df_daily.reset_index(inplace=True)

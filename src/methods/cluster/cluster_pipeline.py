@@ -10,7 +10,7 @@ import pandas as pd
 from sklearn.cluster import KMeans
 
 from config import DATA_ROOT
-from data.load_data import load_station_daily_data
+from data.load_data import NON_FEATURE_COLUMNS, load_station_daily_data
 from methods.cluster.kshape import kshape_clustering
 from methods.cluster.manual import manual_clustering
 from methods.cluster.ng import spectral_clustering
@@ -40,7 +40,9 @@ def numeric_feature_columns(df: pd.DataFrame) -> list[str]:
     return [
         col
         for col in df.columns
-        if col != "Data" and pd.api.types.is_numeric_dtype(df[col])
+        if col != "Data"
+        and col not in NON_FEATURE_COLUMNS
+        and pd.api.types.is_numeric_dtype(df[col])
     ]
 
 

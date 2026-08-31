@@ -29,12 +29,14 @@ class SingleStationLoadTest(unittest.TestCase):
             station_dir.mkdir(parents=True, exist_ok=True)
 
             # Create a sample station file with realistic data
-            daily_file = station_dir / "A999_2000_2025_daily.csv"
+            daily_file = station_dir / "A999_2000_2026_daily.csv"
             with daily_file.open("w", encoding="utf-8", newline="") as fp:
                 writer = csv.writer(fp, delimiter=";")
                 writer.writerow(
                     [
                         "DATA",
+                        "DATA_SIN",
+                        "DATA_COS",
                         "TEMPERATURA_MAXIMA",
                         "TEMPERATURA_MIN",
                         "UMIDADE_MAX",
@@ -43,6 +45,8 @@ class SingleStationLoadTest(unittest.TestCase):
                         "PRESSAO_MIN",
                         "VELOCIDADE_VENTO",
                         "DIRECAO_VENTO",
+                        "DIRECAO_VENTO_SIN",
+                        "DIRECAO_VENTO_COS",
                         "RAJADA_VENTO",
                         "PRECIPITACAO_TOTAL",
                         "RADIACAO",
@@ -51,6 +55,8 @@ class SingleStationLoadTest(unittest.TestCase):
                 writer.writerow(
                     [
                         "2025-01-01",
+                        "0.5",
+                        "0.8660254",
                         "33",
                         "21",
                         "98",
@@ -59,6 +65,8 @@ class SingleStationLoadTest(unittest.TestCase):
                         "1008",
                         "1.2",
                         "180",
+                        "0",
+                        "-1",
                         "2.5",
                         "10",
                         "18000",
@@ -67,6 +75,8 @@ class SingleStationLoadTest(unittest.TestCase):
                 writer.writerow(
                     [
                         "2025-01-02",
+                        "0.6",
+                        "0.8",
                         "32",
                         "20",
                         "96",
@@ -75,6 +85,8 @@ class SingleStationLoadTest(unittest.TestCase):
                         "1009",
                         "1.0",
                         "175",
+                        "0.0871557",
+                        "-0.9961947",
                         "2.3",
                         "0",
                         "17500",
@@ -93,8 +105,80 @@ class SingleStationLoadTest(unittest.TestCase):
             self.assertIn("Data", df.columns)
             self.assertIn("TEMPERATURA_MAXIMA", df.columns)
             self.assertIn("PRECIPITACAO_TOTAL", df.columns)
+            self.assertIn("DATA_SIN", df.columns)
+            self.assertIn("DATA_COS", df.columns)
+            self.assertIn("DIRECAO_VENTO_SIN", df.columns)
+            self.assertIn("DIRECAO_VENTO_COS", df.columns)
+            self.assertNotIn("DIRECAO_VENTO", df.columns)
             self.assertEqual(df["TEMPERATURA_MAXIMA"].iloc[0], 33.0)
             self.assertEqual(df["PRECIPITACAO_TOTAL"].iloc[0], 10.0)
+            self.assertAlmostEqual(df["DATA_SIN"].iloc[0], 0.5)
+            self.assertAlmostEqual(df["DATA_COS"].iloc[0], 0.8660254)
+
+    def test_daily_extrema_and_encoded_wind_direction(self) -> None:
+        """Use extrema aggregations and exclude raw wind direction."""
+        from data.load_data import load_station_daily_data
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp) / "inmet"
+            station_dir = data_root / "RS" / "A801"
+            station_dir.mkdir(parents=True, exist_ok=True)
+            daily_file = station_dir / "A801_2000_2026_daily.csv"
+            with daily_file.open("w", encoding="utf-8", newline="") as fp:
+                writer = csv.writer(fp, delimiter=";")
+                writer.writerow(
+                    [
+                        "DATA",
+                        "TEMPERATURA_MAXIMA",
+                        "TEMPERATURA_MIN",
+                        "UMIDADE_MAX",
+                        "UMIDADE_MIN",
+                        "PRESSAO_MAX",
+                        "PRESSAO_MIN",
+                        "DIRECAO_VENTO",
+                        "DIRECAO_VENTO_SIN",
+                        "DIRECAO_VENTO_COS",
+                    ]
+                )
+                writer.writerow(
+                    ["2025-01-01", 30, "", 90, 45, 1010, 1000, 90, 1, 0]
+                )
+                writer.writerow(
+                    ["2025-01-01", 35, 17, 98, 35, 1014, 997, 180, 0, -1]
+                )
+
+            df = load_station_daily_data("RS", "A801", data_root)
+
+            self.assertEqual(len(df), 1)
+            self.assertEqual(df.loc[0, "TEMPERATURA_MAXIMA"], 35)
+            self.assertEqual(df.loc[0, "TEMPERATURA_MIN"], 17)
+            self.assertEqual(df.loc[0, "UMIDADE_MAX"], 98)
+            self.assertEqual(df.loc[0, "UMIDADE_MIN"], 35)
+            self.assertEqual(df.loc[0, "PRESSAO_MAX"], 1014)
+            self.assertEqual(df.loc[0, "PRESSAO_MIN"], 997)
+            self.assertAlmostEqual(df.loc[0, "DIRECAO_VENTO_SIN"], 0.5)
+            self.assertAlmostEqual(df.loc[0, "DIRECAO_VENTO_COS"], -0.5)
+            self.assertNotIn("DIRECAO_VENTO", df.columns)
+
+    def test_raw_wind_direction_is_not_an_automatic_numeric_feature(self) -> None:
+        """Exclude raw circular degrees even when a dataframe contains them."""
+        import pandas as pd
+
+        from methods.cluster.cluster_pipeline import numeric_feature_columns
+
+        df = pd.DataFrame(
+            {
+                "Data": pd.to_datetime(["2025-01-01"]),
+                "DIRECAO_VENTO": [180.0],
+                "DIRECAO_VENTO_SIN": [0.0],
+                "DIRECAO_VENTO_COS": [-1.0],
+            }
+        )
+
+        self.assertEqual(
+            numeric_feature_columns(df),
+            ["DIRECAO_VENTO_SIN", "DIRECAO_VENTO_COS"],
+        )
 
     def test_load_single_station_custom_cols(self) -> None:
         """Test loading with custom columns."""
@@ -109,7 +193,7 @@ class SingleStationLoadTest(unittest.TestCase):
             station_dir = data_root / "SP" / "A001"
             station_dir.mkdir(parents=True, exist_ok=True)
 
-            daily_file = station_dir / "A001_2000_2025_daily.csv"
+            daily_file = station_dir / "A001_2000_2026_daily.csv"
             with daily_file.open("w", encoding="utf-8", newline="") as fp:
                 writer = csv.writer(fp, delimiter=";")
                 writer.writerow(

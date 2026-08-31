@@ -137,3 +137,41 @@ from data.load_data import load_station_daily_data
 
 df = load_station_daily_data("RS", "A801", data_root)
 ```
+
+The optional numeric columns `DATA_SIN` and `DATA_COS` are loaded when they
+exist in a station CSV. Like the other numeric weather columns, they are then
+available to the clustering and LSTM feature-selection pipelines. Missing
+optional default columns do not prevent a station file from loading.
+
+When duplicate observations occur on one date, extrema columns ending in
+`_MAXIMA` or `_MAX` use the daily maximum, while columns ending in `_MINIMA` or
+`_MIN` use the daily minimum. Raw `DIRECAO_VENTO` is not an automatic model
+feature; wind direction is represented only by `DIRECAO_VENTO_SIN` and
+`DIRECAO_VENTO_COS`, whose daily components are averaged.
+
+`experiment_rankings.py` maintains a persistent, backend-specific leaderboard
+after every completed LSTM configuration. TensorFlow writes under
+`outputs/tensorflow/` and PyTorch under `outputs/pytorch/`; each location gets
+CSV and TeX source plus a PDF. This does not require the optional PDF for every
+individual configuration. Rows are upserted by configuration output path and
+independently rank MAE and MSE in ascending order and R2 in descending order.
+Report tables omit the redundant `requested_` run prefix, abbreviate loss
+names, and include the early-stopping patience metric and first LSTM layer size.
+Legacy rows are recorded as MAE patience with 1024 starting units.
+The same metrics and ranks are
+calculated on actual-precipitation subsets above 0, 10, 20, and 30 mm and above
+each run's test-target 95th and 99th percentiles. Each PDF table orders its rows
+only by that table's own MAE, with older runs first when MAE values tie, rather
+than reusing the overall-test ordering. Batch runners can also request
+an atomically updated progress log with the completed and total configuration
+counts.
+Leaderboard refreshes are serialized across worker processes, so parallel
+configuration completions cannot discard another run or leave the CSV, TeX,
+and PDF representing different ranking snapshots.
+
+`quantile_best_k_pdf.py` directly creates one PDF table with horizontal sections
+for the 10, 20, and 30 mm and 99th-percentile subsets. For each QWMSE(.9) and
+QWMSE(.85) loss at w=15, it shows the strongest K=1/higher-K pair and bolds
+the better higher-K row while holding all settings except K fixed. The winning
+MAE and MSE values use green text. The compact display contains window, K,
+loss, patience metric, MAE, and MSE.

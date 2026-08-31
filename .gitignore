@@ -148,6 +148,12 @@ data/inmet/**/*.CSV
 # Temporary outputs - keep structure but ignore generated files
 outputs/**/
 !outputs/.gitkeep
+!outputs/pytorch/
+outputs/pytorch/*
+!outputs/pytorch/experiment_rankings.tex
+!outputs/tensorflow/
+outputs/tensorflow/*
+!outputs/tensorflow/experiment_rankings.tex
 
 # Large pickle/numpy files
 *.pkl
@@ -174,3 +180,6 @@ node_modules/
 npm-debug.log
 forecast_horizon_proof.tex
 src/methods/lstm_cluster/data_science_run.py
+
+# Local PyTorch version of the LSTM-cluster experiment
+src/methods/lstm_cluster_pytorch/

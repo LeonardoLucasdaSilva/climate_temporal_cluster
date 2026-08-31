@@ -8,6 +8,8 @@ and cluster-specific LSTM precipitation models.
 - `src/`: importable project code.
   - `config.py`: project paths and lightweight output-config loading helpers.
   - `data/`: data loading, cleaning, and experiment output writers.
+    `experiment_rankings.py` maintains the persistent TensorFlow and PyTorch
+    MAE/MSE/R2 leaderboard reports.
   - `methods/`: clustering pipelines, spectral clustering, sliding windows,
     sigma selection, dimensionality reduction helpers, the LSTM-cluster
     runner/pipeline, and the ARMA baseline runner/pipeline.

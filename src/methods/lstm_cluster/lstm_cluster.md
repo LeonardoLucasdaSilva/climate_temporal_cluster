@@ -478,11 +478,13 @@ clustering precipitation scaler, LSTM feature scaler, LSTM precipitation
 scaler, and target scale for that run. Predictions are inverse-transformed to
 millimeters before metrics and plots. When all-model test selection is enabled,
 this report includes an `Análise de transferência entre clusters` section that
-labels the result as oracle-only and shows the routing matrix. The pipeline only
-compiles `experiment_report.pdf` when `CREATE_REPORT = True`; with
-`CREATE_REPORT = False`, it still writes the `.tex` file and skips the slow
-LaTeX compilation. If PDF compilation fails, `experiment_report_compile.log` is
-saved for troubleshooting.
+labels the result as oracle-only and shows the routing matrix. The experiment
+runners default to `CREATE_REPORT = False`, so they write the individual
+configuration `.tex` source without compiling `experiment_report.pdf`. Set it
+to `True` only when an individual configuration PDF is wanted. The separate
+backend ranking PDF is still compiled after each completed configuration. If
+individual report compilation fails,
+`experiment_report_compile.log` is saved for troubleshooting.
 
 Each configuration also groups generated images by purpose. General
 same-cluster prediction plots go under `prediction_overview_same_cluster/`,
@@ -541,6 +543,18 @@ Every configuration records `WINDOW_STRIDE` in its report and summary files.
 When the stride is greater than `1`, the configuration folder name includes an
 `sXX` component. Window indices and target dates continue to refer to their
 original positions in the station timeline.
+
+After a model configuration completes, the pipeline also updates the
+backend-specific experiment leaderboard. TensorFlow uses
+`outputs/tensorflow/experiment_rankings.{csv,tex,pdf}` and the local PyTorch
+pipeline uses the equivalent files in `outputs/pytorch/`. The table identifies
+each configuration by run, window size, K, clustering method, and loss
+function, and includes MAE, MSE, R2, and separate ranks for all three metrics.
+Quantile and weighted-MSE loss parameters are included in the loss label. The
+report contains additional ranked tables for actual precipitation above 0, 10,
+20, and 30 mm and above the test set's 95th and 99th percentiles. Requested
+batch sweeps may additionally maintain a concise progress log after every
+completed configuration.
 
 Each configuration also saves
 `input_forecast_horizon_precipitation_by_cluster.csv`, which assigns the

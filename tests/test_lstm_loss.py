@@ -147,6 +147,26 @@ class WeightedMseLossTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "did not detect a GPU"):
             self.lstm.configure_tensorflow_gpu(require_gpu=True)
 
+    def test_legacy_adamw_disables_xla_jit(self) -> None:
+        lstm = _load_lstm_module_with_recording_keras()
+
+        def legacy_adamw(
+            *, learning_rate: float, weight_decay: float, jit_compile: bool = True
+        ) -> tuple[str, dict[str, object]]:
+            return (
+                "AdamW",
+                {
+                    "learning_rate": learning_rate,
+                    "weight_decay": weight_decay,
+                    "jit_compile": jit_compile,
+                },
+            )
+
+        lstm.keras.optimizers.AdamW = legacy_adamw
+        _, kwargs = lstm._create_adamw_optimizer(1e-3, 1e-4)
+
+        self.assertFalse(kwargs["jit_compile"])
+
     def test_lstm_units_2_none_builds_single_recurrent_layer(self) -> None:
         lstm = _load_lstm_module_with_recording_keras()
 

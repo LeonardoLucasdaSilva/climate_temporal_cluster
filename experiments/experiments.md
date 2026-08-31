@@ -19,6 +19,9 @@ This folder contains experiment notes and older runnable scripts.
   experiment. Optional `START_DATE` and `END_DATE` values also create per-lead
   time-series plots beside the report, comparing observed precipitation against
   `Run 1`, `Run 2`, and every other selected run.
+- `create_quantile_best_k_pdf.py`: directly generates one sectioned PDF table
+  showing the strongest otherwise-identical K=1/higher-K pair for QWMSE(.9)
+  and QWMSE(.85) at w=15 across the requested precipitation thresholds.
 - `temporary_experiments/`: older experiment scripts kept temporarily so they
   can be reviewed, saved elsewhere, or folded back into the organized package.
 

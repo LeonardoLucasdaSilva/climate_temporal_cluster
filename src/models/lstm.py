@@ -111,10 +111,16 @@ def _create_adamw_optimizer(
             "The installed TensorFlow/Keras version does not provide AdamW. "
             "Upgrade TensorFlow and Keras before training this model."
         )
-    return optimizer_class(
-        learning_rate=learning_rate,
-        weight_decay=weight_decay,
-    )
+    optimizer_kwargs = {
+        "learning_rate": learning_rate,
+        "weight_decay": weight_decay,
+    }
+    if "jit_compile" in inspect.signature(optimizer_class).parameters:
+        # TensorFlow 2.10 enables XLA for experimental optimizers by default.
+        # Its native-Windows CUDA runtime does not include the compiler files
+        # required by that path, while normal CUDA/cuDNN training works.
+        optimizer_kwargs["jit_compile"] = False
+    return optimizer_class(**optimizer_kwargs)
 
 
 def quantile_weighted_mse_loss(

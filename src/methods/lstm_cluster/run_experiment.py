@@ -16,7 +16,7 @@ STATE = "RS"
 STATION_ID = "A801"
 
 # Data setting
-WINDOW_SIZES = [15]
+WINDOW_SIZES = [15,30,45]
 WINDOW_STRIDE = 1                                 # Days between consecutive window starts;
 FORECAST_HORIZON = 5
 USE_ALL_FEATURES = True
@@ -36,7 +36,7 @@ LSTM_PRECIPITATION_TRANSFORM = False             # Apply log(1+x) before LSTM pr
 
 
 # Clustering parameters
-N_CLUSTERS_LIST = [5]
+N_CLUSTERS_LIST = [1,3,5,7,9,12]
 CLUSTERING_ALGORITHM = ["kmeans"]                # "kmeans", "kshape", "spectral", "manual", or a list
 CLUSTER_ONLY_PRECIPITATION = False               # Cluster on precipitation time series only
 CLUSTER_DISSIMILARITY_METRIC = "euclidean"       # "euclidean" or "dtw"
@@ -61,7 +61,7 @@ LEARNING_RATE: float | list[float] = 1e-3
 WEIGHT_DECAY: float | list[float] = [1e-4]         # Decoupled weight decay used by AdamW
 
 # Metrics exported to compact comparison tables
-QUANTITATIVE_METRICS = ["MSE"]
+QUANTITATIVE_METRICS = ["MSE","MAE"]
 
 # Optional oracle diagnostic: evaluates every test window with every cluster LSTM.
 TEST_ALL_MODELS = False
@@ -69,21 +69,21 @@ TEST_ALL_MODELS = False
 # LSTM Loss and metrics
 LSTM_LOSS_FUNCTION = "quantile_weighted_mse"     # Supported: "mean_squared_error", "mae", "huber", "weighted_mse_loss", "quantile_weighted_mse"
 LOSS_ALPHA = 1e-2                                # Positive coefficient used only by weighted_mse_loss
-LOSS_QUANTILES = [0.9]
+LOSS_QUANTILES = [0.9]  # Used only by quantile_weighted_mse
 LOSS_QUANTILE_WEIGHTS = "auto"                   # "auto" or one positive weight per quantile bin
 
 # Training settings. Numeric settings may also be lists in a comparative grid.
 EPOCHS: int | list[int] = 300
 BATCH_SIZE: int | list[int] = 4
 EARLY_STOPPING = True
-PATIENCE: int | list[int] = 30
+PATIENCE: int | list[int] = 50
 WARM_UP: int | list[int] = 10
 EARLY_STOPPING_METRIC = "mae"                   # "loss", "mse", "mae", or "r2"
 VERBOSE_TRAINING = 1
 SHOW_CONSOLE_INFO = True                         # Only cluster windows; skip all LSTM training/output.
-PARALEL = True                                   # Parallelize cluster-only configs or cluster LSTMs.
-REQUIRE_GPU = False                               # Fail LSTM training unless TensorFlow detects a GPU.
-CREATE_REPORT = False                            # Compile experiment_report.pdf; .tex is always written.
+PARALEL = False                                  # Keep one TensorFlow trainer on the single GPU at a time.
+REQUIRE_GPU = True                               # Fail LSTM training unless TensorFlow detects a GPU.
+CREATE_REPORT = False                            # Keep per-config TeX without compiling a PDF.
 
 # Sweep-level comparison between the tests produced by this run.
 COMPARATIVE_RUN = False
@@ -173,6 +173,9 @@ def experiment_kwargs(
         "parallel_training": PARALEL,
         "require_gpu": REQUIRE_GPU,
         "create_report": CREATE_REPORT,
+        "ranking_progress_log": None,
+        "ranking_progress_run_token": None,
+        "ranking_progress_total": None,
     }
     if overrides:
         unknown = sorted(set(overrides) - set(parameters))

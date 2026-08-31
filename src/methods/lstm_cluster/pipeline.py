@@ -31,6 +31,7 @@ from data.lstm_outputs import (
     save_run_outputs,
     save_sweep_outputs,
 )
+from data.experiment_rankings import update_experiment_rankings
 from evaluation.metrics import calculate_regression_metrics
 from methods.cluster.dtw import (
     cross_dtw_distances,
@@ -69,6 +70,9 @@ from methods.tools.precipitation_utils import (
 )
 from methods.tools.sliding_windows import create_windows, validate_window_stride
 from methods.tools.sigma_choosing import calculate_sigma_values
+
+
+EXPERIMENT_BACKEND = "tensorflow"
 
 
 @dataclass(frozen=True)
@@ -2689,6 +2693,9 @@ def run_configuration(
     silhouette_info: bool = True,
     lstm_precipitation_transform: bool = False,
     require_gpu: bool = False,
+    ranking_progress_log: Path | None = None,
+    ranking_progress_run_token: str | None = None,
+    ranking_progress_total: int | None = None,
 ) -> dict[str, float | int | str | None]:
     """Run one sweep configuration and save its artifacts."""
     if run_only_cluster and comparative_runs is not None:
@@ -3009,6 +3016,31 @@ def run_configuration(
     )
     if run_parameters is not None:
         result.update(run_parameters)
+    ranking_csv, ranking_tex, ranking_pdf = update_experiment_rankings(
+        backend=EXPERIMENT_BACKEND,
+        output_dir=output_dir,
+        window_size=config.window_size,
+        n_clusters=config.n_clusters,
+        clustering_method=config.algorithm,
+        loss_function=lstm_loss_function,
+        loss_alpha=loss_alpha,
+        loss_quantiles=loss_quantiles,
+        patience_metric=early_stopping_metric,
+        lstm_units=lstm_units,
+        mae=float(result["test_mae"]),
+        mse=float(result["test_mse"]),
+        r2=float(result["test_r2"]),
+        actual=y_test,
+        predicted=y_pred_test,
+        compile_pdf=True,
+        progress_log=ranking_progress_log,
+        progress_run_token=ranking_progress_run_token,
+        progress_total=ranking_progress_total,
+    )
+    print_info(f"  Rankings: {ranking_csv}", show_console_info)
+    print_info(f"  Rankings TeX: {ranking_tex}", show_console_info)
+    if ranking_pdf is not None:
+        print_info(f"  Rankings PDF: {ranking_pdf}", show_console_info)
     if comparative_runs is not None:
         comparative_runs.append(
             build_comparative_run_data(
@@ -3162,6 +3194,9 @@ def run_experiment(
     silhouette_info: bool = True,
     lstm_precipitation_transform: bool = False,
     require_gpu: bool = True,
+    ranking_progress_log: Path | None = None,
+    ranking_progress_run_token: str | None = None,
+    ranking_progress_total: int | None = None,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
     clustering_algorithms = _normalize_clustering_algorithms(clustering_algorithm)
@@ -3693,6 +3728,9 @@ def run_experiment(
                     silhouette_info=bool(silhouette_info),
                     lstm_precipitation_transform=lstm_precipitation_transform,
                     require_gpu=bool(require_gpu),
+                    ranking_progress_log=ranking_progress_log,
+                    ranking_progress_run_token=ranking_progress_run_token,
+                    ranking_progress_total=ranking_progress_total,
                 ),
             )
         )

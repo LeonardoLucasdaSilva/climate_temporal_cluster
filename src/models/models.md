@@ -5,7 +5,9 @@ This package contains trainable model implementations.
 - `lstm.py`: TensorFlow/Keras LSTM model for sequence-to-precipitation
   prediction, with one or two recurrent layers, configurable output width for
   multi-lead-day targets, and an AdamW optimizer with configurable decoupled
-  weight decay. It can require a TensorFlow-detected GPU before model training
+  weight decay. TensorFlow versions whose AdamW exposes `jit_compile` use the
+  non-XLA optimizer path for native-Windows CUDA compatibility. It can require
+  a TensorFlow-detected GPU before model training
   and place model operations on `/GPU:0`. It also provides
   `weighted_mse_loss(y_real, y_pred, alpha)`, which returns the per-sample mean
   of `(1 + alpha * y_real) * |y_real - y_pred|^2` for a finite `alpha > 0`.
