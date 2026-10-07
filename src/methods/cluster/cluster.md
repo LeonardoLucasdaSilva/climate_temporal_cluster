@@ -19,7 +19,13 @@ This folder contains clustering algorithms used by the project.
   prediction from learned shape centroids.
 - `ng.py`: custom spectral clustering implementation. It builds a
   Gaussian affinity matrix, normalizes it, extracts the largest eigenvectors,
-  row-normalizes the embedding, and clusters that embedding.
+  row-normalizes the embedding, and clusters that embedding. Its fitted model
+  uses Nyström extension to embed and assign validation/test samples without
+  refitting the training graph. `build_spectral_training_graph` can calculate
+  one affinity matrix and leading eigensystem at the largest requested K; the
+  standalone final PyTorch sweep reuses that graph for every smaller K at the
+  same window, preprocessing, and sigma. The normal pipeline remains a direct
+  one-configuration-at-a-time consumer of the fitted spectral model.
 - `eigengap.py`: standalone multi-window eigengap analysis. It builds the same
   normalized Gaussian affinity graph, plots the first 20 leading-eigenvalue
   gaps at the numerically optimized sigma for each window size, ignores the
@@ -50,9 +56,28 @@ The active LSTM+cluster pipeline can instead build spectral affinity from DTW
 distances between scaled 3D weather windows. DTW uses a shared temporal path
 for all features. Because scikit-learn K-means and arithmetic centroids do not
 support an arbitrary DTW metric, this mode requires spectral or manual
-training labels plus KNN held-out assignment. PCA must remain disabled so the
-window time axis is preserved. `dwt` is accepted as an alias and normalized to
-the canonical name `dtw`.
+training labels. Spectral held-out samples use Nyström extension from
+cross-DTW affinities; manual clustering still requires KNN held-out assignment.
+PCA must remain disabled so the window time axis is preserved. `dwt` is
+accepted as an alias and normalized to the canonical name `dtw`.
+
+## Held-out assignment
+
+Assignment is algorithm-specific and never refits on validation or test data:
+
+- K-means uses Euclidean distance to the centroids fitted in prepared feature
+  space.
+- Spectral clustering retains the training degrees, top eigenvalues and
+  eigenvectors, and embedding-space K-means model. It computes held-out to
+  training Gaussian affinities and applies the normalized Nyström extension
+  `D_new^(-1/2) K_new,train D_train^(-1/2) U Lambda^(-1)`. Extended rows are
+  unit-normalized before prediction by the fitted embedding-space K-means.
+- K-Shape uses its learned shape centroids.
+- Manual clustering uses the configured centroid or KNN router.
+
+The Nyström path accepts Euclidean cross-affinities or precomputed cross-DTW
+distances. Eigenvalues at numerical zero are assigned an inverse of zero to
+avoid unstable division.
 
 Typical usage:
 

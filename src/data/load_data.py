@@ -93,7 +93,7 @@ def load_station_daily_data(
     Args:
         state: State code (e.g., 'SP', 'TO')
         station_id: Station code (e.g., 'A701', 'A055')
-        data_root: Root path to INMET data (data/inmet/)
+        data_root: Root path to daily INMET data (data/inmet_daily/)
         cols: Columns to select. If None, uses the available columns from the
             default weather and cyclic-date feature set.
 

@@ -13,8 +13,9 @@ single experiment.
 - `lstm_cluster/`: the active LSTM-by-cluster precipitation experiment. It
   contains the user-facing runner, sweep pipeline, output config, plot/report
   writers, and folder-level documentation.
-- `tools/`: preprocessing tools used before clustering or modeling, such as
-  dimensionality reduction and sliding-window feature creation.
+- `tools/`: preprocessing and experiment-design tools used before clustering
+  or modeling, including dimensionality reduction, sliding-window creation,
+  and deterministic sampling from random-search parameter spaces.
 
 Use these modules from experiments or pipelines, for example:
 

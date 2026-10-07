@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
-from itertools import product
 import math
 from pathlib import Path
-import random
 import sys
 from time import monotonic
 
@@ -16,39 +13,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import pandas as pd
 
 from data.hyperparam_tuning_outputs import save_hyperparameter_tuning_outputs
-
-
-# Candidate values. Remove entries from HYPERPARAMETER_SPACE to keep them fixed
-# at the first value configured in run_experiment.py.
-WINDOW_SIZES = [15, 30, 45]
-N_CLUSTERS_LIST = [3, 5, 7]
-LSTM_UNITS = [64, 128, 256,512]
-LSTM_UNITS_2 = [None, 32, 64, 128]
-DROPOUT_RATE = [0.1, 0.2, 0.3]
-LEARNING_RATE = [1e-3]
-WEIGHT_DECAY = [1e-3,1e-4,1e-5]
-
-HYPERPARAMETER_SPACE: dict[str, Sequence[int | float | None]] = {
-    "window_size": WINDOW_SIZES,
-    "n_clusters": N_CLUSTERS_LIST,
-    "lstm_units": LSTM_UNITS,
-    "lstm_units_2": LSTM_UNITS_2,
-    "dropout_rate": DROPOUT_RATE,
-    "learning_rate": LEARNING_RATE,
-    "weight_decay": WEIGHT_DECAY,
-}
-
-# Search and selection settings.
-SEARCH_STRATEGY = "random"                       # "random" or "grid"
-N_TRIALS: int | None = 20                       # None evaluates every combination
-OPTIMIZATION_METRIC = "RMSE"                   # Validation MSE, RMSE, MAE, R2, RMSLE, or MAPE
-RANDOM_STATE = 42
-FAIL_FAST = False                               # Continue after an invalid/failed candidate
-SHOW_TUNING_PROGRESS = True
-
-# Output settings. Trial folders are created inside this tuning folder.
-TUNING_NAME: str | None = None
-TUNING_NAME_PREFIX = "lstm_cluster_tuning"
+from methods.tools.random_search import (
+    generate_parameter_configurations,
+    parameter_combination_count,
+    validated_parameter_space,
+)
 
 
 TUNABLE_PIPELINE_PARAMETERS = {
@@ -59,6 +28,10 @@ TUNABLE_PIPELINE_PARAMETERS = {
     "dropout_rate": "dropout_rate",
     "learning_rate": "learning_rate",
     "weight_decay": "weight_decay",
+    "epochs": "epochs",
+    "batch_size": "batch_size",
+    "patience": "patience",
+    "warm_up": "warm_up",
 }
 SUPPORTED_OPTIMIZATION_METRICS = {
     "MSE",
@@ -105,17 +78,10 @@ def _validated_search_space(
             "Unsupported tuning hyperparameter(s): " + ", ".join(unsupported)
         )
 
-    normalized: dict[str, list[int | float | None]] = {}
-    for parameter, raw_values in search_space.items():
-        if isinstance(raw_values, (str, bytes)):
-            raise ValueError(f"{parameter} candidates must be a sequence of values.")
-        values = list(raw_values)
-        if not values:
-            raise ValueError(f"{parameter} must contain at least one candidate.")
-        if len(values) != len(set(values)):
-            raise ValueError(f"{parameter} cannot contain duplicate candidates.")
-        normalized[parameter] = values
-    return normalized
+    return {
+        parameter: list(values)
+        for parameter, values in validated_parameter_space(search_space).items()
+    }
 
 
 def candidate_count(
@@ -123,7 +89,7 @@ def candidate_count(
 ) -> int:
     """Return the size of the Cartesian candidate space."""
     validated = _validated_search_space(search_space)
-    return math.prod(len(values) for values in validated.values())
+    return parameter_combination_count(validated)
 
 
 def generate_trial_hyperparameters(
@@ -135,25 +101,19 @@ def generate_trial_hyperparameters(
 ) -> list[dict[str, int | float | None]]:
     """Return deterministic grid or random-search trial configurations."""
     validated = _validated_search_space(search_space)
-    normalized_strategy = str(strategy).strip().lower()
-    if normalized_strategy not in {"grid", "random"}:
-        raise ValueError("SEARCH_STRATEGY must be either 'grid' or 'random'.")
-    if n_trials is not None:
-        if isinstance(n_trials, bool) or not isinstance(n_trials, int) or n_trials <= 0:
-            raise ValueError("N_TRIALS must be a positive integer or None.")
-
-    parameter_names = list(validated)
-    combinations = [
-        dict(zip(parameter_names, values))
-        for values in product(*(validated[name] for name in parameter_names))
-    ]
-    trial_count = len(combinations) if n_trials is None else min(
-        n_trials,
-        len(combinations),
-    )
-    if normalized_strategy == "grid":
-        return combinations[:trial_count]
-    return random.Random(random_state).sample(combinations, k=trial_count)
+    try:
+        configurations = generate_parameter_configurations(
+            validated,
+            strategy=strategy,
+            n_trials=n_trials,
+            random_state=random_state,
+        )
+    except ValueError as exc:
+        message = str(exc).replace("strategy", "SEARCH_STRATEGY").replace(
+            "n_trials", "N_TRIALS"
+        )
+        raise ValueError(message) from exc
+    return [dict(configuration) for configuration in configurations]
 
 
 def optimization_spec(metric: str) -> tuple[str, str, str]:
@@ -198,6 +158,11 @@ def single_trial_base_kwargs(
 
     parameters["comparative_run"] = False
     parameters["run_only_cluster"] = False
+    parameters["test_all_models"] = False
+    parameters["create_report"] = False
+    parameters["train_info"] = False
+    parameters["silhouette_info"] = False
+    parameters["validation_only"] = True
     return parameters
 
 
@@ -248,8 +213,11 @@ def run_hyperparameter_tuning(
     fail_fast: bool = False,
     show_progress: bool = True,
     experiment_runner: Callable[..., Path] | None = None,
+    ranking_dir: Path | None = None,
+    search_id: str | None = None,
+    compile_ranking_pdf: bool = True,
 ) -> Path:
-    """Run budgeted tuning and select the best validation configuration."""
+    """Run validation-only tuning and select the best configuration."""
     if experiment_runner is None:
         from methods.lstm_cluster.pipeline import run_experiment
 
@@ -281,6 +249,9 @@ def run_hyperparameter_tuning(
         "search_strategy": str(strategy).strip().lower(),
         "total_candidates": total_candidates,
         "requested_trials": n_trials,
+        "ranking_dir": ranking_dir,
+        "search_id": search_id,
+        "compile_ranking_pdf": False,
     }
     save_hyperparameter_tuning_outputs(results, **writer_kwargs)
 
@@ -342,7 +313,11 @@ def run_hyperparameter_tuning(
         if show_progress:
             print(f"  Validation {metric}: {objective_value:.6g}")
 
-    best = save_hyperparameter_tuning_outputs(results, **writer_kwargs)
+    final_writer_kwargs = {
+        **writer_kwargs,
+        "compile_ranking_pdf": bool(compile_ranking_pdf),
+    }
+    best = save_hyperparameter_tuning_outputs(results, **final_writer_kwargs)
     if best is None:
         raise RuntimeError(
             "Hyperparameter tuning finished without a successful finite trial. "
@@ -358,29 +333,10 @@ def run_hyperparameter_tuning(
 
 
 def main() -> None:
-    """Tune the configured search space using run_experiment.py as the base."""
-    from methods.lstm_cluster import run_experiment as base_settings
+    """Run the editable random-search configuration."""
+    from methods.lstm_cluster.random_search import main as random_search_main
 
-    base_experiment_kwargs = base_settings.experiment_kwargs()
-    timestamp_format = str(
-        base_experiment_kwargs.get("timestamp_format", "%Y%m%d_%H%M%S")
-    )
-    tuning_name = TUNING_NAME or (
-        f"{TUNING_NAME_PREFIX}_{base_experiment_kwargs['state']}_"
-        f"{base_experiment_kwargs['station_id']}_"
-        f"{datetime.now().strftime(timestamp_format)}"
-    )
-    run_hyperparameter_tuning(
-        base_experiment_kwargs=base_experiment_kwargs,
-        search_space=HYPERPARAMETER_SPACE,
-        output_dir=Path(base_experiment_kwargs["output_root"]) / tuning_name,
-        strategy=SEARCH_STRATEGY,
-        n_trials=N_TRIALS,
-        optimization_metric=OPTIMIZATION_METRIC,
-        random_state=RANDOM_STATE,
-        fail_fast=FAIL_FAST,
-        show_progress=SHOW_TUNING_PROGRESS,
-    )
+    random_search_main()
 
 
 if __name__ == "__main__":

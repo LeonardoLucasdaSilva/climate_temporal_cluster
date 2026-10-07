@@ -2,8 +2,16 @@
 
 This package contains code for loading, cleaning, and visualizing climate data.
 It is separate from the root `data/` directory, which stores raw INMET files.
+Daily station files live under `data/inmet_daily`; `data/inmet_hourly` is a
+separate reserved input root for future hourly loading and preprocessing.
 
 - `load_data.py`: functions for locating and loading station daily CSV files.
+- `output_cleanup.py`: removes empty descendant directories from completed
+  experiment output trees while preserving the supplied root directory.
+- `final_experiment_storage.py`: writes the final PyTorch sweeps' compact
+  prediction/history archives, shared targets and cluster assignments, repairs
+  overall and per-horizon ranking registries, and reconstructs the ordinary
+  artifact tree for selected configurations without retraining.
 - `clean_data.py`: reusable dataframe cleaning helpers.
 - `visualize_data.py`: intentionally empty starter module for future data
   visualization code.
@@ -18,8 +26,12 @@ It is separate from the root `data/` directory, which stores raw INMET files.
   Its sweep summary records whether independent ARMA order configurations ran
   in parallel.
 - `hyperparam_tuning_outputs.py`: checkpoints trial results for the LSTM
-  random/grid tuner, writes a readable tuning summary, and persists the best
-  validation-selected hyperparameters as JSON.
+  validation-only random tuner, writes a readable tuning summary, persists the
+  best validation-selected hyperparameters as JSON, and maintains the separate
+  shared `random_search_validation_rankings` CSV/TeX/PDF report.
+- `random_search_outputs.py`: selects the best spectral sigma per K, performs
+  top-fraction screening and complete-seed aggregation, and writes the final
+  PyTorch mean/std validation-MAE CSV/TeX/PDF rankings.
 - `lstm_comparative_outputs.py`: writes the optional sweep-level
   `comparative_analysis/` tree. It aligns same-cluster predictions on the
   intersection of real target dates, recalculates per-lead MSE, RMSE, MAE, and
@@ -152,12 +164,25 @@ feature; wind direction is represented only by `DIRECAO_VENTO_SIN` and
 `experiment_rankings.py` maintains a persistent, backend-specific leaderboard
 after every completed LSTM configuration. TensorFlow writes under
 `outputs/tensorflow/` and PyTorch under `outputs/pytorch/`; each location gets
-CSV and TeX source plus a PDF. This does not require the optional PDF for every
-individual configuration. Rows are upserted by configuration output path and
+an overall `experiment_rankings.csv`, a normalized
+`experiment_horizon_rankings.csv`, TeX source, and a PDF. This does not require
+the optional PDF for every individual configuration. Rows are upserted by configuration output path and
 independently rank MAE and MSE in ascending order and R2 in descending order.
-Report tables omit the redundant `requested_` run prefix, abbreviate loss
-names, and include the early-stopping patience metric and first LSTM layer size.
-Legacy rows are recorded as MAE patience with 1024 starting units.
+Report tables replace the run identifier with the experiment date, abbreviate
+loss names, and include the first and optional second LSTM layer sizes plus a
+boolean indicating whether precipitation was
+standardized in both clustering and LSTM preprocessing. The `U_2` table column
+uses `-` when the model has no second recurrent layer. Legacy rows are recorded
+as unstandardized, with MAE patience and 1024 starting units. The landscape
+report uses compact natural-width columns rather than fixed-width text cells.
+The configured-target table contains the run's final forecast day. Separate
+D+1 through D+H tables rank only saved lead-day outputs that were trained model
+targets. Each day is written independently as
+`experiment_rankings_horizon_dNN.{csv,tex,pdf}`, so older diagnostics that
+reused the final-day prediction are not misrepresented as independent
+forecasts. Each lead-day artifact contains the same fixed-rain and extreme-tail
+threshold tables as the main report; quantile cutoffs and all metric ranks are
+calculated independently for that lead day.
 The same metrics and ranks are
 calculated on actual-precipitation subsets above 0, 10, 20, and 30 mm and above
 each run's test-target 95th and 99th percentiles. Each PDF table orders its rows
@@ -168,6 +193,39 @@ counts.
 Leaderboard refreshes are serialized across worker processes, so parallel
 configuration completions cannot discard another run or leave the CSV, TeX,
 and PDF representing different ranking snapshots.
+If Windows temporarily locks a derived CSV or TeX ranking, its refreshed
+`.tmp` file is retained and a warning is logged instead of terminating model
+training. The next ranking audit rebuilds the table from authoritative compact
+results and retries the atomic replacement; saved model outputs, metrics, and
+configuration checkpoints remain unaffected.
+`render_cluster_comparison_rankings` additionally writes overall and per-lead
+reports whose tables group rows by identical loss, early-stopping metric, U1,
+U2, precipitation standardization, and window size. Clustering method and K
+are columns that vary down the rows. The best MAE and MSE inside each matched
+group are bold green.
+Rendered tables omit the patience and R2 columns (including R2 rank), while
+the underlying registries retain those values and patience remains part of the
+matched-configuration grouping.
+Within every table and matched group, only the spectral configuration with the
+lowest MAE for each K is displayed. The choice is recalculated from that
+table's own overall or precipitation-subset MAE; K-means and K=1 rows remain.
+For every trained lead day, the renderer also writes dedicated
+`cluster_comparison_rankings_horizon_dNN_gt_0mm`, `_gt_10mm`, and `_gt_30mm`
+TeX/PDF reports. Each dedicated report calculates and displays metrics only
+for observations in its named actual-precipitation range; the existing overall
+and combined per-lead reports are retained.
+`render_horizon_threshold_triptych_rankings` writes a compact filtered report
+with one landscape page per D+1 through D+5. Each page places the above-0,
+above-10, and above-30 mm cluster-comparison tables side by side. Settings
+shared by every selected run are stated above the panels and suppressed from
+their columns; the window and loss filters are encoded in the filename.
+`render_architecture_threshold_triptych_rankings` produces the analogous single
+report with $U_1$ and $U_2$ fixed, window size varying down the rows, and the
+same three side-by-side rain-threshold panels on each lead-day page.
+At sweep startup, and at most once every five minutes during ranking updates,
+the module also discovers completed configurations under the local backend
+output root. It adds missing runs and backfills their saved lead-day metrics
+without deleting registry rows whose artifacts exist only on another computer.
 
 `quantile_best_k_pdf.py` directly creates one PDF table with horizontal sections
 for the 10, 20, and 30 mm and 99th-percentile subsets. For each QWMSE(.9) and

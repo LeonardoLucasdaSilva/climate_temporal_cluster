@@ -42,7 +42,7 @@ CLUSTER_ONLY_PRECIPITATION = False               # Cluster on precipitation time
 CLUSTER_DISSIMILARITY_METRIC = "euclidean"       # "euclidean" or "dtw"
 MANUAL_CLUSTERING_METHOD = "rain_level"          # "legacy" or "rain_level"
 MANUAL_ZERO_TOLERANCE = 0.0                      # Used only by legacy manual clustering
-CLUSTER_ASSIGNMENT_METHOD = "centroid"           # "centroid" or "knn"
+CLUSTER_ASSIGNMENT_METHOD = "centroid"           # Manual router; spectral uses Nyström, kmeans uses centroids
 CLUSTER_ASSIGNMENT_NEIGHBORS = 3                 # Used only when assignment method is "knn"
 N_SIGMA_VALUES = 5
 SIGMA_MODE = "manual"                            # "auto" or "manual"
@@ -84,6 +84,7 @@ SHOW_CONSOLE_INFO = True                         # Only cluster windows; skip al
 PARALEL = False                                  # Keep one TensorFlow trainer on the single GPU at a time.
 REQUIRE_GPU = True                               # Fail LSTM training unless TensorFlow detects a GPU.
 CREATE_REPORT = False                            # Keep per-config TeX without compiling a PDF.
+VALIDATION_ONLY = False                          # Reserved for validation-only search runners.
 
 # Sweep-level comparison between the tests produced by this run.
 COMPARATIVE_RUN = False
@@ -173,6 +174,7 @@ def experiment_kwargs(
         "parallel_training": PARALEL,
         "require_gpu": REQUIRE_GPU,
         "create_report": CREATE_REPORT,
+        "validation_only": VALIDATION_ONLY,
         "ranking_progress_log": None,
         "ranking_progress_run_token": None,
         "ranking_progress_total": None,

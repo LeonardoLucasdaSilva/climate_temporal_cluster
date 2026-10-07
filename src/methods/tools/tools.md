@@ -26,6 +26,8 @@ and experiments.
   flat dataframe for inspection or export. `validate_window_stride` provides
   the shared positive-integer validation used by the LSTM+cluster pipeline and
   sigma selection.
+- `random_search.py`: validates Cartesian parameter spaces and produces
+  deterministic grid or without-replacement random candidate selections.
 
 Typical usage:
 

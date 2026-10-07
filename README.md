@@ -29,10 +29,40 @@ Run the main experiment from the project root:
 lstm-cluster
 ```
 
-Run budgeted LSTM hyperparameter tuning:
+Edit the candidate lists and two-stage search settings in
+`experiments/random_search/run_random_search.py`, then run:
 
 ```powershell
-lstm-hyperparam-tuning
+.\.venv\Scripts\python.exe -u experiments\random_search\run_random_search.py
+```
+
+Run or resume the five deterministic final PyTorch repetitions (675 model
+configurations each):
+
+```powershell
+.\.venv\Scripts\python.exe -u experiments\run_final_experiment_sweeps.py
+```
+
+Rerun the w=30/QWMSE(.9)/64/- comparison over five validation seeds for K=1--9,
+K-means, and five heuristic spectral sigmas, retaining per-horizon MAE without
+evaluating the test split:
+
+```powershell
+.\.venv\Scripts\python.exe -u experiments\run_repeated_validation_rankings.py
+```
+
+These standalone final sweeps keep only two files per trained configuration
+(`metadata.json` and compressed `result.npz`) and share source data, observed
+targets, and cluster assignments. They still produce overall, D+1 through D+5,
+and grouped cluster-count ranking CSV/TeX/PDF files in every repetition folder.
+See [`FINAL_EXPERIMENT_SWEEP.md`](FINAL_EXPERIMENT_SWEEP.md) for the complete
+configuration grid, fixed training settings, count derivation, parallelism,
+resume behavior, and output layout.
+To rebuild the ordinary plots and report for one selected result without
+training again, run:
+
+```powershell
+.\.venv\Scripts\python.exe experiments\reconstruct_final_experiment_artifacts.py <compact-configuration-folder>
 ```
 
 Run the ARMA baseline from the project root:
@@ -61,6 +91,7 @@ climate_temporal_cluster/
 |-- experiments/
 |   |-- create_beamer_report.py      # Build Beamer decks from saved run plots
 |   |-- create_meta_analysis_report.py # Compare saved experiment metrics
+|   |-- random_search/               # Two-stage PyTorch validation search
 |   |-- temporary_experiments/     # Older scripts kept for review
 |   `-- experiments.md
 |-- outputs/                       # Generated experiment outputs
@@ -74,6 +105,7 @@ climate_temporal_cluster/
 |   |   |-- lstm_outputs.py        # Per-configuration LSTM output writers
 |   |   |-- lstm_comparative_outputs.py # Sweep comparison writer
 |   |   |-- hyperparam_tuning_outputs.py # Tuning checkpoints and best-trial writer
+|   |   |-- random_search_outputs.py # Multi-seed validation ranking writer
 |   |   |-- meta_analysis_report.py # Cross-experiment LaTeX metric tables
 |   |   `-- visualize_data.py      # Starter visualization module
 |   |-- methods/
@@ -91,13 +123,15 @@ climate_temporal_cluster/
 |   |   |   `-- cluster_pipeline.py
 |   |   |-- lstm_cluster/
 |   |   |   |-- run_experiment.py  # Main LSTM+Cluster runner
-|   |   |   |-- hiperparam_tuning.py # Random/grid hyperparameter tuner
+|   |   |   |-- random_search.py    # Compatibility search launcher
+|   |   |   |-- hiperparam_tuning.py # Validation-only tuning engine
 |   |   |   |-- config_output.yaml # Output and plot styling settings
 |   |   |   |-- console.py         # Console output helpers
 |   |   |   |-- lstm_cluster.md    # Folder documentation
 |   |   |   |-- report.py          # Per-configuration LaTeX report writer
 |   |   |   `-- pipeline.py        # Pipeline functions
 |   |   `-- tools/
+|   |       |-- random_search.py
 |   |       |-- sliding_windows.py
 |   |       |-- sigma_choosing.py
 |   |       `-- dimensionality_reduction_tools.py
@@ -131,7 +165,7 @@ CLUSTER_ONLY_PRECIPITATION = False  # Use only the precipitation series to clust
 CLUSTER_DISSIMILARITY_METRIC = "euclidean"  # "euclidean" or "dtw"
 MANUAL_CLUSTERING_METHOD = "legacy"  # "legacy" or "rain_level"
 MANUAL_ZERO_TOLERANCE = 0.0  # Used only by legacy manual clustering
-CLUSTER_ASSIGNMENT_METHOD = "centroid"  # "centroid" or "knn"
+CLUSTER_ASSIGNMENT_METHOD = "centroid"  # Manual router; spectral uses Nyström, K-means uses centroids
 CLUSTER_ASSIGNMENT_NEIGHBORS = 5  # Used only by "knn"
 FORECAST_HORIZON = 1
 N_SIGMA_VALUES = 5
@@ -274,13 +308,17 @@ For each configuration, the experiment runs these stages:
    and optional clustering PCA on training rows/windows only, then transform
    validation and test with the training transforms.
 6. Cluster training windows with K-means, K-Shape, spectral, or manual rain
-   clustering,
-   then assign validation and test windows with `CLUSTER_ASSIGNMENT_METHOD`.
+   clustering. K-means assigns validation and test windows by Euclidean
+   distance to its fitted feature-space centroids. Spectral clustering uses a
+   Nyström extension into the fitted training spectral embedding and applies
+   the embedding-space K-means model there. Manual clustering uses
+   `CLUSTER_ASSIGNMENT_METHOD`.
    K-Shape uses the original 3D temporal windows, z-normalized shape-based
    distance, and its learned shape centroids to assign held-out windows.
    `CLUSTER_DISSIMILARITY_METRIC="dtw"` makes spectral clustering build its
-   affinity from multivariate Dynamic Time Warping distances and makes KNN use
-   the same metric for held-out assignment.
+   training affinity from multivariate Dynamic Time Warping distances and its
+   Nyström cross-affinity from held-out-to-training DTW distances. Manual DTW
+   routing uses KNN with the same metric.
    For manual runs, `MANUAL_CLUSTERING_METHOD="legacy"` preserves the
    horizon-target grouping, while `"rain_level"` bins the raw mean input-window
    precipitation into `K` equal-width training intervals.
@@ -319,25 +357,22 @@ For each configuration, the experiment runs these stages:
 
 ### Hyperparameter tuning
 
-`src/methods/lstm_cluster/hiperparam_tuning.py` reuses all fixed settings from
-`run_experiment.py` and initially tunes a configurable subset of
-`WINDOW_SIZES`, `N_CLUSTERS_LIST`, `LSTM_UNITS`, `LSTM_UNITS_2`,
-`DROPOUT_RATE`, `LEARNING_RATE`, and `WEIGHT_DECAY`. Remove a key from
-`HYPERPARAMETER_SPACE` to keep that parameter fixed at the first base-runner
-value.
+`experiments/random_search/run_random_search.py` is the editable PyTorch
+framework. It samples `N_RANDOM_CONFIGURATIONS` hyperparameter combinations,
+then expands each over K=1,3,5,7,9, K-means, and spectral clustering. Spectral
+uses training-only heuristic sigmas and retains the lowest-validation-MAE sigma
+for each K. The complete set of retained clustering results is ranked by
+validation MAE, and only the top 10% of configuration directories survives.
 
-The default random search evaluates up to `N_TRIALS` unique combinations with
-a reproducible seed. Set `SEARCH_STRATEGY = "grid"` for Cartesian order or
-`N_TRIALS = None` for the complete candidate space. The best trial is selected
-only from the configured validation metric: R2 is maximized and the supported
-error metrics are minimized. The normal pipeline still produces test outputs
-for each trial, but those values do not participate in tuning selection.
-
-The generated tuning folder contains `tuning_results.csv`,
-`tuning_summary.txt`, `best_hyperparameters.json`, and an ordinary
-single-configuration sweep folder for every `trial_XXXX`. Results are
-checkpointed after each attempt; with `FAIL_FAST = False`, failed candidates
-are recorded without cancelling the remaining search.
+Those exact top-decile configurations are rerun under every configured
+confirmation seed. The final ranking uses mean validation MAE and reports its
+sample standard deviation across seeds. Each confirmation run saves cluster
+train/validation curves. Test predictions and test metrics are never computed.
+Results, audit tables, and `final_validation_rankings.{csv,tex,pdf}` live
+together under `outputs/pytorch/random_search/<search_id>/`. See
+`experiments/random_search/random_search.md` for the complete selection,
+pruning, resumption, and output rules. The installed `lstm-random-search` and
+legacy `lstm-hyperparam-tuning` commands delegate to this framework.
 
 ### Cluster dissimilarity metric
 
@@ -345,8 +380,9 @@ are recorded without cancelling the remaining search.
 misspelling `"dwt"` is accepted as an alias for DTW. Euclidean preserves the
 previous flattened-window behavior. DTW compares the scaled 3D windows and
 uses one shared warping path across all weather variables. In the current
-implementation DTW requires spectral or manual clustering, KNN held-out
-assignment, and `PCA_VARIANCE_THRESHOLD = None`. The silhouette diagnostic and
+implementation DTW requires spectral or manual clustering and
+`PCA_VARIANCE_THRESHOLD = None`. Manual DTW requires KNN held-out assignment;
+spectral DTW always uses Nyström extension. The silhouette diagnostic and
 automatic spectral sigma candidates use the selected metric as well. For
 K-Shape, the silhouette diagnostic uses precomputed SBD distances on the
 original temporal windows.
@@ -450,18 +486,24 @@ sizes, forecast horizons, stations, and time intervals.
 
 ## Data Loading
 
-The project loads one INMET station at a time from `data/inmet`.
+The project loads one daily INMET station at a time from `data/inmet_daily`.
+`data/inmet_hourly` is reserved for incoming hourly station files; it has a
+separate configuration root so hourly data can be added without mixing the two
+time resolutions.
 
 ```python
-from config import DATA_ROOT
+from config import INMET_DAILY_ROOT, INMET_HOURLY_ROOT
 from data.load_data import load_station_daily_data
 
 df = load_station_daily_data(
     state="RS",
     station_id="A801",
-    data_root=DATA_ROOT,
+    data_root=INMET_DAILY_ROOT,
 )
 ```
+
+`DATA_ROOT` remains an alias of `INMET_DAILY_ROOT` for compatibility with
+existing scripts. New daily/hourly code should use the explicit constants.
 
 The loader returns a daily dataframe with `Data` plus numeric weather columns
 such as temperature, humidity, pressure, wind, radiation, and
@@ -664,7 +706,8 @@ positive horizons are split into `k - 1` ordered groups. In the LSTM runner,
 of each training window, divides `[0, max(training window mean)]` into `k`
 equal-width intervals, and uses those intervals as training labels. Internal
 upper bounds are open; the overall maximum is included in the final cluster.
-Validation and test still use the configured held-out assignment method.
+Validation and test for manual clustering use the configured centroid or KNN
+held-out assignment method.
 
 ```python
 from methods.cluster.cluster_pipeline import cluster_feature_matrix
@@ -690,6 +733,20 @@ The spectral implementation follows the Ng, Jordan, and Weiss style workflow:
 3. Extract the top eigenvector embedding.
 4. Row-normalize the embedding.
 5. Run K-means on the embedding.
+
+Validation and test samples are not added to or used to refit the training
+graph. Their Gaussian affinities to training samples are normalized with the
+training and held-out graph degrees, then extended with
+
+```text
+U_new = D_new^(-1/2) K_new,train D_train^(-1/2) U_train Lambda^(-1)
+```
+
+The extended rows are unit-normalized and assigned by the K-means model fitted
+on the training spectral embedding. Small eigenvalues are protected from
+division for numerical stability. For DTW, `K_new,train` is computed from
+cross-DTW distances; for Euclidean mode it is computed directly from the
+prepared feature rows.
 
 ## Next-Day Target
 
@@ -954,6 +1011,8 @@ LSTM_PRECIPITATION_TRANSFORM = False  # True applies log1p only in the LSTM path
 LSTM_LOSS_FUNCTION = "weighted_mse_loss"
 LOSS_ALPHA = 1.0
 N_SIGMA_VALUES = 1
+SIGMA_MODE = "auto"  # Training-only grid using the experiment's clustering preprocessing
+MIN_TRAINING_CLUSTER_FRACTION = 0.05  # Skip unbalanced spectral configurations
 EPOCHS = 2
 EARLY_STOPPING_METRIC = "loss"
 VERBOSE_TRAINING = 1
@@ -978,11 +1037,22 @@ weights automatically.
 Every completed LSTM configuration updates a backend-specific leaderboard in
 `outputs/tensorflow/` or `outputs/pytorch/`. The leaderboard is written as
 `experiment_rankings.csv`, `experiment_rankings.tex`, and
-`experiment_rankings.pdf`. This leaderboard PDF is independent from the
+`experiment_rankings.pdf`; per-forecast-day rows are also stored in
+`experiment_horizon_rankings.csv`. This leaderboard PDF is independent from the
 optional per-configuration `experiment_report.pdf`. It records the run, window
 size, number of clusters, clustering method, loss (including quantile or
 weighted-loss parameters), MAE, MSE, R2, and an independent rank for each
-metric. Lower MAE/MSE and higher R2 receive better ranks. The PDF also repeats
+metric. The PDF replaces the run label with the experiment date and records
+whether precipitation was standardized in both clustering and LSTM
+preprocessing. Its landscape tables use compact natural-width columns so short
+values do not create uneven fixed-width gaps. Lower MAE/MSE and higher R2 receive
+better ranks. The first table is the configured final target day (D+5 for a
+five-day forecast). Independently ranked D+1 through D+5 results are written to
+separate `experiment_rankings_horizon_d01.{csv,tex,pdf}` through
+`experiment_rankings_horizon_d05.{csv,tex,pdf}` files whenever saved trained
+predictions are available. Every lead-day file repeats the same above-0, 10,
+20, and 30 mm and lead-specific 95th/99th-percentile tables, with ranks computed
+only against configurations for that lead day. The main PDF also repeats
 those metrics and ranks for samples whose actual precipitation is above 0, 10,
 20, or 30 mm and above the test set's 95th or 99th percentile.
 Each category table is ordered independently by its own MAE; MSE and R2 do not
@@ -993,6 +1063,14 @@ and first LSTM layer size. Historical runs use MAE and 1024 respectively; the
 new reduced-network sweep records R2 and its configured 128/256 units.
 Parallel configuration workers serialize complete leaderboard updates, keeping
 every newly completed experiment in the recalculated CSV, TeX, and PDF tables.
+Because experiments may be produced on two computers, sweep startup scans the
+current computer's backend output tree for completed but unregistered runs.
+Ranking updates repeat this additive scan at most every five minutes. Existing
+registry rows are retained when their result folders are available only on the
+other computer; copying those folders locally allows their per-day metrics to be
+backfilled without model retraining.
+When a PyTorch sweep finishes successfully, it also removes empty directories
+left by configurations skipped before any artifacts were written.
 
 To silence pipeline progress messages and model-training output, set
 `SHOW_CONSOLE_INFO = False` in `run_experiment.py`. If using the root launcher,

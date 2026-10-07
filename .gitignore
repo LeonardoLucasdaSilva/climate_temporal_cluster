@@ -142,8 +142,10 @@ project_audiction/
 src/NEW/
 
 # Data files - keep structure but ignore large CSV files
-data/inmet/**/*.csv
-data/inmet/**/*.CSV
+data/inmet_daily/**/*.csv
+data/inmet_daily/**/*.CSV
+data/inmet_hourly/**/*.csv
+data/inmet_hourly/**/*.CSV
 
 # Temporary outputs - keep structure but ignore generated files
 outputs/**/

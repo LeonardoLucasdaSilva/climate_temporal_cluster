@@ -13,9 +13,45 @@ from methods.cluster.automatic_sigma import (
     run_automatic_sigma_selection,
 )
 from methods.tools.sigma_choosing import calculate_sigma_values
+from methods.lstm_cluster_pytorch.pipeline import _training_sigma_values
 
 
 class AutomaticSigmaTests(unittest.TestCase):
+    def test_experiment_sigma_uses_only_training_rows_and_active_scalers(self) -> None:
+        rows = 30
+        base = pd.DataFrame(
+            {
+                "Data": pd.date_range("2026-01-01", periods=rows),
+                "PRECIPITACAO_TOTAL": np.linspace(0.0, 100.0, rows) ** 1.2,
+                "TEMPERATURA_MAXIMA": np.linspace(20.0, 30.0, rows),
+            }
+        )
+        changed_test = base.copy()
+        changed_test.loc[18:, "PRECIPITACAO_TOTAL"] = 1_000_000.0
+        kwargs = {
+            "feature_columns": ["PRECIPITACAO_TOTAL", "TEMPERATURA_MAXIMA"],
+            "window_size": 3,
+            "window_stride": 1,
+            "forecast_horizon": 1,
+            "train_ratio": 0.6,
+            "val_ratio": 0.1,
+            "clustering_feature_normalize": "standard",
+            "clustering_precipitation_normalize": None,
+            "variance_threshold": None,
+            "cluster_only_precipitation": False,
+            "n_values": 3,
+        }
+
+        mixed = _training_sigma_values(base, **kwargs)
+        changed = _training_sigma_values(changed_test, **kwargs)
+        standardized = _training_sigma_values(
+            base,
+            **{**kwargs, "clustering_precipitation_normalize": "standard"},
+        )
+
+        np.testing.assert_allclose(mixed, changed)
+        self.assertFalse(np.allclose(mixed, standardized))
+
     def test_sigma_selection_supports_dtw(self) -> None:
         df = pd.DataFrame({"feature": [0.0, 1.0, 0.0, 2.0, 0.0, 3.0]})
 

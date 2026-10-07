@@ -23,6 +23,8 @@ from data.lstm_comparative_outputs import (
     validate_comparative_pivot,
 )
 from methods.lstm_cluster.pipeline import (
+    ExperimentConfig,
+    _cluster_window_splits,
     _execute_configuration_jobs,
     _normalize_learning_rate_values,
     build_configurations,
@@ -34,6 +36,58 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class LstmComparativeOutputTests(unittest.TestCase):
+    def test_k1_bypasses_clustering_and_ignores_spectral_sigma_grid(self) -> None:
+        configurations = build_configurations(
+            {15: [0.1, 0.2, 0.3]},
+            state="RS",
+            station_id="A801",
+            window_sizes=[15],
+            n_clusters_list=[1],
+            clustering_algorithm="spectral",
+        )
+        self.assertEqual(len(configurations), 1)
+        self.assertIsNone(configurations[0].sigma)
+
+        with patch(
+            "methods.lstm_cluster.pipeline.SpectralClusteringModel.fit",
+            side_effect=AssertionError("K=1 must not fit spectral clustering"),
+        ):
+            labels = _cluster_window_splits(
+                ExperimentConfig(
+                    state="RS",
+                    station_id="A801",
+                    window_size=15,
+                    n_clusters=1,
+                    algorithm="spectral",
+                    sigma=None,
+                ),
+                np.ones((4, 2)),
+                np.ones((2, 2)),
+                np.ones((3, 2)),
+                np.ones(4),
+                random_state=42,
+                manual_zero_tolerance=0.0,
+            )
+        np.testing.assert_array_equal(labels[0], np.zeros(4, dtype=int))
+        np.testing.assert_array_equal(labels[1], np.zeros(2, dtype=int))
+        np.testing.assert_array_equal(labels[2], np.zeros(3, dtype=int))
+
+    def test_multi_algorithm_sweep_creates_one_k1_baseline_per_window(self) -> None:
+        configurations = build_configurations(
+            {15: [0.1, 0.2], 30: [0.3, 0.4]},
+            state="RS",
+            station_id="A801",
+            window_sizes=[15, 30],
+            n_clusters_list=[1, 3],
+            clustering_algorithm=["kmeans", "spectral"],
+        )
+
+        baselines = [config for config in configurations if config.n_clusters == 1]
+
+        self.assertEqual(len(baselines), 2)
+        self.assertEqual({config.window_size for config in baselines}, {15, 30})
+        self.assertTrue(all(config.sigma is None for config in baselines))
+
     def test_parallel_configuration_jobs_preserve_sweep_order(self) -> None:
         configurations = build_configurations(
             [None],
@@ -952,6 +1006,21 @@ class LstmComparativeOutputTests(unittest.TestCase):
         self.assertEqual(kshape_config.name, "RS_A801_w15_k03_kshape")
         self.assertEqual(kmeans_config.name, "RS_A801_w15_k03_kmeans")
         self.assertEqual(spectral_config.name, "RS_A801_w15_k03_spectral_sigma_1")
+
+    def test_window_specific_sigma_grid_is_used_for_spectral_configs(self) -> None:
+        configurations = build_configurations(
+            {15: [0.1, 0.2], 30: [1.5]},
+            state="RS",
+            station_id="A801",
+            window_sizes=[15, 30],
+            n_clusters_list=[3],
+            clustering_algorithm="spectral",
+        )
+
+        self.assertEqual(
+            [(config.window_size, config.sigma) for config in configurations],
+            [(15, 0.1), (15, 0.2), (30, 1.5)],
+        )
 
     def test_clustering_algorithm_list_expands_configuration_grid(self) -> None:
         configurations = build_configurations(

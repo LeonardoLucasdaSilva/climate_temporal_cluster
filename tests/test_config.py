@@ -7,6 +7,9 @@ from pathlib import Path
 import unittest
 
 from config import (
+    DATA_ROOT,
+    INMET_DAILY_ROOT,
+    INMET_HOURLY_ROOT,
     MIKTEX_STATE_DIR,
     PROJECT_ROOT,
     dated_output_root,
@@ -17,6 +20,11 @@ from config import (
 
 
 class ConfigTests(unittest.TestCase):
+    def test_inmet_daily_and_hourly_roots_are_distinct(self) -> None:
+        self.assertEqual(INMET_DAILY_ROOT, PROJECT_ROOT / "data" / "inmet_daily")
+        self.assertEqual(INMET_HOURLY_ROOT, PROJECT_ROOT / "data" / "inmet_hourly")
+        self.assertEqual(DATA_ROOT, INMET_DAILY_ROOT)
+
     def test_output_date_folder_uses_day_month_two_digit_year(self) -> None:
         self.assertEqual(output_date_folder(date(2025, 7, 14)), "14_07_25")
 

@@ -18,6 +18,7 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.neighbors import KNeighborsClassifier
 
+from config import OUTPUTS_BASE_DIR
 from data.load_data import load_station_daily_data
 from data.lstm_comparative_outputs import (
     ComparativeRunData,
@@ -30,8 +31,17 @@ from data.lstm_outputs import (
     save_cluster_sweep_outputs,
     save_run_outputs,
     save_sweep_outputs,
+    save_training_history_plots,
 )
-from data.experiment_rankings import update_experiment_rankings
+from data.hyperparam_tuning_outputs import (
+    save_validation_sweep_outputs,
+    save_validation_trial_outputs,
+)
+from data.experiment_rankings import (
+    synchronize_local_experiment_rankings,
+    update_experiment_rankings,
+)
+from data.output_cleanup import remove_empty_directories
 from evaluation.metrics import calculate_regression_metrics
 from methods.cluster.dtw import (
     cross_dtw_distances,
@@ -43,7 +53,7 @@ from methods.cluster.manual import (
     normalize_manual_clustering_method,
 )
 from methods.cluster.kshape import KShape
-from methods.cluster.ng import spectral_clustering
+from methods.cluster.ng import SpectralClusteringModel
 from methods.cluster.cluster_pipeline import (
     KMEANS_N_INIT,
     PCA_VARIANCE_THRESHOLD,
@@ -69,7 +79,10 @@ from methods.tools.precipitation_utils import (
     precipitation_targets,
 )
 from methods.tools.sliding_windows import create_windows, validate_window_stride
-from methods.tools.sigma_choosing import calculate_sigma_values
+from methods.tools.sigma_choosing import (
+    euclidian_distances,
+    sigma_values_from_distance_distribution,
+)
 
 
 EXPERIMENT_BACKEND = "pytorch"
@@ -606,7 +619,7 @@ def _normalize_clustering_algorithms(
 
 
 def build_configurations(
-    sigmas: list[float | None],
+    sigmas: list[float | None] | Mapping[int, Sequence[float | None]],
     state: str,
     station_id: str,
     window_sizes: list[int],
@@ -678,8 +691,22 @@ def build_configurations(
         )
         for window_size in window_sizes
         for n_clusters in n_clusters_list
-        for algorithm in clustering_algorithms
-        for sigma in (sigmas if algorithm == "spectral" else [None])
+        for algorithm in (
+            clustering_algorithms[:1]
+            if n_clusters == 1
+            else clustering_algorithms
+        )
+        for sigma in (
+            [None]
+            if n_clusters == 1
+            else (
+                list(sigmas[window_size])
+                if isinstance(sigmas, Mapping)
+                else sigmas
+            )
+            if algorithm == "spectral"
+            else [None]
+        )
         for parameter_values in parameter_combinations
     ]
 
@@ -925,6 +952,54 @@ def _clustering_feature_columns(
     return feature_columns
 
 
+def _training_sigma_values(
+    df: pd.DataFrame,
+    feature_columns: list[str],
+    *,
+    window_size: int,
+    window_stride: int,
+    forecast_horizon: int,
+    train_ratio: float,
+    val_ratio: float,
+    clustering_feature_normalize: str | None,
+    clustering_precipitation_normalize: str | None,
+    variance_threshold: float | None,
+    cluster_only_precipitation: bool,
+    n_values: int,
+) -> np.ndarray:
+    """Choose sigmas from the exact training features used for clustering."""
+    train_df = split_daily_dataframe(df, train_ratio, val_ratio).train
+    columns = _clustering_feature_columns(
+        feature_columns,
+        cluster_only_precipitation,
+    )
+    _windows, windows_flat, _scalers, _pca = _split_feature_matrix(
+        train_df,
+        columns,
+        window_size,
+        scalers=FeatureScalingState(),
+        covariate_scaler_type=clustering_feature_normalize,
+        precipitation_scaler_type=clustering_precipitation_normalize,
+        pca=None,
+        fit_scaler=True,
+        fit_pca=True,
+        variance_threshold=variance_threshold,
+        window_stride=window_stride,
+    )
+    training_features = _valid_supervised_windows(
+        train_df,
+        windows_flat,
+        window_size,
+        forecast_horizon,
+        offset=0,
+        window_stride=window_stride,
+    )[0]
+    return sigma_values_from_distance_distribution(
+        euclidian_distances(training_features),
+        n_values=n_values,
+    )
+
+
 def _nearest_centroid_labels(
     feature_matrix: np.ndarray,
     centroids: np.ndarray,
@@ -1025,6 +1100,15 @@ def _cluster_window_splits(
             f"got {len(X_train)}."
         )
 
+    # K=1 is an unclustered baseline. Avoid fitting any clustering model (and,
+    # for spectral, avoid constructing its O(n^2) affinity matrix).
+    if config.n_clusters == 1:
+        return (
+            np.zeros(len(X_train), dtype=int),
+            np.zeros(len(X_val), dtype=int),
+            np.zeros(len(X_test), dtype=int),
+        )
+
     assignment_method = _normalize_cluster_assignment_method(
         config.cluster_assignment_method
     )
@@ -1039,7 +1123,11 @@ def _cluster_window_splits(
             f"algorithm={config.algorithm!r} does not support "
             "cluster_dissimilarity_metric='dtw'; use 'spectral' or 'manual'."
         )
-    if dissimilarity_metric == "dtw" and assignment_method != "knn":
+    if (
+        dissimilarity_metric == "dtw"
+        and config.algorithm != "spectral"
+        and assignment_method != "knn"
+    ):
         raise ValueError(
             "cluster_assignment_method='knn' is required when "
             "cluster_dissimilarity_metric='dtw'."
@@ -1083,13 +1171,12 @@ def _cluster_window_splits(
             if dissimilarity_metric == "dtw" and train_windows is not None
             else None
         )
-        c_train = spectral_clustering(
-            X_train,
+        model = SpectralClusteringModel(
             sigma=config.sigma,
             k=config.n_clusters,
             random_state=random_state,
-            distance_matrix=distance_matrix,
-        )
+        ).fit(X_train, distance_matrix=distance_matrix)
+        c_train = model.labels_
     else:
         supported = ", ".join(SUPPORTED_CLUSTERING_ALGORITHMS)
         raise ValueError(
@@ -1103,6 +1190,27 @@ def _cluster_window_splits(
             np.asarray(c_train, dtype=int),
             model.predict(val_windows),
             model.predict(test_windows),
+        )
+
+    if config.algorithm == "spectral":
+        val_cross_distances = (
+            cross_dtw_distances(val_windows, train_windows)
+            if dissimilarity_metric == "dtw"
+            and val_windows is not None
+            and train_windows is not None
+            else None
+        )
+        test_cross_distances = (
+            cross_dtw_distances(test_windows, train_windows)
+            if dissimilarity_metric == "dtw"
+            and test_windows is not None
+            and train_windows is not None
+            else None
+        )
+        return (
+            np.asarray(c_train, dtype=int),
+            model.predict(X_val, cross_distance_matrix=val_cross_distances),
+            model.predict(X_test, cross_distance_matrix=test_cross_distances),
         )
 
     assignment_kwargs = {
@@ -2248,6 +2356,7 @@ def _train_single_cluster_model(
     verbose_training: int,
     random_state: int,
     test_all_models: bool,
+    evaluate_test: bool,
     loss_alpha: float,
     target_scaler: FeatureScaler | None,
     lstm_precipitation_transform: bool,
@@ -2311,12 +2420,12 @@ def _train_single_cluster_model(
     )
     test_predictions_scaled = (
         np.asarray(model.predict(X_test_lstm[te_mask]), dtype=float)
-        if np.any(te_mask)
+        if evaluate_test and np.any(te_mask)
         else None
     )
     all_test_predictions_scaled = (
         np.asarray(model.predict(X_test_lstm), dtype=float)
-        if test_all_models
+        if evaluate_test and test_all_models
         else None
     )
     test_metrics = None
@@ -2348,9 +2457,18 @@ def _train_single_cluster_model(
     )
 
 
-def _parallel_worker_count(n_jobs: int) -> int:
+def _parallel_worker_count(n_jobs: int, max_workers: int | None = None) -> int:
     """Return the maximum useful number of workers for independent jobs."""
-    return max(1, min(int(n_jobs), os.cpu_count() or 1))
+    worker_limit = os.cpu_count() or 1
+    if max_workers is not None:
+        if (
+            isinstance(max_workers, (bool, np.bool_))
+            or not isinstance(max_workers, (int, np.integer))
+            or int(max_workers) <= 0
+        ):
+            raise ValueError("parallel_worker_count must be a positive integer.")
+        worker_limit = min(worker_limit, int(max_workers))
+    return max(1, min(int(n_jobs), worker_limit))
 
 
 def train_cluster_models(
@@ -2387,12 +2505,25 @@ def train_cluster_models(
     random_state: int,
     show_console_info: bool,
     test_all_models: bool,
+    evaluate_test: bool = True,
     parallel_training: bool = False,
+    parallel_worker_count: int | None = None,
     target_scaler: FeatureScaler | None = None,
     loss_alpha: float = 1.0,
     lstm_precipitation_transform: bool = False,
     require_gpu: bool = False,
+    return_validation_by_lead_day: bool = False,
 ) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[int, object],
+    dict[int, dict[str, float]],
+    dict[str, object] | None,
+] | tuple[
+    np.ndarray,
     np.ndarray,
     np.ndarray,
     np.ndarray,
@@ -2403,6 +2534,8 @@ def train_cluster_models(
     dict[str, object] | None,
 ]:
     """Train cluster-specific LSTMs and merge their predictions."""
+    if test_all_models and not evaluate_test:
+        raise ValueError("test_all_models requires evaluate_test=True.")
 
     X_train_lstm = to_lstm_shape(X_train, sequence_length)
     X_val_lstm = to_lstm_shape(X_val, sequence_length)
@@ -2441,6 +2574,7 @@ def train_cluster_models(
     y_pred_train = np.zeros_like(y_train, dtype=float)
     y_pred_train_by_lead_day = np.zeros_like(y_train_by_lead_day, dtype=float)
     y_pred_val = np.zeros_like(y_val, dtype=float)
+    y_pred_val_by_lead_day = np.zeros_like(y_val_by_lead_day, dtype=float)
     y_pred_test = np.zeros_like(y_test, dtype=float)
     y_pred_test_by_lead_day = np.zeros_like(y_test_by_lead_day, dtype=float)
     histories_by_cluster: dict[int, object] = {}
@@ -2468,7 +2602,10 @@ def train_cluster_models(
                 show_console_info,
             )
 
-    worker_count = _parallel_worker_count(len(train_cluster_ids))
+    worker_count = _parallel_worker_count(
+        len(train_cluster_ids),
+        parallel_worker_count,
+    )
     use_parallel = parallel_training and worker_count > 1
     if use_parallel:
         print_info(
@@ -2506,6 +2643,7 @@ def train_cluster_models(
         "verbose_training": verbose_training if show_console_info and not use_parallel else 0,
         "random_state": random_state,
         "test_all_models": test_all_models,
+        "evaluate_test": evaluate_test,
         "loss_alpha": loss_alpha,
         "target_scaler": target_scaler,
         "lstm_precipitation_transform": lstm_precipitation_transform,
@@ -2555,7 +2693,7 @@ def train_cluster_models(
         y_pred_train_by_lead_day[result.train_mask] = cluster_y_pred_train_by_lead_day
         y_pred_train[result.train_mask] = cluster_y_pred_train_by_lead_day[:, -1]
         if result.val_predictions_scaled is not None:
-            y_pred_val_by_lead_day = np.maximum(
+            cluster_y_pred_val_by_lead_day = np.maximum(
                 _inverse_transform_precipitation_values(
                     result.val_predictions_scaled,
                     target_scaler,
@@ -2563,7 +2701,10 @@ def train_cluster_models(
                 ),
                 0.0,
             )
-            y_pred_val[result.val_mask] = y_pred_val_by_lead_day[:, -1]
+            y_pred_val_by_lead_day[result.val_mask] = (
+                cluster_y_pred_val_by_lead_day
+            )
+            y_pred_val[result.val_mask] = cluster_y_pred_val_by_lead_day[:, -1]
         if result.test_predictions_scaled is not None:
             cluster_y_pred_test_by_lead_day = np.maximum(
                 _inverse_transform_precipitation_values(
@@ -2592,6 +2733,18 @@ def train_cluster_models(
             )
 
     if not test_all_models:
+        if return_validation_by_lead_day:
+            return (
+                y_pred_train,
+                y_pred_train_by_lead_day,
+                y_pred_val,
+                y_pred_val_by_lead_day,
+                y_pred_test,
+                y_pred_test_by_lead_day,
+                histories_by_cluster,
+                metrics_by_cluster,
+                None,
+            )
         return (
             y_pred_train,
             y_pred_train_by_lead_day,
@@ -2634,6 +2787,18 @@ def train_cluster_models(
         show_console_info,
     )
 
+    if return_validation_by_lead_day:
+        return (
+            y_pred_train,
+            y_pred_train_by_lead_day,
+            y_pred_val,
+            y_pred_val_by_lead_day,
+            y_pred_test,
+            y_pred_test_by_lead_day,
+            histories_by_cluster,
+            metrics_by_cluster,
+            test_model_selection,
+        )
     return (
         y_pred_train,
         y_pred_train_by_lead_day,
@@ -2693,11 +2858,22 @@ def run_configuration(
     ranking_progress_log: Path | None = None,
     ranking_progress_run_token: str | None = None,
     ranking_progress_total: int | None = None,
+    min_training_cluster_fraction: float = 0.0,
+    validation_only: bool = False,
+    save_validation_history: bool = False,
 ) -> dict[str, float | int | str | None]:
     """Run one sweep configuration and save its artifacts."""
     if run_only_cluster and comparative_runs is not None:
         raise ValueError(
             "Comparative LSTM outputs are unavailable when run_only_cluster=True."
+        )
+    if validation_only and run_only_cluster:
+        raise ValueError("validation_only cannot be combined with run_only_cluster.")
+    if validation_only and test_all_models:
+        raise ValueError("validation_only requires test_all_models=False.")
+    if save_validation_history and not validation_only:
+        raise ValueError(
+            "save_validation_history requires validation_only=True."
         )
     clustering_feature_normalize = _normalize_optional_scaler_type(
         clustering_feature_normalize,
@@ -2765,6 +2941,30 @@ def run_configuration(
     i_train = split_data.i_train
     i_val = split_data.i_val
     i_test = split_data.i_test
+    cluster_counts = np.bincount(c_train, minlength=config.n_clusters)
+    cluster_fractions = cluster_counts / len(c_train)
+    smallest_fraction = float(cluster_fractions.min())
+    if (
+        config.algorithm == "spectral"
+        and smallest_fraction < min_training_cluster_fraction
+    ):
+        reason = (
+            f"smallest training cluster is {smallest_fraction:.2%}; "
+            f"minimum is {min_training_cluster_fraction:.2%}"
+        )
+        print_info(f"  Skipped before LSTM training: {reason}", show_console_info)
+        return {
+            "status": "skipped_invalid_clustering",
+            "run_name": config.name,
+            "window_size": config.window_size,
+            "n_clusters": config.n_clusters,
+            "algorithm": config.algorithm,
+            "sigma": config.sigma,
+            "cluster_counts": ";".join(str(int(value)) for value in cluster_counts),
+            "smallest_cluster_fraction": smallest_fraction,
+            "minimum_cluster_fraction": float(min_training_cluster_fraction),
+            "reason": reason,
+        }
 
     print_info(
         f"  Daily rows: train={len(daily_splits.train)}, "
@@ -2963,7 +3163,39 @@ def run_configuration(
         target_scaler=split_data.target_scaler,
         lstm_precipitation_transform=split_data.lstm_precipitation_transform,
         require_gpu=require_gpu,
+        evaluate_test=not validation_only,
     )
+
+    if validation_only:
+        train_metrics = calculate_regression_metrics(y_train, y_pred_train)
+        val_metrics = calculate_regression_metrics(y_val, y_pred_val)
+        result: dict[str, float | int | str | None] = {
+            "status": "completed",
+            "run_name": config.name,
+            "window_size": config.window_size,
+            "window_stride": config.window_stride,
+            "n_clusters": config.n_clusters,
+            "algorithm": config.algorithm,
+            "sigma": config.sigma,
+            "n_train": len(y_train),
+            "n_val": len(y_val),
+            "validation_only": True,
+        }
+        for split, metrics in (("train", train_metrics), ("val", val_metrics)):
+            for metric_name, value in metrics.items():
+                result[f"{split}_{metric_name.lower()}"] = float(value)
+        if run_parameters is not None:
+            result.update(run_parameters)
+        save_validation_trial_outputs(result, output_dir)
+        if save_validation_history:
+            save_training_history_plots(histories_by_cluster, output_dir)
+        print_info(
+            "  Validation-only metrics: "
+            f"MAE={result['val_mae']:.4f}, "
+            f"RMSE={result['val_rmse']:.4f}, R2={result['val_r2']:.4f}",
+            show_console_info,
+        )
+        return result
 
     result = save_run_outputs(
         config,
@@ -3018,7 +3250,15 @@ def run_configuration(
         output_dir=output_dir,
         window_size=config.window_size,
         n_clusters=config.n_clusters,
-        clustering_method=config.algorithm,
+        clustering_method=(
+            "-"
+            if config.n_clusters == 1
+            else (
+                f"spectral({config.sigma:g})"
+                if config.algorithm == "spectral" and config.sigma is not None
+                else config.algorithm
+            )
+        ),
         loss_function=lstm_loss_function,
         loss_alpha=loss_alpha,
         loss_quantiles=loss_quantiles,
@@ -3027,6 +3267,16 @@ def run_configuration(
         r2=float(result["test_r2"]),
         actual=y_test,
         predicted=y_pred_test,
+        actual_by_lead_day=split_data.test_targets_by_lead_day,
+        predicted_by_lead_day=y_pred_test_by_lead_day,
+        forecast_horizon=forecast_horizon,
+        patience_metric=early_stopping_metric,
+        lstm_units=lstm_units,
+        lstm_units_2=lstm_units_2,
+        precipitation_standardized=(
+            clustering_precipitation_normalize == "standard"
+            and lstm_precipitation_normalize == "standard"
+        ),
         compile_pdf=True,
         progress_log=ranking_progress_log,
         progress_run_token=ranking_progress_run_token,
@@ -3192,6 +3442,9 @@ def run_experiment(
     ranking_progress_log: Path | None = None,
     ranking_progress_run_token: str | None = None,
     ranking_progress_total: int | None = None,
+    min_training_cluster_fraction: float = 0.05,
+    validation_only: bool = False,
+    save_validation_history: bool = False,
 ) -> Path:
     """Run the configured sweep and return its output directory."""
     clustering_algorithms = _normalize_clustering_algorithms(clustering_algorithm)
@@ -3212,6 +3465,20 @@ def run_experiment(
         raise ValueError("train_info must be a boolean.")
     if not isinstance(silhouette_info, (bool, np.bool_)):
         raise ValueError("silhouette_info must be a boolean.")
+    if not isinstance(validation_only, (bool, np.bool_)):
+        raise ValueError("validation_only must be a boolean.")
+    if not isinstance(save_validation_history, (bool, np.bool_)):
+        raise ValueError("save_validation_history must be a boolean.")
+    if validation_only and run_only_cluster:
+        raise ValueError("validation_only cannot be combined with run_only_cluster.")
+    if validation_only and test_all_models:
+        raise ValueError("validation_only requires test_all_models=False.")
+    if validation_only and comparative_run:
+        raise ValueError("validation_only requires comparative_run=False.")
+    if save_validation_history and not validation_only:
+        raise ValueError(
+            "save_validation_history requires validation_only=True."
+        )
     lstm_precipitation_transform = _validate_lstm_precipitation_transform(
         lstm_precipitation_transform
     )
@@ -3326,7 +3593,7 @@ def run_experiment(
     if cluster_dissimilarity_metric == "dtw":
         unsupported_dtw_algorithms = [
             algorithm
-            for algorithm in clustering_algorithms
+        for algorithm in clustering_algorithms
             if algorithm in {"kmeans", "kshape"}
         ]
         if unsupported_dtw_algorithms:
@@ -3336,9 +3603,14 @@ def run_experiment(
                 "DTW; "
                 "use 'spectral' or 'manual'."
             )
-        if cluster_assignment_method != "knn":
+        if (
+            "manual" in clustering_algorithms
+            and cluster_assignment_method != "knn"
+        ):
             raise ValueError(
-                "CLUSTER_ASSIGNMENT_METHOD='knn' is required when using DTW."
+                "CLUSTER_ASSIGNMENT_METHOD='knn' is required for manual "
+                "clustering with DTW. Spectral clustering uses Nyström "
+                "extension."
             )
         if variance_threshold is not None:
             raise ValueError(
@@ -3375,6 +3647,15 @@ def run_experiment(
     )
 
     setup_styling(plot_style)
+    backend_output_root = (OUTPUTS_BASE_DIR / EXPERIMENT_BACKEND).resolve()
+    if (
+        not validation_only
+        and Path(output_root).resolve().is_relative_to(backend_output_root)
+    ):
+        synchronize_local_experiment_rankings(
+            EXPERIMENT_BACKEND,
+            compile_pdf=True,
+        )
     sweep_dir.mkdir(parents=True, exist_ok=True)
 
     print_section("Loading Data", show_console_info)
@@ -3386,17 +3667,34 @@ def run_experiment(
     )
     print_info(f"Numeric features: {numeric_cols}", show_console_info)
 
-    if "spectral" in clustering_algorithms:
+    needs_spectral_sigma = "spectral" in clustering_algorithms and any(
+        n_clusters != 1 for n_clusters in n_clusters_list
+    )
+    if needs_spectral_sigma:
         if sigma_values is None:
             print_section("Calculating Sigma Values", show_console_info)
-            selected_sigma_values = calculate_sigma_values(
-                df,
-                n_values=n_sigma_values,
-                window_stride=window_stride,
-                dissimilarity_metric=cluster_dissimilarity_metric,
-            ).tolist()
+            selected_sigma_values = {
+                int(current_window_size): _training_sigma_values(
+                    df,
+                    numeric_cols,
+                    window_size=int(current_window_size),
+                    window_stride=window_stride,
+                    forecast_horizon=forecast_horizon,
+                    train_ratio=train_ratio,
+                    val_ratio=val_ratio,
+                    clustering_feature_normalize=clustering_feature_normalize,
+                    clustering_precipitation_normalize=(
+                        clustering_precipitation_normalize
+                    ),
+                    variance_threshold=variance_threshold,
+                    cluster_only_precipitation=bool(cluster_only_precipitation),
+                    n_values=n_sigma_values,
+                ).tolist()
+                for current_window_size in window_sizes
+            }
             print_info(
-                f"Generated {len(selected_sigma_values)} sigma values: "
+                "Generated training-only, preprocessing-matched Euclidean "
+                "sigma values: "
                 f"{selected_sigma_values}",
                 show_console_info,
             )
@@ -3510,6 +3808,8 @@ def run_experiment(
                 "train_info": bool(train_info),
                 "silhouette_info": bool(silhouette_info),
                 "require_gpu": bool(require_gpu),
+                "validation_only": bool(validation_only),
+                "save_validation_history": bool(save_validation_history),
             }
         )
     resolved_pivot_parameter = None
@@ -3554,9 +3854,14 @@ def run_experiment(
         if cluster_assignment_method == "knn"
         else ""
     )
+    spectral_assignment = (
+        "; spectral validation/test assignment: nystrom"
+        if "spectral" in clustering_algorithms
+        else ""
+    )
     print_info(
         f"Held-out cluster assignment: {cluster_assignment_method}"
-        f"{assignment_detail}",
+        f"{assignment_detail}{spectral_assignment}",
         show_console_info,
     )
     print_info(
@@ -3667,6 +3972,7 @@ def run_experiment(
         )
     configuration_jobs = []
     for config, run_parameters in zip(configurations, run_parameter_rows):
+        config_output_dir = sweep_dir / config.name
         configuration_jobs.append(
             (
                 (
@@ -3678,7 +3984,7 @@ def run_experiment(
                     lstm_feature_normalize,
                     lstm_precipitation_normalize,
                     variance_threshold,
-                    sweep_dir / config.name,
+                    config_output_dir,
                 ),
                 dict(
                     use_all_features=use_all_features,
@@ -3726,6 +4032,9 @@ def run_experiment(
                     ranking_progress_log=ranking_progress_log,
                     ranking_progress_run_token=ranking_progress_run_token,
                     ranking_progress_total=ranking_progress_total,
+                    min_training_cluster_fraction=min_training_cluster_fraction,
+                    validation_only=bool(validation_only),
+                    save_validation_history=bool(save_validation_history),
                 ),
             )
         )
@@ -3735,6 +4044,35 @@ def run_experiment(
         show_console_info=show_console_info,
         plot_style=plot_style,
     )
+    invalid_results = [
+        result
+        for result in results
+        if result.get("status") == "skipped_invalid_clustering"
+    ]
+    results = [
+        result
+        for result in results
+        if result.get("status") != "skipped_invalid_clustering"
+    ]
+    if invalid_results:
+        invalid_frame = pd.DataFrame(invalid_results)
+        invalid_csv = sweep_dir.parent / f"invalid_sigmas_{sweep_dir.name}.csv"
+        invalid_txt = sweep_dir.parent / f"invalid_sigmas_{sweep_dir.name}.txt"
+        invalid_frame.to_csv(invalid_csv, index=False)
+        lines = [
+            f"Invalid spectral clustering configurations: {len(invalid_results)}",
+            f"Minimum training-cluster fraction: {min_training_cluster_fraction:.2%}",
+            "",
+        ]
+        for result in invalid_results:
+            lines.append(
+                f"window={result['window_size']}, K={result['n_clusters']}, "
+                f"sigma={result['sigma']}: {result['reason']} "
+                f"(counts={result['cluster_counts']})"
+            )
+        invalid_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print_info(f"Invalid sigma report: {invalid_csv}", show_console_info)
+        print_info(f"Invalid sigma report: {invalid_txt}", show_console_info)
 
     if run_only_cluster:
         save_cluster_sweep_outputs(
@@ -3753,6 +4091,8 @@ def run_experiment(
             pca_variance_threshold=variance_threshold,
             pca_for_clustering_only=pca_for_clustering_only,
         )
+    elif validation_only:
+        save_validation_sweep_outputs(results, sweep_dir)
     else:
         save_sweep_outputs(
             results,
@@ -3782,14 +4122,32 @@ def run_experiment(
                 show_console_info,
             )
 
+    removed_empty_directories = remove_empty_directories(sweep_dir)
+
     print_section("Sweep Complete", show_console_info)
     print_info(f"Results folder: {sweep_dir}", show_console_info)
+    print_info(
+        f"Removed empty configuration folders: {removed_empty_directories}",
+        show_console_info,
+    )
     print_info("Sweep-level files:", show_console_info)
     if run_only_cluster:
         print_info("  - cluster_sweep_results.csv", show_console_info)
         print_info("  - cluster_sweep_summary.txt", show_console_info)
         print_info(
             "Each configuration folder contains cluster assignments, diagnostics, and report.",
+            show_console_info,
+        )
+    elif validation_only:
+        print_info("  - sweep_results.csv (validation metrics only)", show_console_info)
+        print_info("  - validation_only.txt", show_console_info)
+        if save_validation_history:
+            print_info(
+                "Each configuration folder also contains model_fit/ curves.",
+                show_console_info,
+            )
+        print_info(
+            "Test predictions and test metrics were not computed.",
             show_console_info,
         )
     else:

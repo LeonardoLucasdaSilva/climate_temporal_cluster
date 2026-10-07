@@ -314,7 +314,7 @@ outputs/dd_mm_yy/lstm_cluster_sweep_RS_A801_<timestamp>/
 ## How to Run
 
 ### Prerequisites
-1. Ensure data exists: `data/inmet/RS/A801/`
+1. Ensure daily data exists: `data/inmet_daily/RS/A801/`
 2. Install dependencies:
    ```bash
    pip install -r requirements.txt

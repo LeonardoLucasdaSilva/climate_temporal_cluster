@@ -4,7 +4,12 @@ import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_ROOT = PROJECT_ROOT / "data" / "inmet"
+DATA_DIR = PROJECT_ROOT / "data"
+INMET_DAILY_ROOT = DATA_DIR / "inmet_daily"
+INMET_HOURLY_ROOT = DATA_DIR / "inmet_hourly"
+# Backward-compatible alias for callers that have not adopted the explicit
+# daily/hourly root names yet.
+DATA_ROOT = INMET_DAILY_ROOT
 OUTPUTS_BASE_DIR = PROJECT_ROOT / "outputs"
 MIKTEX_STATE_DIR = OUTPUTS_BASE_DIR / ".miktex"
 DEFAULT_OUTPUT_DATE_FORMAT = "%d_%m_%y"

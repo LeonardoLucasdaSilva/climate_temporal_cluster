@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 from collections.abc import Mapping
+import os
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+# Experiment reports are file outputs; avoid requiring a desktop Tcl/Tk runtime.
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 
 from config import DATA_ROOT, load_output_config, output_root_from_config
@@ -29,24 +33,25 @@ PCA_FOR_CLUSTERING_ONLY = True                   # Keep pre-PCA window features 
 
 # Normalization settings
 CLUSTERING_FEATURE_NORMALIZE = 'standard'         # "standard", "minmax", or None
-CLUSTERING_PRECIPITATION_NORMALIZE = None  # "standard", "minmax", or None
+CLUSTERING_PRECIPITATION_NORMALIZE = "standard"  # Also used by automatic sigma selection
 LSTM_FEATURE_NORMALIZE = 'standard'              # "standard", "minmax", or None
-LSTM_PRECIPITATION_NORMALIZE = None             # None keeps PRECIPITACAO_TOTAL and LSTM targets in mm
+LSTM_PRECIPITATION_NORMALIZE = "standard"
 LSTM_PRECIPITATION_TRANSFORM = False             # Apply log(1+x) before LSTM precipitation normalization
 
 
 # Clustering parameters
-N_CLUSTERS_LIST = [1,3,5,7,9,12]
-CLUSTERING_ALGORITHM = ["kmeans"]                # "kmeans", "kshape", "spectral", "manual", or a list
+N_CLUSTERS_LIST = [1, 3, 5, 7, 9]
+CLUSTERING_ALGORITHM = ["kmeans", "spectral"]   # K=1 runs once as an unclustered baseline
 CLUSTER_ONLY_PRECIPITATION = False               # Cluster on precipitation time series only
 CLUSTER_DISSIMILARITY_METRIC = "euclidean"       # "euclidean" or "dtw"
 MANUAL_CLUSTERING_METHOD = "rain_level"          # "legacy" or "rain_level"
 MANUAL_ZERO_TOLERANCE = 0.0                      # Used only by legacy manual clustering
-CLUSTER_ASSIGNMENT_METHOD = "centroid"           # "centroid" or "knn"
+CLUSTER_ASSIGNMENT_METHOD = "centroid"           # Manual router; spectral uses Nyström, kmeans uses centroids
 CLUSTER_ASSIGNMENT_NEIGHBORS = 3                 # Used only when assignment method is "knn"
 N_SIGMA_VALUES = 5
-SIGMA_MODE = "manual"                            # "auto" or "manual"
+SIGMA_MODE = "auto"                              # Preprocessing-matched training distances
 MANUAL_SIGMA_VALUES = [0.3]                      # Only used if SIGMA_MODE is "manual"
+MIN_TRAINING_CLUSTER_FRACTION = 0.05             # Skip spectral configs with a smaller training cluster
 RUN_ONLY_CLUSTER = False
 TRAIN_INFO = False                                # Save train_performance/ diagnostics
 SILHOUETTE_INFO = False                           # Save cluster_diagnostics silhouette diagnostics
@@ -54,7 +59,7 @@ PLOT_CLUSTER_TIMESERIES = False                  # Save test-window precipitatio
 CLUSTER_TIMESERIES_PLOT_LIMIT = 3                # None saves every test-window series
 
 # Model hyperparameters. Use LSTM_UNITS_2=None for a single LSTM layer.
-LSTM_UNITS: int | list[int] = [1024]
+LSTM_UNITS: int | list[int] = [128]
 LSTM_UNITS_2: int | None | list[int | None] = None
 DROPOUT_RATE: float | list[float] = 0.2
 LEARNING_RATE: float | list[float] = 1e-3
@@ -84,6 +89,8 @@ SHOW_CONSOLE_INFO = True                         # Only cluster windows; skip al
 PARALEL = False                                  # Keep one PyTorch trainer on the single GPU at a time.
 REQUIRE_GPU = True                               # Fail unless PyTorch detects a CUDA GPU.
 CREATE_REPORT = False                            # Keep per-config TeX without compiling a PDF.
+VALIDATION_ONLY = False                          # Used by validation-only search runners.
+SAVE_VALIDATION_HISTORY = False                  # Plot train/validation curves in validation mode.
 
 # Sweep-level comparison between the tests produced by this run.
 COMPARATIVE_RUN = False
@@ -157,6 +164,7 @@ def experiment_kwargs(
         "cluster_assignment_neighbors": CLUSTER_ASSIGNMENT_NEIGHBORS,
         "n_sigma_values": N_SIGMA_VALUES,
         "sigma_values": MANUAL_SIGMA_VALUES if sigma_mode == "manual" else None,
+        "min_training_cluster_fraction": MIN_TRAINING_CLUSTER_FRACTION,
         "use_all_features": USE_ALL_FEATURES,
         "forecast_horizon": FORECAST_HORIZON,
         "quantitative_metrics": QUANTITATIVE_METRICS,
@@ -196,6 +204,8 @@ def experiment_kwargs(
         "parallel_training": PARALEL,
         "require_gpu": REQUIRE_GPU,
         "create_report": CREATE_REPORT,
+        "validation_only": VALIDATION_ONLY,
+        "save_validation_history": SAVE_VALIDATION_HISTORY,
         "ranking_progress_log": None,
         "ranking_progress_run_token": None,
         "ranking_progress_total": None,

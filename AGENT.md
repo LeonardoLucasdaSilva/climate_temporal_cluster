@@ -18,8 +18,9 @@ and cluster-specific LSTM precipitation models.
 - `experiments/`: experiment notes and older runnable scripts.
   - Active LSTM-by-cluster sweep runner:
     `src/methods/lstm_cluster/run_experiment.py`.
-  - Budgeted LSTM hyperparameter tuning runner:
-    `src/methods/lstm_cluster/hiperparam_tuning.py`.
+  - Editable two-stage PyTorch validation-only random-search framework:
+    `experiments/random_search/run_random_search.py`, documented by
+    `experiments/random_search/random_search.md`.
   - `create_meta_analysis_report.py`: cross-experiment MSE/MAE/R2 LaTeX
     comparison runner for saved LSTM and ARMA artifacts.
   - `temporary_experiments/`: older analysis scripts kept for review.
@@ -71,6 +72,31 @@ and cluster-specific LSTM precipitation models.
 
 ## Testing Procedure
 
+## Experiment Rules
+
+- Treat `K=1` as an unclustered LSTM baseline. Do not fit K-means, K-Shape,
+  spectral, or manual clustering for it. In particular, never sweep multiple
+  spectral sigma values for `K=1`; create one configuration, bypass clustering,
+  and show `-` in the clustering field in ranking tables.
+- In the standalone final-experiment sweeps, reuse the spectral affinity matrix
+  and leading eigensystem for configurations with the same preprocessing,
+  window size, and sigma. Keep this optimization out of the normal PyTorch
+  pipeline; only the selected eigenvectors, embedding K-means, and downstream
+  LSTM work should vary with K.
+- The user runs experiments on two computers, and some generated result folders
+  may exist on only one computer. At the start of an experiment and periodically
+  during long sweeps, synchronize every completed configuration available under
+  the local backend output root into the persistent rankings. Treat this as an
+  additive merge: never remove an existing ranking merely because its result
+  folder is absent on the current computer. After result folders are copied
+  between computers, run `synchronize_local_experiment_rankings` before judging
+  which configurations are still missing.
+- Final-experiment sweeps store compact predictions and histories instead of
+  ordinary per-run plots and reports. Audit compact metadata periodically and
+  add any missing rows to both the overall and per-horizon rankings. Full
+  artifacts for selected configurations must be reconstructable without
+  retraining.
+
 Use the project virtual environment:
 
 ```powershell
@@ -94,7 +120,8 @@ Never modify or commit these unless the user explicitly asks:
 - `.venv/`, `venv/`, `env/`, or any local Python environment.
 - `.idea/`, `.vscode/`, editor metadata, or local IDE files.
 - `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, and other caches.
-- `data/inmet/**/*.csv` or other raw/local data files.
+- `data/inmet_daily/**/*.csv`, `data/inmet_hourly/**/*.csv`, or other raw/local
+  data files.
 - `outputs/` experiment artifacts, generated reports, plots, metrics, and
   timestamped result folders.
 - `.matplotlib_cache/` and `fontlist*.json`.
