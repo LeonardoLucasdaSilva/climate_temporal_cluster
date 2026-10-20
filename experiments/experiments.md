@@ -41,11 +41,16 @@ This folder contains experiment notes and older runnable scripts.
 - `watch_repeated_validation_pdf.ps1`: optional hidden completion watcher used
   to compile that repeated-validation TeX after every checkpoint finishes.
 - `random_search/`: editable, resumable two-stage PyTorch hyperparameter
-  search. It screens random configurations over K=1,3,5,7,9 and K-means plus
-  heuristic-sigma spectral clustering, retains the top validation-MAE decile,
-  then reruns exact finalists under new seeds and ranks mean validation MAE
-  with its sample standard deviation. Confirmation folders include
-  train/validation curves, and the test split is never evaluated.
+  search. It screens random configurations over every K=1 through K=10 and
+  K-means plus heuristic-sigma spectral clustering, retains the top
+  validation-MAE decile, then reruns exact finalists under new seeds. It saves
+  the overall mean/std validation-MAE ranking plus 15 independent rankings for
+  D+1 through D+5 at actual-rain thresholds >0, >10, and >30 mm, together with
+  overall, 0--10 mm, and 10--30 mm MAE rankings. Stage 1 records the best
+  K/algorithm/sigma within every sampled hyperparameter configuration for each
+  horizon and rain regime. Searchable losses include quantile-weighted MSE,
+  MAE, and ordinary MSE. Confirmation folders include train/validation curves,
+  and the test split is never evaluated.
 - `reconstruct_final_experiment_artifacts.py`: recreates the normal CSVs,
   plots, TeX, and PDF for a selected compact final configuration without
   retraining it.

@@ -13,9 +13,14 @@ import pandas as pd
 
 from data.random_search_outputs import (
     _final_ranking_tex,
+    aggregate_confirmation_horizon_threshold_results,
+    aggregate_confirmation_horizon_rain_regime_results,
     aggregate_confirmation_results,
+    best_stage1_configuration_by_horizon_rain_regime,
     rank_screening_results,
     retain_best_spectral_sigma,
+    save_horizon_threshold_validation_rankings,
+    save_horizon_rain_regime_validation_rankings,
 )
 from experiments.random_search.run_random_search import (
     _apply_hyperparameters,
@@ -55,6 +60,28 @@ class RandomSearchFrameworkTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(len(first), 4)
         self.assertEqual(len({tuple(row.items()) for row in first}), 4)
+
+    def test_default_design_sweeps_every_k_from_one_through_ten(self) -> None:
+        self.assertEqual(framework.CLUSTER_COUNTS, list(range(1, 11)))
+        self.assertEqual(
+            framework.parameter_combination_count(framework.SEARCH_SPACE),
+            46656,
+        )
+        sampled = framework._sampled_configurations()
+        self.assertEqual(
+            {row["lstm_loss_function"] for row in sampled},
+            {"quantile_weighted_mse", "mae", "mean_squared_error"},
+        )
+        self.assertTrue(all("loss_configuration" not in row for row in sampled))
+        design = framework._design_payload([{} for _ in range(100)])
+        self.assertEqual(design["planned_training_runs"]["screening"], 5500)
+        self.assertEqual(
+            design["planned_training_runs"]["confirmation_if_all_valid"],
+            950,
+        )
+        self.assertEqual(design["forecast_horizons"], [1, 2, 3, 4, 5])
+        self.assertEqual(design["rain_thresholds_mm"], [0.0, 10.0, 30.0])
+        self.assertEqual(len(design["rain_regimes"]), 6)
 
     def test_only_lowest_mae_spectral_sigma_is_retained_per_k(self) -> None:
         frame = pd.DataFrame(
@@ -136,6 +163,101 @@ class RandomSearchFrameworkTests(unittest.TestCase):
         self.assertIn(r"\textcolor{green!50!black}", report)
         self.assertIn("test split is not predicted or evaluated", report)
 
+    def test_horizon_threshold_rankings_cover_all_fifteen_tables(self) -> None:
+        rows: list[dict[str, object]] = []
+        for candidate_id, offset in (("a", 0.0), ("b", 1.0)):
+            for seed in (43, 44):
+                for horizon in range(1, 6):
+                    for threshold in (0.0, 10.0, 30.0):
+                        rows.append(
+                            {
+                                "candidate_id": candidate_id,
+                                "random_configuration_id": f"random_000{1 if candidate_id == 'a' else 2}",
+                                "window_size": 30,
+                                "n_clusters": 2,
+                                "algorithm": "kmeans",
+                                "sigma": np.nan,
+                                "confirmation_seed": seed,
+                                "horizon": horizon,
+                                "threshold_mm": threshold,
+                                "sample_count": 20,
+                                "val_mae": offset + horizon + threshold / 100 + seed / 1000,
+                            }
+                        )
+
+        rankings = aggregate_confirmation_horizon_threshold_results(
+            pd.DataFrame(rows),
+            expected_seeds=[43, 44],
+        )
+
+        self.assertEqual(
+            rankings[["horizon", "threshold_mm"]].drop_duplicates().shape[0],
+            15,
+        )
+        self.assertTrue(
+            rankings.loc[rankings["candidate_id"].eq("a"), "ranking_rank"].eq(1).all()
+        )
+        _, table_dir, tex_path, _ = save_horizon_threshold_validation_rankings(
+            rankings,
+            self.work_dir,
+            compile_pdf=False,
+        )
+        self.assertEqual(len(list(table_dir.glob("*.csv"))), 15)
+        report = tex_path.read_text(encoding="utf-8")
+        self.assertIn("Forecast horizon D+5", report)
+        self.assertIn("$>30$ mm", report)
+
+    def test_stage1_best_and_final_rain_regime_rankings(self) -> None:
+        rows: list[dict[str, object]] = []
+        for candidate_id, score in (("a", 1.0), ("b", 2.0)):
+            for seed in (43, 44):
+                for horizon in range(1, 6):
+                    for regime in framework.RAIN_REGIMES:
+                        rows.append(
+                            {
+                                "candidate_id": candidate_id,
+                                "random_configuration_id": "random_0001",
+                                "window_size": 30,
+                                "n_clusters": 2 if candidate_id == "a" else 3,
+                                "algorithm": "kmeans",
+                                "sigma": np.nan,
+                                "confirmation_seed": seed,
+                                "horizon": horizon,
+                                "rain_regime": regime,
+                                "rain_regime_label": regime,
+                                "threshold_mm": np.nan,
+                                "lower_mm": np.nan,
+                                "upper_mm": np.nan,
+                                "sample_count": 20,
+                                "val_mae": score + seed / 1000,
+                            }
+                        )
+        seed_metrics = pd.DataFrame(rows)
+        stage1_best = best_stage1_configuration_by_horizon_rain_regime(
+            seed_metrics.loc[seed_metrics["confirmation_seed"].eq(43)]
+        )
+        self.assertEqual(len(stage1_best), 30)
+        self.assertTrue(stage1_best["candidate_id"].eq("a").all())
+
+        rankings = aggregate_confirmation_horizon_rain_regime_results(
+            seed_metrics,
+            expected_seeds=[43, 44],
+        )
+        self.assertEqual(
+            rankings[["horizon", "rain_regime"]].drop_duplicates().shape[0],
+            30,
+        )
+        _, table_dir, tex_path, _ = save_horizon_rain_regime_validation_rankings(
+            rankings,
+            self.work_dir,
+            compile_pdf=False,
+        )
+        self.assertEqual(len(list(table_dir.glob("*.csv"))), 30)
+        self.assertIn(
+            "0--10 mm",
+            tex_path.read_text(encoding="utf-8"),
+        )
+
     def test_confirmation_kwargs_are_exact_and_validation_only(self) -> None:
         base = {
             "window_sizes": [15],
@@ -148,6 +270,7 @@ class RandomSearchFrameworkTests(unittest.TestCase):
         configuration = {
             "window_size": 30,
             "lstm_units": 128,
+            "lstm_loss_function": "mae",
             "loss_quantiles": (0.9,),
         }
         row = {
@@ -169,6 +292,7 @@ class RandomSearchFrameworkTests(unittest.TestCase):
         self.assertEqual(parameters["clustering_algorithm"], "spectral")
         self.assertEqual(parameters["sigma_values"], [0.25])
         self.assertEqual(parameters["random_state"], 43)
+        self.assertEqual(parameters["lstm_loss_function"], "mae")
         self.assertTrue(parameters["validation_only"])
         self.assertTrue(parameters["save_validation_history"])
         self.assertFalse(parameters["test_all_models"])
@@ -190,7 +314,7 @@ class RandomSearchFrameworkTests(unittest.TestCase):
         def fake_runner(**kwargs: object) -> Path:
             calls.append(dict(kwargs))
             sweep_dir = Path(kwargs["output_root"]) / str(kwargs["sweep_name"])
-            sweep_dir.mkdir(parents=True)
+            sweep_dir.mkdir(parents=True, exist_ok=True)
             if isinstance(kwargs["clustering_algorithm"], list):
                 rows = [
                     {
@@ -223,7 +347,46 @@ class RandomSearchFrameworkTests(unittest.TestCase):
                     },
                 ]
                 for row in rows:
-                    (sweep_dir / row["run_name"]).mkdir()
+                    run_dir = sweep_dir / row["run_name"]
+                    run_dir.mkdir()
+                    pd.DataFrame(
+                        [
+                            {
+                                "horizon": horizon,
+                                "threshold_mm": threshold,
+                                "sample_count": 10,
+                                "val_mae": float(row["val_mae"]) + horizon / 100,
+                            }
+                            for horizon in range(1, 6)
+                            for threshold in (0.0, 10.0, 30.0)
+                        ]
+                    ).to_csv(
+                        run_dir / "validation_mae_by_horizon_threshold.csv",
+                        index=False,
+                    )
+                    pd.DataFrame(
+                        [
+                            {
+                                "horizon": horizon,
+                                "rain_regime": regime,
+                                "rain_regime_label": regime,
+                                "threshold_mm": (
+                                    float(regime.removeprefix("gt_").removesuffix("mm"))
+                                    if regime.startswith("gt_")
+                                    else np.nan
+                                ),
+                                "lower_mm": np.nan,
+                                "upper_mm": np.nan,
+                                "sample_count": 10,
+                                "val_mae": float(row["val_mae"]) + horizon / 100,
+                            }
+                            for horizon in range(1, 6)
+                            for regime in framework.RAIN_REGIMES
+                        ]
+                    ).to_csv(
+                        run_dir / "validation_mae_by_horizon_rain_regime.csv",
+                        index=False,
+                    )
             else:
                 seed = int(kwargs["random_state"])
                 rows = [
@@ -239,12 +402,51 @@ class RandomSearchFrameworkTests(unittest.TestCase):
                         "val_mae": 1.0 + (seed - 43) * 0.2,
                     }
                 ]
-                (sweep_dir / "confirmed" / "model_fit").mkdir(parents=True)
+                run_dir = sweep_dir / "confirmed"
+                (run_dir / "model_fit").mkdir(parents=True)
+                pd.DataFrame(
+                    [
+                        {
+                            "horizon": horizon,
+                            "threshold_mm": threshold,
+                            "sample_count": 10,
+                            "val_mae": float(rows[0]["val_mae"]) + horizon / 100,
+                        }
+                        for horizon in range(1, 6)
+                        for threshold in (0.0, 10.0, 30.0)
+                    ]
+                ).to_csv(
+                    run_dir / "validation_mae_by_horizon_threshold.csv",
+                    index=False,
+                )
+                pd.DataFrame(
+                    [
+                        {
+                            "horizon": horizon,
+                            "rain_regime": regime,
+                            "rain_regime_label": regime,
+                            "threshold_mm": (
+                                float(regime.removeprefix("gt_").removesuffix("mm"))
+                                if regime.startswith("gt_")
+                                else np.nan
+                            ),
+                            "lower_mm": np.nan,
+                            "upper_mm": np.nan,
+                            "sample_count": 10,
+                            "val_mae": float(rows[0]["val_mae"]) + horizon / 100,
+                        }
+                        for horizon in range(1, 6)
+                        for regime in framework.RAIN_REGIMES
+                    ]
+                ).to_csv(
+                    run_dir / "validation_mae_by_horizon_rain_regime.csv",
+                    index=False,
+                )
             pd.DataFrame(rows).to_csv(sweep_dir / "sweep_results.csv", index=False)
             return sweep_dir
 
         base = {
-            "n_clusters_list": [1, 3, 5, 7, 9],
+            "n_clusters_list": list(range(1, 11)),
             "clustering_algorithm": ["kmeans", "spectral"],
             "sigma_values": None,
             "test_all_models": False,
@@ -290,6 +492,48 @@ class RandomSearchFrameworkTests(unittest.TestCase):
             all(call["save_validation_history"] for call in confirmation_calls)
         )
         self.assertTrue(all(call["validation_only"] for call in calls))
+        detailed_rankings = pd.read_csv(
+            output_dir / "final_validation_rankings_by_horizon_threshold.csv"
+        )
+        self.assertEqual(
+            detailed_rankings[["horizon", "threshold_mm"]]
+            .drop_duplicates()
+            .shape[0],
+            15,
+        )
+        self.assertEqual(
+            len(list((output_dir / "final_rankings_by_horizon_threshold").glob("*.csv"))),
+            15,
+        )
+        rain_regime_rankings = pd.read_csv(
+            output_dir / "final_validation_rankings_by_horizon_rain_regime.csv"
+        )
+        self.assertEqual(
+            rain_regime_rankings[["horizon", "rain_regime"]]
+            .drop_duplicates()
+            .shape[0],
+            30,
+        )
+        self.assertEqual(
+            len(list((output_dir / "final_rankings_by_horizon_rain_regime").glob("*.csv"))),
+            30,
+        )
+        stage1_best = pd.read_csv(
+            output_dir / "stage1_configuration_best_by_horizon_rain_regime.csv"
+        )
+        self.assertEqual(
+            stage1_best[["horizon", "rain_regime"]].drop_duplicates().shape[0],
+            30,
+        )
+        stage1_threshold_best = pd.read_csv(
+            output_dir / "stage1_configuration_best_by_horizon_threshold.csv"
+        )
+        self.assertEqual(
+            stage1_threshold_best[["horizon", "rain_regime"]]
+            .drop_duplicates()
+            .shape[0],
+            15,
+        )
         screening_dir = output_dir / "stage1_screening" / "random_0001"
         self.assertTrue((screening_dir / "spectral_k3_s02").is_dir())
         self.assertFalse((screening_dir / "spectral_k3_s01").exists())

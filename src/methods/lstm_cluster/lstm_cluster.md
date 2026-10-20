@@ -62,11 +62,16 @@ For split-free exploratory plots, edit the station, variable list, and
 
 The current search is a PyTorch two-stage framework, not a TensorFlow
 single-trial tuner. Every random hyperparameter configuration runs the complete
-K=1,3,5,7,9 K-means/spectral sweep. It keeps the best heuristic spectral sigma
-per K, retains the top 10% by validation MAE, and confirms those exact
-configurations under multiple new seeds. Final rank is mean validation MAE;
-sample standard deviation measures stability. The test split is not predicted
-or evaluated. See `experiments/random_search/random_search.md` for full details.
+K=1 through K=10 K-means/spectral sweep. It keeps the best heuristic spectral
+sigma per K, retains the top 10% by validation MAE, and confirms those exact
+configurations under multiple new seeds. The framework keeps the overall
+mean/std validation-MAE ranking and also creates independent rankings for D+1
+through D+5 using overall, >0, 0--10, >10, 10--30, and >30 mm actual-validation
+rain regimes. Stage 1 also identifies the best K/algorithm/sigma for each
+sampled hyperparameter configuration in every horizon/regime. Loss is also
+searched across quantile-weighted MSE, MAE, and ordinary MSE. The test split is
+not predicted or evaluated. See
+`experiments/random_search/random_search.md` for full details.
 
 ## Main Flow
 

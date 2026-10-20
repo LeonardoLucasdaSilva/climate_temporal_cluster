@@ -25,10 +25,15 @@ if str(SRC_ROOT) not in sys.path:
 from config import OUTPUTS_BASE_DIR  # noqa: E402
 from data.load_data import load_station_daily_data  # noqa: E402
 from data.random_search_outputs import (  # noqa: E402
+    aggregate_confirmation_horizon_threshold_results,
+    aggregate_confirmation_horizon_rain_regime_results,
     aggregate_confirmation_results,
+    best_stage1_configuration_by_horizon_rain_regime,
     rank_screening_results,
     retain_best_spectral_sigma,
     save_final_validation_rankings,
+    save_horizon_rain_regime_validation_rankings,
+    save_horizon_threshold_validation_rankings,
 )
 from methods.cluster.cluster_pipeline import numeric_feature_columns  # noqa: E402
 from methods.lstm_cluster_pytorch.pipeline import (  # noqa: E402
@@ -52,7 +57,13 @@ EPOCHS = [300]
 BATCH_SIZES = [4, 8]
 PATIENCE = [30, 50]
 WARM_UP = [5, 10]
-LOSS_QUANTILE_SETS = [(0.8,), (0.9,), (0.75, 0.9, 0.95, 0.99)]
+LOSS_QUANTILE_SETS = [(0.6,),(0.7,),(0.8,), (0.9,), (0.95,),(0.99,)]
+LOSS_CONFIGURATIONS = [
+    ("quantile_weighted_mse", quantiles) for quantiles in LOSS_QUANTILE_SETS
+] + [
+    ("mae", (0.9,)),
+    ("mean_squared_error", (0.9,)),
+]
 
 SEARCH_SPACE: dict[str, list[object]] = {
     "window_size": WINDOW_SIZES,
@@ -65,16 +76,26 @@ SEARCH_SPACE: dict[str, list[object]] = {
     "batch_size": BATCH_SIZES,
     "patience": PATIENCE,
     "warm_up": WARM_UP,
-    "loss_quantiles": LOSS_QUANTILE_SETS,
+    "loss_configuration": LOSS_CONFIGURATIONS,
 }
 
 # Stage 1: random configurations and the fixed clustering expansion.
-N_RANDOM_CONFIGURATIONS = 20
+N_RANDOM_CONFIGURATIONS = 100
 SCREENING_SEED = 42
-CLUSTER_COUNTS = [1, 3, 5, 7, 9]
+CLUSTER_COUNTS = list(range(1, 11))
 CLUSTERING_ALGORITHMS = ["kmeans", "spectral"]
 N_AUTOMATIC_SIGMAS = 5
 TOP_FRACTION = 0.10
+FORECAST_HORIZONS = [1, 2, 3, 4, 5]
+RAIN_THRESHOLDS_MM = [0.0, 10.0, 30.0]
+RAIN_REGIMES = [
+    "overall",
+    "gt_0mm",
+    "0_to_10mm",
+    "gt_10mm",
+    "10_to_30mm",
+    "gt_30mm",
+]
 
 # Stage 2: every retained exact configuration is rerun for all these seeds.
 CONFIRMATION_SEEDS = [43, 44, 45, 46, 47]
@@ -85,9 +106,9 @@ PARALLEL_TRAINING = False
 FAIL_FAST = False
 SHOW_PROGRESS = True
 COMPILE_FINAL_RANKING_PDF = True
-SEARCH_NAME: str | None = None
+SEARCH_NAME: str | None = "two_stage_random_search_2026_10_07_22h3047"
 SEARCH_NAME_PREFIX = "two_stage_random_search"
-OUTPUT_ROOT = OUTPUTS_BASE_DIR / "pytorch" / "random_search"
+OUTPUT_ROOT = OUTPUTS_BASE_DIR / "pytorch" / "random_search_1"
 
 
 PIPELINE_PARAMETER_MAP = {
@@ -101,19 +122,33 @@ PIPELINE_PARAMETER_MAP = {
     "batch_size": "batch_size",
     "patience": "patience",
     "warm_up": "warm_up",
+    "lstm_loss_function": "lstm_loss_function",
     "loss_quantiles": "loss_quantiles",
 }
 
 
 def _validate_framework_settings() -> None:
-    if CLUSTER_COUNTS != [1, 3, 5, 7, 9]:
-        raise ValueError("CLUSTER_COUNTS must be exactly [1, 3, 5, 7, 9].")
+    if CLUSTER_COUNTS != list(range(1, 11)):
+        raise ValueError("CLUSTER_COUNTS must contain every K from 1 through 10.")
     if CLUSTERING_ALGORITHMS != ["kmeans", "spectral"]:
         raise ValueError(
             "CLUSTERING_ALGORITHMS must be exactly ['kmeans', 'spectral']."
         )
     if isinstance(N_AUTOMATIC_SIGMAS, bool) or N_AUTOMATIC_SIGMAS <= 0:
         raise ValueError("N_AUTOMATIC_SIGMAS must be positive.")
+    if FORECAST_HORIZONS != [1, 2, 3, 4, 5]:
+        raise ValueError("FORECAST_HORIZONS must be exactly [1, 2, 3, 4, 5].")
+    if RAIN_THRESHOLDS_MM != [0.0, 10.0, 30.0]:
+        raise ValueError("RAIN_THRESHOLDS_MM must be exactly [0.0, 10.0, 30.0].")
+    if RAIN_REGIMES != [
+        "overall",
+        "gt_0mm",
+        "0_to_10mm",
+        "gt_10mm",
+        "10_to_30mm",
+        "gt_30mm",
+    ]:
+        raise ValueError("RAIN_REGIMES must contain the six supported rain regimes.")
     if not 0 < TOP_FRACTION <= 1:
         raise ValueError("TOP_FRACTION must be in the interval (0, 1].")
     if isinstance(SCREENING_SEED, bool) or not isinstance(SCREENING_SEED, int):
@@ -192,7 +227,16 @@ def _sampled_configurations() -> list[dict[str, object]]:
         n_trials=N_RANDOM_CONFIGURATIONS,
         random_state=SCREENING_SEED,
     )
-    return [dict(configuration) for configuration in sampled]
+    configurations: list[dict[str, object]] = []
+    for sampled_configuration in sampled:
+        configuration = dict(sampled_configuration)
+        loss_function, loss_quantiles = configuration.pop("loss_configuration")
+        configuration["lstm_loss_function"] = str(loss_function)
+        configuration["loss_quantiles"] = tuple(
+            float(value) for value in loss_quantiles
+        )
+        configurations.append(configuration)
+    return configurations
 
 
 def _configuration_id(index: int) -> str:
@@ -240,6 +284,11 @@ def _base_kwargs() -> dict[str, object]:
             "show_console_info": False,
         }
     )
+    if int(parameters["forecast_horizon"]) != max(FORECAST_HORIZONS):
+        raise ValueError(
+            "The random-search framework requires forecast_horizon=5 to build "
+            "the D+1 through D+5 rankings."
+        )
     return parameters
 
 
@@ -331,6 +380,39 @@ def _annotate_screening_rows(
     return frame
 
 
+def _load_stage1_horizon_rain_regime_metrics(
+    results: pd.DataFrame,
+    *,
+    sweep_dir: Path,
+) -> pd.DataFrame:
+    """Load and annotate every stage-1 run's horizon/rain-regime metrics."""
+    frames: list[pd.DataFrame] = []
+    for row in results.to_dict(orient="records"):
+        metric_path = (
+            sweep_dir
+            / str(row["run_name"])
+            / "validation_mae_by_horizon_rain_regime.csv"
+        )
+        if not metric_path.is_file():
+            raise RuntimeError(
+                f"Missing stage-1 horizon/rain-regime metrics: {metric_path}"
+            )
+        metrics = _read_results(metric_path)
+        required = {"horizon", "rain_regime", "sample_count", "val_mae"}
+        missing = sorted(required - set(metrics.columns))
+        if missing:
+            raise RuntimeError(
+                "Missing stage-1 horizon/rain-regime columns: "
+                + ", ".join(missing)
+            )
+        metrics["screening_val_mae"] = row["val_mae"]
+        for key, value in row.items():
+            if key != "val_mae":
+                metrics[key] = value
+        frames.append(metrics)
+    return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
+
+
 def _run_stage1_configuration(
     *,
     index: int,
@@ -339,17 +421,34 @@ def _run_stage1_configuration(
     search_dir: Path,
     base: Mapping[str, object],
     experiment_runner: Callable[..., Path],
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     random_id = _configuration_id(index)
     stage_root = search_dir / "stage1_screening"
     sweep_dir = stage_root / random_id
     retained_path = sweep_dir / "retained_clustering_results.csv"
     audit_path = sweep_dir / "all_sigma_results.csv"
+    rain_regime_path = sweep_dir / "all_horizon_rain_regime_metrics.csv"
+    best_rain_regime_path = sweep_dir / "best_by_horizon_rain_regime.csv"
+    best_threshold_path = sweep_dir / "best_by_horizon_threshold.csv"
     marker = sweep_dir / "stage1_complete.json"
-    if marker.is_file() and retained_path.is_file() and audit_path.is_file():
-        return _read_results(retained_path), _read_results(audit_path)
-    if sweep_dir.exists():
-        _safe_remove_tree(sweep_dir, search_dir)
+    if (
+        marker.is_file()
+        and retained_path.is_file()
+        and audit_path.is_file()
+        and rain_regime_path.is_file()
+        and best_rain_regime_path.is_file()
+        and best_threshold_path.is_file()
+    ):
+        return (
+            _read_results(retained_path),
+            _read_results(audit_path),
+            _read_results(rain_regime_path),
+            _read_results(best_rain_regime_path),
+        )
+    # Keep a partial sweep directory. The validation pipeline reuses individual
+    # configuration folders only when all validation metric files are complete.
+    # The saved framework design prevents incompatible searches from mixing.
+    sweep_dir.mkdir(parents=True, exist_ok=True)
 
     parameters = _apply_hyperparameters(base, configuration)
     parameters.update(
@@ -372,6 +471,13 @@ def _run_stage1_configuration(
         sweep_dir=completed_dir,
         search_dir=search_dir,
     )
+    rain_regime_metrics = _load_stage1_horizon_rain_regime_metrics(
+        all_results,
+        sweep_dir=completed_dir,
+    )
+    best_rain_regime = best_stage1_configuration_by_horizon_rain_regime(
+        rain_regime_metrics
+    )
     retained = retain_best_spectral_sigma(all_results)
     retained_names = set(retained["run_name"].astype(str))
     for run_name in all_results.loc[
@@ -381,6 +487,13 @@ def _run_stage1_configuration(
             _safe_remove_tree(completed_dir / run_name, search_dir)
     all_results.to_csv(audit_path, index=False)
     retained.to_csv(retained_path, index=False)
+    rain_regime_metrics.to_csv(rain_regime_path, index=False)
+    best_rain_regime.to_csv(best_rain_regime_path, index=False)
+    best_rain_regime.loc[
+        best_rain_regime["rain_regime"].isin(
+            ["gt_0mm", "gt_10mm", "gt_30mm"]
+        )
+    ].to_csv(best_threshold_path, index=False)
     _write_json(
         marker,
         {
@@ -389,7 +502,7 @@ def _run_stage1_configuration(
             "completed_at": datetime.now().isoformat(timespec="seconds"),
         },
     )
-    return retained, all_results
+    return retained, all_results, rain_regime_metrics, best_rain_regime
 
 
 def _confirmation_parameters(
@@ -426,7 +539,7 @@ def _run_confirmation_seed(
     search_dir: Path,
     base: Mapping[str, object],
     experiment_runner: Callable[..., Path],
-) -> dict[str, object]:
+) -> tuple[dict[str, object], pd.DataFrame]:
     candidate_id = str(row["candidate_id"])
     candidate_dir = search_dir / "stage2_confirmation" / candidate_id
     sweep_dir = candidate_dir / f"seed_{seed}"
@@ -464,7 +577,44 @@ def _run_confirmation_seed(
             result[key] = value
     result["confirmation_seed"] = int(seed)
     result["confirmation_directory"] = sweep_dir.relative_to(search_dir).as_posix()
-    return result
+    run_name = str(result_frame.iloc[0]["run_name"])
+    metric_path = sweep_dir / run_name / "validation_mae_by_horizon_rain_regime.csv"
+    if not metric_path.is_file():
+        raise RuntimeError(
+            f"Missing validation horizon/rain-regime metrics for "
+            f"{candidate_id}/seed_{seed}: {metric_path}"
+        )
+    horizon_metrics = _read_results(metric_path)
+    required = {"horizon", "rain_regime", "sample_count", "val_mae"}
+    missing = sorted(required - set(horizon_metrics.columns))
+    if missing:
+        raise RuntimeError(
+            "Missing validation horizon/rain-regime columns: " + ", ".join(missing)
+        )
+    observed_horizons = set(
+        pd.to_numeric(horizon_metrics["horizon"], errors="coerce")
+        .dropna()
+        .astype(int)
+    )
+    observed_regimes = set(horizon_metrics["rain_regime"].astype(str))
+    if observed_horizons != set(FORECAST_HORIZONS):
+        raise RuntimeError(
+            f"Expected horizons {FORECAST_HORIZONS}; found "
+            f"{sorted(observed_horizons)}."
+        )
+    if observed_regimes != set(RAIN_REGIMES):
+        raise RuntimeError(
+            f"Expected rain regimes {RAIN_REGIMES}; found "
+            f"{sorted(observed_regimes)}."
+        )
+    for key, value in row.items():
+        if key not in {"val_mae", "screening_rank", "retained_for_confirmation"}:
+            horizon_metrics[key] = value
+    horizon_metrics["confirmation_seed"] = int(seed)
+    horizon_metrics["confirmation_directory"] = result[
+        "confirmation_directory"
+    ]
+    return result, horizon_metrics
 
 
 def _prune_bottom_screening_artifacts(
@@ -502,6 +652,9 @@ def _design_payload(
         "automatic_sigma_candidates": N_AUTOMATIC_SIGMAS,
         "top_fraction": TOP_FRACTION,
         "confirmation_seeds": CONFIRMATION_SEEDS,
+        "forecast_horizons": FORECAST_HORIZONS,
+        "rain_thresholds_mm": RAIN_THRESHOLDS_MM,
+        "rain_regimes": RAIN_REGIMES,
         "planned_training_runs": {
             "screening": len(sampled) * screening_runs_per_random,
             "confirmation_if_all_valid": (
@@ -572,6 +725,8 @@ def run_framework(
 
     stage1_frames: list[pd.DataFrame] = []
     sigma_audits: list[pd.DataFrame] = []
+    stage1_rain_regime_frames: list[pd.DataFrame] = []
+    stage1_best_rain_regime_frames: list[pd.DataFrame] = []
     failures: list[dict[str, object]] = []
     for index, configuration in enumerate(sampled, start=1):
         random_id = _configuration_id(index)
@@ -582,7 +737,12 @@ def run_framework(
                 flush=True,
             )
         try:
-            retained, audit = _run_stage1_configuration(
+            (
+                retained,
+                audit,
+                rain_regime_metrics,
+                best_rain_regime,
+            ) = _run_stage1_configuration(
                 index=index,
                 configuration=configuration,
                 sigma_grids=sigma_grids,
@@ -592,6 +752,8 @@ def run_framework(
             )
             stage1_frames.append(retained)
             sigma_audits.append(audit)
+            stage1_rain_regime_frames.append(rain_regime_metrics)
+            stage1_best_rain_regime_frames.append(best_rain_regime)
         except Exception as exc:
             failures.append(
                 {
@@ -615,6 +777,33 @@ def run_framework(
         else pd.DataFrame()
     )
     sigma_audit.to_csv(search_dir / "stage1_all_sigma_metrics.csv", index=False)
+    stage1_rain_regime_metrics = (
+        pd.concat(stage1_rain_regime_frames, ignore_index=True, sort=False)
+        if stage1_rain_regime_frames
+        else pd.DataFrame()
+    )
+    stage1_rain_regime_metrics.to_csv(
+        search_dir / "stage1_all_horizon_rain_regime_metrics.csv",
+        index=False,
+    )
+    stage1_best_rain_regime = (
+        pd.concat(stage1_best_rain_regime_frames, ignore_index=True, sort=False)
+        if stage1_best_rain_regime_frames
+        else pd.DataFrame()
+    )
+    stage1_best_rain_regime.to_csv(
+        search_dir / "stage1_configuration_best_by_horizon_rain_regime.csv",
+        index=False,
+    )
+    if not stage1_best_rain_regime.empty:
+        stage1_best_rain_regime.loc[
+            stage1_best_rain_regime["rain_regime"].isin(
+                ["gt_0mm", "gt_10mm", "gt_30mm"]
+            )
+        ].to_csv(
+            search_dir / "stage1_configuration_best_by_horizon_threshold.csv",
+            index=False,
+        )
     if stage1_results.empty:
         pd.DataFrame(failures).to_csv(search_dir / "failures.csv", index=False)
         raise RuntimeError("Stage 1 finished without a valid configuration.")
@@ -637,6 +826,7 @@ def run_framework(
         for index, configuration in enumerate(sampled, start=1)
     }
     seed_results: list[dict[str, object]] = []
+    horizon_seed_frames: list[pd.DataFrame] = []
     for candidate_index, row in enumerate(
         retained_top.to_dict(orient="records"),
         start=1,
@@ -658,16 +848,16 @@ def run_framework(
                     flush=True,
                 )
             try:
-                seed_results.append(
-                    _run_confirmation_seed(
-                        row,
-                        configuration,
-                        seed=seed,
-                        search_dir=search_dir,
-                        base=base,
-                        experiment_runner=experiment_runner,
-                    )
+                seed_result, horizon_seed_metrics = _run_confirmation_seed(
+                    row,
+                    configuration,
+                    seed=seed,
+                    search_dir=search_dir,
+                    base=base,
+                    experiment_runner=experiment_runner,
                 )
+                seed_results.append(seed_result)
+                horizon_seed_frames.append(horizon_seed_metrics)
             except Exception as exc:
                 failures.append(
                     {
@@ -684,6 +874,11 @@ def run_framework(
                 search_dir / "confirmation_seed_metrics.csv",
                 index=False,
             )
+            if horizon_seed_frames:
+                pd.concat(horizon_seed_frames, ignore_index=True, sort=False).to_csv(
+                    search_dir / "confirmation_horizon_rain_regime_metrics.csv",
+                    index=False,
+                )
 
     seed_frame = pd.DataFrame(seed_results)
     seed_frame.to_csv(search_dir / "confirmation_seed_metrics.csv", index=False)
@@ -696,6 +891,54 @@ def run_framework(
         search_dir,
         compile_pdf=COMPILE_FINAL_RANKING_PDF,
     )
+    horizon_rain_regime_seed_frame = (
+        pd.concat(horizon_seed_frames, ignore_index=True, sort=False)
+        if horizon_seed_frames
+        else pd.DataFrame()
+    )
+    horizon_rain_regime_seed_frame.to_csv(
+        search_dir / "confirmation_horizon_rain_regime_metrics.csv",
+        index=False,
+    )
+    threshold_seed_frame = (
+        horizon_rain_regime_seed_frame.loc[
+            horizon_rain_regime_seed_frame["rain_regime"].isin(
+                ["gt_0mm", "gt_10mm", "gt_30mm"]
+            )
+        ].copy()
+        if not horizon_rain_regime_seed_frame.empty
+        else pd.DataFrame()
+    )
+    threshold_seed_frame.to_csv(
+        search_dir / "confirmation_horizon_threshold_metrics.csv",
+        index=False,
+    )
+    horizon_threshold_rankings = (
+        aggregate_confirmation_horizon_threshold_results(
+            threshold_seed_frame,
+            expected_seeds=CONFIRMATION_SEEDS,
+        )
+        if not threshold_seed_frame.empty
+        else pd.DataFrame()
+    )
+    save_horizon_threshold_validation_rankings(
+        horizon_threshold_rankings,
+        search_dir,
+        compile_pdf=COMPILE_FINAL_RANKING_PDF,
+    )
+    horizon_rain_regime_rankings = (
+        aggregate_confirmation_horizon_rain_regime_results(
+            horizon_rain_regime_seed_frame,
+            expected_seeds=CONFIRMATION_SEEDS,
+        )
+        if not horizon_rain_regime_seed_frame.empty
+        else pd.DataFrame()
+    )
+    save_horizon_rain_regime_validation_rankings(
+        horizon_rain_regime_rankings,
+        search_dir,
+        compile_pdf=COMPILE_FINAL_RANKING_PDF,
+    )
     pd.DataFrame(failures).to_csv(search_dir / "failures.csv", index=False)
     _write_json(
         search_dir / "framework_complete.json",
@@ -704,6 +947,24 @@ def run_framework(
             "screened_candidates": len(stage1_rankings),
             "retained_candidates": len(retained_top),
             "fully_confirmed_candidates": len(final_rankings),
+            "horizon_threshold_rankings": (
+                int(
+                    horizon_threshold_rankings[["horizon", "threshold_mm"]]
+                    .drop_duplicates()
+                    .shape[0]
+                )
+                if not horizon_threshold_rankings.empty
+                else 0
+            ),
+            "horizon_rain_regime_rankings": (
+                int(
+                    horizon_rain_regime_rankings[["horizon", "rain_regime"]]
+                    .drop_duplicates()
+                    .shape[0]
+                )
+                if not horizon_rain_regime_rankings.empty
+                else 0
+            ),
             "failures": len(failures),
         },
     )

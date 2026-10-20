@@ -66,6 +66,59 @@ def validation_mae_by_horizon(
     return pd.DataFrame(rows)
 
 
+def validation_mae_by_horizon_and_rain_regime(
+    actual_by_lead_day: np.ndarray,
+    predicted_by_lead_day: np.ndarray,
+) -> pd.DataFrame:
+    """Return validation MAE for cumulative thresholds and disjoint rain bands."""
+    actual = np.asarray(actual_by_lead_day, dtype=float)
+    predicted = np.asarray(predicted_by_lead_day, dtype=float)
+    if actual.ndim != 2 or predicted.ndim != 2:
+        raise ValueError("Validation targets and predictions must be 2D matrices.")
+    if actual.shape != predicted.shape:
+        raise ValueError("Validation targets and predictions must have equal shapes.")
+
+    regimes = (
+        ("overall", "Overall", np.nan, np.nan, np.nan),
+        ("gt_0mm", ">0 mm", 0.0, np.nan, np.nan),
+        ("0_to_10mm", "0--10 mm", np.nan, 0.0, 10.0),
+        ("gt_10mm", ">10 mm", 10.0, np.nan, np.nan),
+        ("10_to_30mm", "10--30 mm", np.nan, 10.0, 30.0),
+        ("gt_30mm", ">30 mm", 30.0, np.nan, np.nan),
+    )
+    rows: list[dict[str, float | int | str]] = []
+    for lead_offset in range(actual.shape[1]):
+        lead_actual = actual[:, lead_offset]
+        lead_predicted = predicted[:, lead_offset]
+        finite = np.isfinite(lead_actual) & np.isfinite(lead_predicted)
+        for regime, label, threshold, lower, upper in regimes:
+            if regime == "overall":
+                mask = finite
+            elif regime.startswith("gt_"):
+                mask = finite & (lead_actual > float(threshold))
+            elif regime == "0_to_10mm":
+                mask = finite & (lead_actual >= 0.0) & (lead_actual <= 10.0)
+            else:
+                mask = finite & (lead_actual > 10.0) & (lead_actual <= 30.0)
+            rows.append(
+                {
+                    "horizon": lead_offset + 1,
+                    "rain_regime": regime,
+                    "rain_regime_label": label,
+                    "threshold_mm": threshold,
+                    "lower_mm": lower,
+                    "upper_mm": upper,
+                    "sample_count": int(mask.sum()),
+                    "val_mae": (
+                        float(np.mean(np.abs(lead_predicted[mask] - lead_actual[mask])))
+                        if np.any(mask)
+                        else np.nan
+                    ),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def summarize_validation_repeats(
     seed_metrics: pd.DataFrame,
     *,

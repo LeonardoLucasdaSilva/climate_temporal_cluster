@@ -31,7 +31,9 @@ separate reserved input root for future hourly loading and preprocessing.
   shared `random_search_validation_rankings` CSV/TeX/PDF report.
 - `random_search_outputs.py`: selects the best spectral sigma per K, performs
   top-fraction screening and complete-seed aggregation, and writes the final
-  PyTorch mean/std validation-MAE CSV/TeX/PDF rankings.
+  PyTorch mean/std validation-MAE CSV/TeX/PDF rankings, including the 15
+  D+1--D+5 by >0/>10/>30 mm rain-threshold rankings plus overall, 0--10 mm,
+  and 10--30 mm rain-regime rankings.
 - `lstm_comparative_outputs.py`: writes the optional sweep-level
   `comparative_analysis/` tree. It aligns same-cluster predictions on the
   intersection of real target dates, recalculates per-lead MSE, RMSE, MAE, and

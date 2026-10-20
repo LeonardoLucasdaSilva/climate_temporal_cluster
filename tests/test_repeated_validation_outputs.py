@@ -11,6 +11,7 @@ from data.repeated_validation_outputs import (
     repeated_validation_tex,
     summarize_validation_repeats,
     validation_mae_by_horizon,
+    validation_mae_by_horizon_and_rain_regime,
 )
 
 
@@ -68,6 +69,21 @@ class RepeatedValidationOutputTests(unittest.TestCase):
         self.assertIn("Mean Val. MAE", tex)
         self.assertIn("3.0000", tex)
         self.assertIn("1.5811", tex)
+
+    def test_rain_regime_metrics_include_overall_and_nonoverlapping_bands(self) -> None:
+        actual = np.array([[0.0], [5.0], [10.0], [20.0], [30.0], [40.0]])
+        predicted = actual + np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]])
+
+        metrics = validation_mae_by_horizon_and_rain_regime(actual, predicted)
+
+        by_regime = metrics.set_index("rain_regime")
+        self.assertEqual(int(by_regime.loc["overall", "sample_count"]), 6)
+        self.assertEqual(int(by_regime.loc["0_to_10mm", "sample_count"]), 3)
+        self.assertEqual(int(by_regime.loc["10_to_30mm", "sample_count"]), 2)
+        self.assertEqual(int(by_regime.loc["gt_30mm", "sample_count"]), 1)
+        self.assertAlmostEqual(float(by_regime.loc["overall", "val_mae"]), 2.5)
+        self.assertAlmostEqual(float(by_regime.loc["0_to_10mm", "val_mae"]), 1.0)
+        self.assertAlmostEqual(float(by_regime.loc["10_to_30mm", "val_mae"]), 3.5)
 
     def test_report_keeps_lowest_mean_spectral_sigma_per_k(self) -> None:
         summary = pd.DataFrame(

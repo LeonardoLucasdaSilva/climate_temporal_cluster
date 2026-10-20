@@ -42,6 +42,10 @@ from data.experiment_rankings import (
     update_experiment_rankings,
 )
 from data.output_cleanup import remove_empty_directories
+from data.repeated_validation_outputs import (
+    validation_mae_by_horizon,
+    validation_mae_by_horizon_and_rain_regime,
+)
 from evaluation.metrics import calculate_regression_metrics
 from methods.cluster.dtw import (
     cross_dtw_distances,
@@ -2875,6 +2879,20 @@ def run_configuration(
         raise ValueError(
             "save_validation_history requires validation_only=True."
         )
+    if validation_only:
+        required_resume_files = (
+            output_dir / "validation_metrics.csv",
+            output_dir / "validation_mae_by_horizon_threshold.csv",
+            output_dir / "validation_mae_by_horizon_rain_regime.csv",
+        )
+        if all(path.is_file() for path in required_resume_files):
+            saved = pd.read_csv(required_resume_files[0])
+            if len(saved) == 1 and str(saved.iloc[0].get("status")) == "completed":
+                print_info(
+                    f"  Reusing completed validation run: {config.name}",
+                    show_console_info,
+                )
+                return saved.iloc[0].to_dict()
     clustering_feature_normalize = _normalize_optional_scaler_type(
         clustering_feature_normalize,
         setting_name="clustering_feature_normalize",
@@ -3115,16 +3133,7 @@ def run_configuration(
         )
         return result
 
-    (
-        y_pred_train,
-        y_pred_train_by_lead_day,
-        y_pred_val,
-        y_pred_test,
-        y_pred_test_by_lead_day,
-        histories_by_cluster,
-        metrics_by_cluster,
-        test_model_selection,
-    ) = train_cluster_models(
+    training_outputs = train_cluster_models(
         X_train,
         X_val,
         X_test,
@@ -3164,7 +3173,32 @@ def run_configuration(
         lstm_precipitation_transform=split_data.lstm_precipitation_transform,
         require_gpu=require_gpu,
         evaluate_test=not validation_only,
+        return_validation_by_lead_day=validation_only,
     )
+
+    if validation_only:
+        (
+            y_pred_train,
+            y_pred_train_by_lead_day,
+            y_pred_val,
+            y_pred_val_by_lead_day,
+            y_pred_test,
+            y_pred_test_by_lead_day,
+            histories_by_cluster,
+            metrics_by_cluster,
+            test_model_selection,
+        ) = training_outputs
+    else:
+        (
+            y_pred_train,
+            y_pred_train_by_lead_day,
+            y_pred_val,
+            y_pred_test,
+            y_pred_test_by_lead_day,
+            histories_by_cluster,
+            metrics_by_cluster,
+            test_model_selection,
+        ) = training_outputs
 
     if validation_only:
         train_metrics = calculate_regression_metrics(y_train, y_pred_train)
@@ -3186,6 +3220,21 @@ def run_configuration(
                 result[f"{split}_{metric_name.lower()}"] = float(value)
         if run_parameters is not None:
             result.update(run_parameters)
+        validation_mae_by_horizon(
+            split_data.y_val_by_lead_day,
+            y_pred_val_by_lead_day,
+            thresholds_mm=(0.0, 10.0, 30.0),
+        ).to_csv(
+            output_dir / "validation_mae_by_horizon_threshold.csv",
+            index=False,
+        )
+        validation_mae_by_horizon_and_rain_regime(
+            split_data.y_val_by_lead_day,
+            y_pred_val_by_lead_day,
+        ).to_csv(
+            output_dir / "validation_mae_by_horizon_rain_regime.csv",
+            index=False,
+        )
         save_validation_trial_outputs(result, output_dir)
         if save_validation_history:
             save_training_history_plots(histories_by_cluster, output_dir)
